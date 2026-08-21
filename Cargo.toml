@@ -1,0 +1,23 @@
+[package]
+name = "em"
+version = "0.1.0"
+edition = "2021"
+description = "Englishmen (em) — an English-inspired, beginner-friendly programming language"
+license = "MIT"
+
+[[bin]]
+name = "em"
+path = "src/main.rs"
+
+[dependencies]
+qrcode = { version = "0.14", features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+chrono = "0.4"
+dirs = "5"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+opt-level = 3
