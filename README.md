@@ -37,6 +37,13 @@ that:
   admin rights required — e.g. `%LOCALAPPDATA%\Englishmen` on Windows)
 - Adds that directory to your user `PATH`
 - Optionally creates a projects folder at `Documents/EMProjects`
+- If VS Code is detected on your machine, offers to install the free
+  ["Code Runner"](https://marketplace.visualstudio.com/items?itemName=formulahendry.code-runner)
+  extension and wire it up so `.em` files get a ▶ Run button
+- Pauses for you to read the summary before the window closes (the
+  installer used to exit the instant it finished, which — especially when
+  launched by double-clicking `em.exe` — closed the console before anyone
+  could see what had happened)
 
 After installation, open a **new terminal** (PATH changes don't apply
 retroactively to already-open shells) and run:
@@ -118,6 +125,26 @@ Englishmen REPL
 
 Multiline constructs (`if`/`function`/`repeat`/`for` ... `end`) are buffered
 until they're complete.
+
+## Editing in VS Code
+
+If VS Code is installed, the first-launch installer offers to set this up for
+you automatically. To do it by hand instead:
+
+1. Install the [Code Runner](https://marketplace.visualstudio.com/items?itemName=formulahendry.code-runner) extension.
+2. Add to your VS Code `settings.json`:
+
+   ```json
+   "code-runner.executorMapByFileExtension": {
+       ".em": "em"
+   },
+   "code-runner.runInTerminal": true,
+   "code-runner.saveFileBeforeRun": true
+   ```
+
+Reopen a `.em` file and a ▶ Run button appears in the editor's title bar
+(also available via right-click → "Run Code", or `Ctrl+Alt+N`); it runs
+`em <file>` in the integrated terminal.
 
 ## Language tour
 

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_em"))
@@ -19,10 +19,14 @@ fn isolated_env() -> [(&'static str, String); 2] {
     ]
 }
 
+/// stdin is pinned to null so `em` never sees a real terminal here — this keeps any
+/// interactive prompt (install confirmations, the "press Enter to continue" pause)
+/// from ever blocking a test, regardless of what stdin the test harness itself has.
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(bin())
         .args(args)
         .envs(isolated_env())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run em")
 }
@@ -103,6 +107,7 @@ fn new_creates_a_project_with_emc_and_main() {
         .args(["new", "TestProject"])
         .current_dir(&dir)
         .envs(isolated_env())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run em new");
     assert!(output.status.success());
@@ -126,6 +131,7 @@ fn new_refuses_to_overwrite_an_existing_project() {
         .args(["new", "Dup"])
         .current_dir(&dir)
         .envs(isolated_env())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run em new");
     assert!(!output.status.success());
