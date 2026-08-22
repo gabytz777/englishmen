@@ -3,6 +3,7 @@ use crate::bundle;
 use crate::bytecode::{self, Chunk};
 use crate::compiler;
 use crate::config;
+use crate::console;
 use crate::error::EmError;
 use crate::installer;
 use crate::interpreter::Interpreter;
@@ -19,7 +20,7 @@ pub fn run() -> ExitCode {
     // A standalone build carries its program inside this executable. When one
     // is present it *is* the program, so it runs ahead of any command.
     if let Some(program) = bundle::embedded_program() {
-        return run_embedded(program);
+        return finish(run_embedded(program));
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -46,7 +47,7 @@ pub fn run() -> ExitCode {
         "install" => cmd_install(),
         "build" => cmd_build(&args[1..]),
         "run" => match args.get(1) {
-            Some(file) => cmd_run_path(file, &args[2..]),
+            Some(file) => finish(cmd_run_path(file, &args[2..])),
             None => {
                 eprintln!("Error: 'em run' needs a file to run\n");
                 print_help();
@@ -54,7 +55,7 @@ pub fn run() -> ExitCode {
             }
         },
         other if other.ends_with(".em") || other.ends_with(".emb") => {
-            cmd_run_path(other, &args[1..])
+            finish(cmd_run_path(other, &args[1..]))
         }
         other => {
             eprintln!("Error: Unknown command or file '{other}'\n");
@@ -91,6 +92,15 @@ Build options:
     --run                     Run the program after compiling it
 "#
     );
+}
+
+/// Finish a program run, holding the window open if it was double-clicked.
+/// Output and errors are already printed by this point, so the pause happens
+/// whether the program succeeded or failed — a failure is the case where
+/// reading the message matters most.
+fn finish(code: ExitCode) -> ExitCode {
+    console::pause_if_window_will_close();
+    code
 }
 
 /// Run the program bundled into this executable by `em build --exe`.

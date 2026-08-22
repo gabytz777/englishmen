@@ -339,6 +339,10 @@ impl Lexer {
 }
 
 pub fn tokenize(source: &str) -> Result<Vec<SpannedToken>, EmError> {
+    // Notepad and several other Windows editors save UTF-8 with a byte order
+    // mark. It carries no meaning for us, and reporting it as a stray
+    // character on line 1 is baffling when the line looks perfectly fine.
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     Lexer::new(source).tokenize()
 }
 
@@ -352,6 +356,22 @@ mod tests {
             .into_iter()
             .map(|t| t.token)
             .collect()
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_ignored() {
+        // Files saved as "UTF-8 with BOM" (Notepad's default) must lex
+        // exactly like the same file without one.
+        assert_eq!(toks("\u{feff}say(1)\n"), toks("say(1)\n"));
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_shift_positions() {
+        let with_bom = tokenize("\u{feff}say(1)\n").unwrap();
+        let without = tokenize("say(1)\n").unwrap();
+        let spans: Vec<_> = with_bom.iter().map(|t| t.span).collect();
+        let expected: Vec<_> = without.iter().map(|t| t.span).collect();
+        assert_eq!(spans, expected);
     }
 
     #[test]

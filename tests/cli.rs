@@ -404,3 +404,31 @@ fn em_itself_is_not_mistaken_for_a_standalone_program() {
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("Englishmen"));
 }
+
+#[test]
+fn runs_a_file_saved_with_a_utf8_byte_order_mark() {
+    let dir = scratch("bom");
+    let file = dir.join("bom.em");
+    // Notepad and PowerShell's Out-File write this BOM by default.
+    let mut contents = String::from("\u{feff}");
+    contents.push_str("say(\"hello from a BOM file\")\n");
+    std::fs::write(&file, contents).unwrap();
+
+    let output = run(&[file.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("hello from a BOM file"));
+
+    // The compiler path must accept it too, not just the runner.
+    let build = run(&["build", file.to_str().unwrap()]);
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -4,6 +4,7 @@ mod bytecode;
 mod cli;
 mod compiler;
 mod config;
+mod console;
 mod environment;
 mod error;
 mod installer;
