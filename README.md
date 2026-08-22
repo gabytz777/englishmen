@@ -23,9 +23,12 @@ English sentences — `if age >= 18`, `say("Hello")`, `for person in people` —
 without trying to understand arbitrary natural language. It has a controlled
 grammar, not an AI sentence parser.
 
-**Current status: interpreter only.** Englishmen programs are lexed, parsed
-into an AST, and walked by a tree-walking interpreter written in Rust. There is
-no native compiler yet — see [Future compiler roadmap](#future-compiler-roadmap).
+**Current status: compiled to Englishmen bytecode.** Programs are lexed,
+parsed into an AST, compiled to bytecode, and executed by a virtual machine —
+all in Rust. `em build` saves that bytecode as a `.emb` file you can run
+directly. The original tree-walking interpreter is still there behind
+`--interpret`. There is no *native* machine-code compiler — see
+[Compiler](#compiler) for exactly what is and is not there.
 
 ## Installation
 
@@ -75,15 +78,34 @@ main = "main.em"
 ```
 
 This is intentionally a simple, predictable configuration format — not a
-natural-language parser. A `.emc` file is optional; you can always run a
-single file directly with `em file.em`. As the future native compiler is
-added, `.emc` will grow build-related keys, but it currently only carries
-interpreter/project metadata.
+natural-language parser. A `.emc` file is optional; you can always run or
+build a single file directly with `em file.em` or `em build file.em`. Inside
+a project, `em build` with no arguments compiles the file named by `main`.
+
+## The `.emb` format
+
+`.emb` ("Englishmen Bytecode") files are compiled programs, produced by
+`em build` and run with `em file.emb`. They are binary, version-stamped, and
+validated on load, so a truncated or hand-edited file is refused with a clear
+message rather than misbehaving halfway through a run. See
+[Compiler](#compiler).
 
 ## Running programs
 
 ```bash
 em hello.em
+```
+
+This compiles the program and runs it. To run a program you compiled earlier:
+
+```bash
+em hello.emb
+```
+
+To run it on the original tree-walking interpreter instead:
+
+```bash
+em hello.em --interpret
 ```
 
 ## `em new`
@@ -98,6 +120,14 @@ em new MyProject
 ```
 
 `em new` never overwrites an existing project directory.
+
+## `em build`
+
+Compiles a program to bytecode. See [Compiler](#compiler).
+
+```bash
+em build main.em
+```
 
 ## `em repair`
 
@@ -124,7 +154,9 @@ Englishmen REPL
 ```
 
 Multiline constructs (`if`/`function`/`repeat`/`for` ... `end`) are buffered
-until they're complete.
+until they're complete. Each completed snippet is compiled and run on the same
+VM as a program file, so the REPL and `em file.em` behave identically; the
+variables you define stay in the VM between inputs.
 
 ## Editing in VS Code
 
@@ -267,11 +299,13 @@ binary — no Python, Node, or other external runtimes required.
 EMProjects/
 └── MyProject/
     ├── englishmen.emc
-    └── main.em
+    ├── main.em
+    └── main.emb        (after 'em build')
 ```
 
 Larger projects can add more `.em` files and an `assets/` directory
-alongside `main.em`.
+alongside `main.em`. Compiled `.emb` files are build output — they can be
+deleted and rebuilt at any time with `em build`.
 
 ## Examples
 
@@ -279,30 +313,92 @@ See [`examples/`](examples/) for runnable programs: `hello.em`,
 `conditions.em`, `objects.em`, `libraries.em`, and the canonical
 `example.em`.
 
-## Future compiler roadmap
+## Compiler
 
-The current version is **interpreter only** — there is no `em build` and no
-native code generation. The architecture is deliberately laid out so a
-compiler backend can be added later without redesigning the language itself:
+Lexing, parsing, and the AST are shared stages with two execution backends
+behind them:
 
 ```text
                 AST
                /   \
               /     \
-     Interpreter    Compiler   (future)
+     Interpreter    Compiler
          ↓             ↓
-      run .em        native code
+      run .em       bytecode  →  VM  →  run
+                       ↓
+                    .emb file
 ```
 
-Lexing, parsing, and the AST are already shared, reusable stages; the
-interpreter is just one execution backend walking that AST. A future
-compiler would be a second backend consuming the same AST (or an IR derived
-from it), eventually enabling:
+Running a program compiles it first — `em hello.em` lexes, parses, compiles
+and runs the bytecode in one go, leaving no files behind. `em build` keeps the
+bytecode instead:
 
 ```bash
-em build hello.em   # future
-em build             # future, whole project
+em build hello.em
 ```
 
-None of this exists yet — do not expect `.exe` generation, LLVM, or
-optimization settings in the current version.
+```text
+Compiled hello.em -> hello.emb (4 instructions, 104 bytes)
+```
+
+```bash
+em hello.emb
+```
+
+A `.emb` file is a self-contained image of the compiled program: constants,
+instructions, function prototypes, and the line/column of every instruction so
+runtime errors still point at the right place in the original source. It is
+*not* a native executable — it needs `em` to run, and it is portable across
+machines that have the same `em` version.
+
+### What `em build` does
+
+| Command | Effect |
+| --- | --- |
+| `em build hello.em` | Compile to `hello.emb` |
+| `em build hello.em -o out.emb` | Choose the output path |
+| `em build hello.em --run` | Compile, save, then run |
+| `em build hello.em --emit asm` | Print the disassembly, write nothing |
+| `em build` | Compile the `main` of the `englishmen.emc` in this directory |
+
+`--emit asm` prints the instruction stream, which is the readable form of
+exactly what the VM executes:
+
+```text
+== hello.em ==
+   3     0  LOAD_CONST     0  ("Hello, world!")
+   3     1  SAY            1
+   3     2  POP
+   3     3  RETURN_NULL
+```
+
+### What the compiler does to your program
+
+- **Control flow becomes jumps.** `if`, `repeat` and `for ... in` compile to
+  conditional and unconditional jumps instead of a recursive walk over the AST.
+- **Constants are interned and folded.** `2 + 3 * 4` is computed once at
+  compile time and stored as a single constant; repeated literals share one
+  slot in the constant pool.
+- **Functions are compiled once.** Each function becomes a prototype with its
+  own chunk; calling it binds that prototype to the scope it was defined in.
+- **Calls run on the VM's own frame stack**, so runaway recursion is reported
+  as an Englishmen error instead of crashing the process.
+- **Errors that cannot be decided at compile time stay at runtime.** Division
+  by zero is never folded away, so `1 / 0` still reports `Division by zero`
+  with the same wording as the interpreter.
+
+### The interpreter is still there
+
+```bash
+em hello.em --interpret
+```
+
+Both backends implement the same language, and the test suite checks that they
+agree — on program output for every bundled example, and on the exact error
+message and hint for each runtime error. The interpreter remains the
+executable reference for the semantics; the compiler is the fast path.
+
+### Not included
+
+No native code generation, no `.exe` output, no LLVM, and no optimization
+levels. `em build` produces Englishmen bytecode, not machine code.

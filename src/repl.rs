@@ -1,13 +1,17 @@
-use crate::interpreter::Interpreter;
+use crate::compiler;
 use crate::lexer::tokenize;
 use crate::parser::parse;
+use crate::vm::Vm;
 use std::io::{self, Write};
 
 pub fn run_repl() {
     println!("Englishmen REPL");
     println!("Type 'exit' or press Ctrl+C to quit.\n");
 
-    let mut interpreter = Interpreter::new();
+    // The REPL runs on the compiler and VM, like `em <file.em>`, so a snippet
+    // behaves exactly as it would inside a program. Globals live in the VM and
+    // persist between inputs.
+    let mut vm = Vm::new();
     let mut buffer = String::new();
 
     loop {
@@ -33,7 +37,7 @@ pub fn run_repl() {
         }
 
         let source = std::mem::take(&mut buffer);
-        run_snippet(&mut interpreter, &source);
+        run_snippet(&mut vm, &source);
     }
 }
 
@@ -57,7 +61,7 @@ fn needs_more_input(source: &str) -> bool {
     depth > 0
 }
 
-fn run_snippet(interpreter: &mut Interpreter, source: &str) {
+fn run_snippet(vm: &mut Vm, source: &str) {
     let tokens = match tokenize(source) {
         Ok(t) => t,
         Err(e) => {
@@ -72,7 +76,14 @@ fn run_snippet(interpreter: &mut Interpreter, source: &str) {
             return;
         }
     };
-    if let Err(e) = interpreter.run(&program) {
+    let chunk = match compiler::compile(&program) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("{}", e.render("repl", source));
+            return;
+        }
+    };
+    if let Err(e) = vm.run(chunk) {
         println!("{}", e.render("repl", source));
     }
 }

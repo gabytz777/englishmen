@@ -45,11 +45,11 @@ impl EmError {
         let mut out = String::new();
         out.push_str(&format!("Error: {}\n", self.message));
         if let Some(span) = self.span {
-            out.push_str(&format!(
-                "  --> {}:{}:{}\n\n",
-                filename, span.line, span.col
-            ));
+            out.push_str(&format!("  --> {}:{}:{}\n", filename, span.line, span.col));
+            // Compiled bytecode carries positions but not the source it came
+            // from, so the excerpt is skipped rather than left blank.
             if let Some(line_text) = source.lines().nth(span.line.saturating_sub(1)) {
+                out.push('\n');
                 let line_num = span.line.to_string();
                 let gutter = " ".repeat(line_num.len());
                 out.push_str(&format!("{} | {}\n", line_num, line_text));

@@ -111,7 +111,7 @@ pub fn run_installer(create_projects_dir: bool) -> io::Result<()> {
     println!();
     println!("Englishmen has been installed successfully!\n");
     println!("Here's what just happened:");
-    println!("  - The interpreter and standard library were copied to:");
+    println!("  - The runtime (compiler, VM, and standard library) was copied to:");
     println!("        {}", install_dir().display());
     println!("  - That folder's \"bin\" directory was added to your user PATH.");
     if create_projects_dir {

@@ -1,2 +1,5 @@
 /target
 *.png
+
+# Compiled Englishmen bytecode (build output)
+*.emb

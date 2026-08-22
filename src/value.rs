@@ -1,4 +1,5 @@
 use crate::ast::Stmt;
+use crate::bytecode::FunctionProto;
 use crate::environment::Environment;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -14,6 +15,8 @@ pub enum Value {
     Array(Rc<RefCell<Vec<Value>>>),
     Object(Rc<RefCell<BTreeMap<String, Value>>>),
     Function(Rc<FunctionValue>),
+    /// A closure produced by the compiler backend and executed by the VM.
+    Compiled(Rc<CompiledFunction>),
     Native(Rc<NativeFunction>),
 }
 
@@ -21,6 +24,12 @@ pub struct FunctionValue {
     pub name: String,
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
+    pub closure: Rc<Environment>,
+}
+
+/// A compiled function bound to the scope it was created in.
+pub struct CompiledFunction {
+    pub proto: Rc<FunctionProto>,
     pub closure: Rc<Environment>,
 }
 
@@ -39,6 +48,7 @@ impl Value {
             Value::Array(_) => "array",
             Value::Object(_) => "object",
             Value::Function(_) => "function",
+            Value::Compiled(_) => "function",
             Value::Native(_) => "function",
         }
     }
@@ -81,6 +91,7 @@ impl Value {
                 format!("{{{}}}", items.join(", "))
             }
             Value::Function(f) => format!("<function {}>", f.name),
+            Value::Compiled(f) => format!("<function {}>", f.proto.name),
             Value::Native(f) => format!("<native function {}>", f.name),
         }
     }
@@ -101,6 +112,7 @@ impl Value {
             (Value::Null, Value::Null) => true,
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
             (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
+            (Value::Compiled(a), Value::Compiled(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
