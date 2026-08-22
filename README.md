@@ -26,9 +26,11 @@ grammar, not an AI sentence parser.
 **Current status: compiled to Englishmen bytecode.** Programs are lexed,
 parsed into an AST, compiled to bytecode, and executed by a virtual machine —
 all in Rust. `em build` saves that bytecode as a `.emb` file you can run
-directly. The original tree-walking interpreter is still there behind
-`--interpret`. There is no *native* machine-code compiler — see
-[Compiler](#compiler) for exactly what is and is not there.
+directly, and `em build --exe` bundles it with the runtime into a single
+executable that needs nothing installed. There is no *native* machine-code
+compiler; the original tree-walking interpreter is still available behind
+`--interpret`. See [Compiler](#compiler) for exactly what is and is not
+there.
 
 ## Installation
 
@@ -82,6 +84,48 @@ natural-language parser. A `.emc` file is optional; you can always run or
 build a single file directly with `em file.em` or `em build file.em`. Inside
 a project, `em build` with no arguments compiles the file named by `main`.
 
+## Standalone executables
+
+`em build --exe` produces a single file that runs on a machine with no
+Englishmen installed:
+
+```bash
+em build hello.em --exe
+```
+
+```text
+Compiled hello.em -> hello.exe (4 instructions, 913 KB, runs on its own)
+```
+
+```bash
+./hello.exe
+```
+
+This is not native code generation. The `em` runtime is copied, your compiled
+bytecode is appended to it, and a 16-byte trailer records where that payload
+starts:
+
+```text
+[ em runtime ][ bytecode ][ length: u64 ][ magic: 8 bytes ]
+```
+
+Executables are loaded using the headers at the *front* of the file, so the
+appended bytes are ignored by the operating system. On startup `em` checks its
+own file for that trailer; when it finds one, it runs the embedded program
+instead of reading the command line. The same trick is how PyInstaller and
+`deno compile` produce single-file programs.
+
+What that means in practice:
+
+- **The file is self-contained.** No install, no PATH entry, no `.emb`
+  alongside it.
+- **It is the program, not `em`.** A bundled `hello.exe --version` runs your
+  program; it is no longer the Englishmen CLI.
+- **Every build is about 900 KB**, because the whole runtime rides along —
+  a hello-world and a large program are nearly the same size.
+- **It is not cross-platform.** Building on Windows produces a Windows
+  executable, since it is a copy of the Windows `em`.
+
 ## The `.emb` format
 
 `.emb` ("Englishmen Bytecode") files are compiled programs, produced by
@@ -123,10 +167,13 @@ em new MyProject
 
 ## `em build`
 
-Compiles a program to bytecode. See [Compiler](#compiler).
+Compiles a program to bytecode, or to a standalone executable with `--exe`.
+See [Compiler](#compiler) and
+[Standalone executables](#standalone-executables).
 
 ```bash
 em build main.em
+em build main.em --exe
 ```
 
 ## `em repair`
@@ -358,6 +405,7 @@ machines that have the same `em` version.
 | `em build hello.em` | Compile to `hello.emb` |
 | `em build hello.em -o out.emb` | Choose the output path |
 | `em build hello.em --run` | Compile, save, then run |
+| `em build hello.em --exe` | Build a standalone executable (see [Standalone executables](#standalone-executables)) |
 | `em build hello.em --emit asm` | Print the disassembly, write nothing |
 | `em build` | Compile the `main` of the `englishmen.emc` in this directory |
 
@@ -400,5 +448,12 @@ executable reference for the semantics; the compiler is the fast path.
 
 ### Not included
 
-No native code generation, no `.exe` output, no LLVM, and no optimization
-levels. `em build` produces Englishmen bytecode, not machine code.
+No native code generation, no LLVM, and no optimization levels. `em build`
+produces Englishmen bytecode, not machine code — including `--exe`, which
+bundles that bytecode with the runtime rather than compiling to machine code.
+
+The reason is that Englishmen is dynamically typed: a variable can hold a
+number now and a string later, so `a + b` cannot become a CPU `add`
+instruction. Native code would have to call back into a runtime that checks
+the types anyway. This is the same reason Python, Ruby, Java, and C# all ship
+bytecode and a VM.

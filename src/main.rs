@@ -1,4 +1,5 @@
 mod ast;
+mod bundle;
 mod bytecode;
 mod cli;
 mod compiler;

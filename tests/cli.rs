@@ -307,3 +307,100 @@ fn both_backends_produce_the_same_output_for_every_example() {
         }
     }
 }
+
+/// The platform's name for a standalone build of `stem`.
+fn exe_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    }
+}
+
+#[test]
+fn build_exe_produces_a_program_that_runs_on_its_own() {
+    let dir = scratch("build_exe");
+    let source = dir.join("prog.em");
+    std::fs::write(&source, SAMPLE).unwrap();
+
+    let build = run(&["build", source.to_str().unwrap(), "--exe"]);
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(String::from_utf8_lossy(&build.stdout).contains("runs on its own"));
+
+    let program = dir.join(exe_name("prog"));
+    assert!(
+        program.exists(),
+        "expected a standalone build at {program:?}"
+    );
+
+    // Run it as itself, with no arguments and no reference to `em`.
+    let output = Command::new(&program)
+        .current_dir(&dir)
+        .envs(isolated_env())
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run the standalone program");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("total is 12"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_standalone_program_ignores_em_commands_and_stays_itself() {
+    let dir = scratch("build_exe_args");
+    let source = dir.join("prog.em");
+    std::fs::write(&source, SAMPLE).unwrap();
+    assert!(run(&["build", source.to_str().unwrap(), "--exe"])
+        .status
+        .success());
+
+    // The bundled program is the program, so `--version` is not em's anymore.
+    let output = Command::new(dir.join(exe_name("prog")))
+        .arg("--version")
+        .envs(isolated_env())
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run the standalone program");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("total is 12"), "{stdout}");
+    assert!(!stdout.contains("Englishmen 1."), "{stdout}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_exe_refuses_to_overwrite_the_source() {
+    let dir = scratch("build_exe_clobber");
+    let source = dir.join("prog.em");
+    std::fs::write(&source, SAMPLE).unwrap();
+
+    let output = run(&[
+        "build",
+        source.to_str().unwrap(),
+        "--exe",
+        "-o",
+        source.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("would overwrite"));
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), SAMPLE);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn em_itself_is_not_mistaken_for_a_standalone_program() {
+    // The runtime must only take the bundled path when a payload is present.
+    let output = run(&["--version"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Englishmen"));
+}
