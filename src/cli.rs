@@ -1,4 +1,5 @@
 use crate::ast::Stmt;
+use crate::bundle;
 use crate::bytecode::{self, Chunk};
 use crate::compiler;
 use crate::config;
@@ -15,6 +16,12 @@ use std::process::ExitCode;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn run() -> ExitCode {
+    // A standalone build carries its program inside this executable. When one
+    // is present it *is* the program, so it runs ahead of any command.
+    if let Some(program) = bundle::embedded_program() {
+        return run_embedded(program);
+    }
+
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.is_empty() {
@@ -77,11 +84,37 @@ Run options:
                               compiler and VM
 
 Build options:
-    -o, --out <file.emb>      Where to write the compiled program
+    -o, --out <file>          Where to write the compiled program
+    --exe                     Build a standalone executable that runs without
+                              Englishmen installed
     --emit asm                Print the disassembly instead of writing a file
     --run                     Run the program after compiling it
 "#
     );
+}
+
+/// Run the program bundled into this executable by `em build --exe`.
+fn run_embedded(program: Result<Chunk, EmError>) -> ExitCode {
+    let name = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .map(display_name)
+        .unwrap_or_else(|| "program".to_string());
+
+    let chunk = match program {
+        Ok(chunk) => chunk,
+        Err(e) => {
+            eprintln!("{}", e.render(&name, ""));
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut vm = Vm::new();
+    if let Err(e) = vm.run(chunk) {
+        eprintln!("{}", e.render(&name, ""));
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 /// Run a `.em` source file or a pre-compiled `.emb` bytecode file.
@@ -171,11 +204,12 @@ fn cmd_run_bytecode(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `em build [file.em] [-o out.emb] [--emit asm] [--run]`
+/// `em build [file.em] [-o out] [--emit asm] [--exe] [--run]`
 fn cmd_build(args: &[String]) -> ExitCode {
     let mut file: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut emit_asm = false;
+    let mut standalone = false;
     let mut run_after = false;
 
     let mut i = 0;
@@ -208,6 +242,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             },
+            "--exe" | "--standalone" => {
+                standalone = true;
+                i += 1;
+            }
             "--run" => {
                 run_after = true;
                 i += 1;
@@ -263,20 +301,51 @@ fn cmd_build(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let out_path = out.unwrap_or_else(|| source_path.with_extension("emb"));
-    let bytes = bytecode::serialize(&chunk);
-    if let Err(e) = std::fs::write(&out_path, &bytes) {
-        eprintln!("Error: Could not write '{}': {e}", out_path.display());
-        return ExitCode::FAILURE;
-    }
+    let instructions = count_instructions(&chunk);
+    let out_path = out.unwrap_or_else(|| {
+        if standalone {
+            bundle::default_output_path(&source_path)
+        } else {
+            source_path.with_extension("emb")
+        }
+    });
 
-    println!(
-        "Compiled {} -> {} ({} instructions, {} bytes)",
-        source_path.display(),
-        out_path.display(),
-        count_instructions(&chunk),
-        bytes.len()
-    );
+    if standalone {
+        // Refuse to write over the source: `em build --exe main` with a
+        // missing extension would otherwise destroy the program.
+        if out_path == source_path {
+            eprintln!(
+                "Error: The standalone build would overwrite '{}'",
+                source_path.display()
+            );
+            eprintln!("Pass '-o <name>' to choose a different output file.");
+            return ExitCode::FAILURE;
+        }
+        let size = match bundle::create(&chunk, &out_path) {
+            Ok(size) => size,
+            Err(e) => {
+                eprintln!("{}", e.render(&filename, &source));
+                return ExitCode::FAILURE;
+            }
+        };
+        println!(
+            "Compiled {} -> {} ({instructions} instructions, {size} bytes, runs on its own)",
+            source_path.display(),
+            out_path.display(),
+        );
+    } else {
+        let bytes = bytecode::serialize(&chunk);
+        if let Err(e) = std::fs::write(&out_path, &bytes) {
+            eprintln!("Error: Could not write '{}': {e}", out_path.display());
+            return ExitCode::FAILURE;
+        }
+        println!(
+            "Compiled {} -> {} ({instructions} instructions, {} bytes)",
+            source_path.display(),
+            out_path.display(),
+            bytes.len()
+        );
+    }
 
     if run_after {
         let mut vm = Vm::new();
