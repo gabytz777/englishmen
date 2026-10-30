@@ -2,7 +2,7 @@ use crate::runtime::{expect_number, native};
 use crate::value::Value;
 use chrono::{Datelike, Local, Timelike};
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn module() -> Value {
     let mut fields = BTreeMap::new();
@@ -22,10 +22,18 @@ pub fn module() -> Value {
         "sleep".to_string(),
         native("time.sleep", |args| {
             let secs = expect_number(args.get(0).unwrap_or(&Value::Null), "for time.sleep")?;
-            if secs < 0.0 {
-                return Err("time.sleep expects a non-negative number of seconds".to_string());
+            // NaN and infinity compare false against `< 0.0`, and
+            // `Duration::from_secs_f64` panics on them (as well as on
+            // durations that overflow), so reject them before converting.
+            if !secs.is_finite() || secs < 0.0 {
+                return Err(
+                    "time.sleep expects a finite, non-negative number of seconds".to_string()
+                );
             }
-            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+            let duration = Duration::try_from_secs_f64(secs).map_err(|_| {
+                "time.sleep expects a finite, non-negative number of seconds".to_string()
+            })?;
+            std::thread::sleep(duration);
             Ok(Value::Null)
         }),
     );
@@ -85,6 +93,24 @@ mod tests {
         };
         let result = (native.func)(&[]).unwrap();
         assert!(matches!(result, Value::Number(n) if n > 0.0));
+    }
+
+    #[test]
+    fn sleep_rejects_values_that_are_not_a_duration() {
+        let Value::Object(obj) = module() else {
+            unreachable!()
+        };
+        let func = obj.borrow().get("sleep").cloned().unwrap();
+        let Value::Native(native) = func else {
+            unreachable!()
+        };
+        // Before the fix these panicked inside Duration::from_secs_f64.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 1e300] {
+            assert!(
+                (native.func)(&[Value::Number(bad)]).is_err(),
+                "time.sleep({bad}) should fail with an error, not panic"
+            );
+        }
     }
 
     #[test]
