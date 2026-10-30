@@ -30,7 +30,7 @@ jobs:
             asset: em-windows-x86_64.exe
             binary: target/release/em.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
 
