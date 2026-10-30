@@ -34,13 +34,43 @@ there.
 
 ## Installation
 
-Download `em` (or `em.exe` on Windows) and run it once. If Englishmen isn't
-installed yet, running `em` with no arguments enters a first-launch installer
+### Linux and macOS
+
+The easiest way is the one-line installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gabytz777/englishmen/master/install.sh | sh
+```
+
+It installs entirely under your home directory — no `sudo`, no system
+packages. If the current release has a prebuilt binary for your platform it
+uses that; otherwise it builds from source, which needs a Rust toolchain
+(https://rustup.rs). The script accepts `--from-source`, `--version <tag>`, and
+`--no-projects`; run it with `--help` for details.
+
+`em` is linked into `~/.local/bin`, and the installer adds that directory to
+your shell profile (`~/.bashrc`, `~/.zshrc`, `~/.profile`, or the fish config)
+when it isn't already on `PATH`. Open a new terminal, then check:
+
+```bash
+em --version
+```
+
+### Windows
+
+Download `em.exe` from the [releases page](https://github.com/gabytz777/englishmen/releases)
+and run it once.
+
+### First launch (any platform)
+
+Running an uninstalled `em` with no arguments enters a first-launch installer
 that:
 
 - Installs the runtime and standard library into a per-user directory (no
-  admin rights required — e.g. `%LOCALAPPDATA%\Englishmen` on Windows)
-- Adds that directory to your user `PATH`
+  admin rights required — e.g. `%LOCALAPPDATA%\Englishmen` on Windows,
+  `~/.local/share/Englishmen` on Linux)
+- Makes the `em` command available (`PATH` on Windows, a `~/.local/bin`
+  symlink plus a shell-profile entry on Linux/macOS)
 - Optionally creates a projects folder at `Documents/EMProjects`
 - If VS Code is detected on your machine, offers to install the free
   ["Code Runner"](https://marketplace.visualstudio.com/items?itemName=formulahendry.code-runner)
@@ -57,11 +87,15 @@ retroactively to already-open shells) and run:
 em --version
 ```
 
-You can also build Englishmen from source with a standard Rust toolchain:
+You can also install a local checkout without the script:
 
 ```bash
 cargo build --release
+./target/release/em install --yes
 ```
+
+`em install` is idempotent and also upgrades an existing installation. Add
+`--no-projects` to skip the projects folder and `--yes` to run without prompts.
 
 ## The `.em` format
 
@@ -179,9 +213,10 @@ em build main.em --exe
 ## `em repair`
 
 Diagnoses and repairs an Englishmen installation: the executable, runtime,
-standard library modules, configuration, `PATH` entry, and projects
-directory. It prints `[OK]`/`[WARN]` for each check, and offers to fix
-anything broken — it never deletes existing project files.
+standard library modules, configuration, `PATH` entry (including the
+`~/.local/bin/em` launcher on Linux/macOS), and projects directory. It prints
+`[OK]`/`[WARN]` for each check, and offers to fix anything broken — it never
+deletes existing project files.
 
 ```bash
 em repair

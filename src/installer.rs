@@ -2,6 +2,8 @@ use crate::config::EmConfig;
 use crate::modules;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
+#[cfg(not(windows))]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -49,8 +51,54 @@ pub fn installed_exe_path() -> PathBuf {
     bin_dir().join(exe_name)
 }
 
+/// The directory that must be on `PATH` for the `em` command to work.
+///
+/// On Windows that is the install `bin` directory itself. On Unix the runtime
+/// stays in the install directory and a symlink is placed in the conventional
+/// `~/.local/bin`, so upgrades replace one executable and PATH never points
+/// into a version-specific folder.
+pub fn user_bin_dir() -> PathBuf {
+    #[cfg(not(windows))]
+    if let Ok(dir) = std::env::var("EM_BIN_DIR") {
+        return PathBuf::from(dir);
+    }
+    #[cfg(windows)]
+    {
+        bin_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| install_dir())
+            .join(".local")
+            .join("bin")
+    }
+}
+
+pub fn path_entry_dir() -> PathBuf {
+    user_bin_dir()
+}
+
+/// Copy the running executable into the install directory. Re-copying an
+/// identical file is harmless and keeps `em install` working as an upgrade
+/// command.
+fn copy_running_exe() -> io::Result<()> {
+    let Ok(current_exe) = std::env::current_exe() else {
+        return Ok(());
+    };
+    let target = installed_exe_path();
+    if current_exe == target {
+        return Ok(());
+    }
+    fs::copy(&current_exe, &target)?;
+    Ok(())
+}
+
 /// Run the first-launch installer. Safe to call more than once (idempotent).
-pub fn run_installer(create_projects_dir: bool) -> io::Result<()> {
+///
+/// `interactive` controls prompts and the final "press Enter" pause. Scripted
+/// installs (`em install --yes`, or `install.sh`) pass `false`.
+pub fn run_installer(create_projects_dir: bool, interactive: bool) -> io::Result<()> {
     println!("Englishmen Setup\n");
     if is_installed() {
         println!(
@@ -58,7 +106,14 @@ pub fn run_installer(create_projects_dir: bool) -> io::Result<()> {
             install_dir().display()
         );
         println!("Re-checking installation health...\n");
-        return run_repair(false);
+        // Re-copy so `em install` also upgrades an existing installation, and
+        // refresh the launcher/PATH even when health checks then run quietly.
+        copy_running_exe()?;
+        let path_dir = path_entry_dir();
+        if let Err(e) = add_to_user_path(&path_dir) {
+            println!("[WARN] Could not update PATH automatically: {e}");
+        }
+        return run_repair(interactive);
     }
 
     println!("Welcome to Englishmen!\n");
@@ -73,13 +128,7 @@ pub fn run_installer(create_projects_dir: bool) -> io::Result<()> {
     print_step("[OK] QRC library");
     print_step("[OK] Cowsay library");
 
-    // Copy the currently running executable into the install directory.
-    if let Ok(current_exe) = std::env::current_exe() {
-        let target = installed_exe_path();
-        if current_exe != target {
-            let _ = fs::copy(&current_exe, &target);
-        }
-    }
+    copy_running_exe()?;
 
     let projects_dir = default_projects_dir();
     if create_projects_dir && !projects_dir.exists() {
@@ -101,8 +150,8 @@ pub fn run_installer(create_projects_dir: bool) -> io::Result<()> {
     fs::write(config_file(), config_body)?;
     print_step("[OK] Configuration");
 
-    let path_result = add_to_user_path(&bin_dir());
-    match path_result {
+    let path_dir = path_entry_dir();
+    match add_to_user_path(&path_dir) {
         Ok(true) => print_step("[OK] PATH configuration"),
         Ok(false) => print_step("[OK] PATH configuration (already present)"),
         Err(e) => println!("[WARN] Could not update PATH automatically: {e}"),
@@ -113,7 +162,14 @@ pub fn run_installer(create_projects_dir: bool) -> io::Result<()> {
     println!("Here's what just happened:");
     println!("  - The runtime (compiler, VM, and standard library) was copied to:");
     println!("        {}", install_dir().display());
+    #[cfg(windows)]
     println!("  - That folder's \"bin\" directory was added to your user PATH.");
+    #[cfg(not(windows))]
+    {
+        println!("  - The 'em' command was linked into:");
+        println!("        {}", path_dir.display());
+        println!("  - That folder was added to your PATH (in your shell profile).");
+    }
     if create_projects_dir {
         println!(
             "  - A projects folder was created at:\n        {}",
@@ -124,11 +180,13 @@ pub fn run_installer(create_projects_dir: bool) -> io::Result<()> {
     println!("Open a NEW terminal and run:\n");
     println!("    em --version\n");
 
-    if io::stdin().is_terminal() {
+    if interactive && io::stdin().is_terminal() {
         offer_vscode_setup();
     }
 
-    pause_before_exit("Press Enter to close this window...");
+    if interactive {
+        pause_before_exit("Press Enter to close this window...");
+    }
     Ok(())
 }
 
@@ -392,17 +450,20 @@ pub fn run_repair(interactive: bool) -> io::Result<()> {
     // PATH. Even when the entry is already present, re-running add_to_user_path is
     // cheap and re-broadcasts the environment-change notification, which fixes the
     // common case where PATH was set correctly but a still-running Explorer/shell
-    // never picked it up.
-    match path_contains(&bin_dir()) {
+    // never picked it up. On Unix it also recreates a missing ~/.local/bin/em link.
+    let path_dir = path_entry_dir();
+    match path_is_configured(&path_dir) {
         Ok(true) => {
-            let _ = add_to_user_path(&bin_dir());
+            if let Err(e) = add_to_user_path(&path_dir) {
+                println!("[WARN] Could not refresh the 'em' launcher: {e}");
+            }
             println!("[OK] PATH");
         }
         Ok(false) => {
             all_ok = false;
             println!("[WARN] Englishmen's bin directory is not in PATH");
             if interactive && confirm("Would you like to add it to PATH?") {
-                match add_to_user_path(&bin_dir()) {
+                match add_to_user_path(&path_dir) {
                     Ok(_) => {
                         println!("[FIX] PATH updated (open a new terminal for it to take effect)")
                     }
@@ -474,6 +535,7 @@ fn confirm(prompt: &str) -> bool {
 }
 
 /// Pure helper: does `path_var` (a `;`-joined PATH string) already contain `dir`?
+#[cfg(any(windows, test))]
 pub fn path_var_contains(path_var: &str, dir: &std::path::Path) -> bool {
     let dir_str = dir.display().to_string();
     path_var.split(';').any(|p| {
@@ -484,6 +546,7 @@ pub fn path_var_contains(path_var: &str, dir: &std::path::Path) -> bool {
 
 /// Pure helper: append `dir` to `path_var` if not already present. Returns the new
 /// value and whether a change was made.
+#[cfg(any(windows, test))]
 pub fn path_var_with_appended(path_var: &str, dir: &std::path::Path) -> (String, bool) {
     if path_var_contains(path_var, dir) {
         return (path_var.to_string(), false);
@@ -556,15 +619,185 @@ pub fn path_contains(dir: &std::path::Path) -> io::Result<bool> {
 }
 
 #[cfg(not(windows))]
-pub fn add_to_user_path(_dir: &std::path::Path) -> io::Result<bool> {
-    Ok(false)
+const PATH_BLOCK_START: &str = "# >>> Englishmen PATH >>>";
+#[cfg(not(windows))]
+const PATH_BLOCK_END: &str = "# <<< Englishmen PATH <<<";
+
+/// Add `em` to the user's PATH without requiring admin rights.
+///
+/// On Unix the runtime lives in the install directory, so a symlink is placed
+/// in `~/.local/bin` and a small guarded block is appended to the user's shell
+/// profile when that directory is not already on PATH. Running this repeatedly
+/// is safe: an existing correct link and an existing profile block are left
+/// untouched.
+#[cfg(not(windows))]
+pub fn add_to_user_path(_dir: &Path) -> io::Result<bool> {
+    let link_dir = path_entry_dir();
+    fs::create_dir_all(&link_dir)?;
+
+    let target = installed_exe_path();
+    if !target.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "the installed runtime was not found at '{}'",
+                target.display()
+            ),
+        ));
+    }
+
+    let link = link_dir.join("em");
+    let mut changed = false;
+    // If EM_BIN_DIR *is* the install bin directory there is nothing to link;
+    // creating a link would mean replacing the real binary with a self-link.
+    if link != target {
+        let already_linked = fs::read_link(&link)
+            .map(|existing| existing == target)
+            .unwrap_or(false);
+        if !already_linked {
+            if fs::symlink_metadata(&link).is_ok() {
+                if link.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("'{}' is a directory", link.display()),
+                    ));
+                }
+                // Replace a stale link or an old copied binary. The path is
+                // owned by the Englishmen installer, so this is an upgrade.
+                fs::remove_file(&link)?;
+            }
+            std::os::unix::fs::symlink(&target, &link)?;
+            changed = true;
+        }
+    }
+
+    changed |= ensure_path_in_shell_profile(&link_dir)?;
+    Ok(changed)
+}
+
+/// Append a guarded PATH block to the profile of the login shell, unless it is
+/// already there or the directory is already on PATH.
+#[cfg(not(windows))]
+fn ensure_path_in_shell_profile(dir: &Path) -> io::Result<bool> {
+    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    if std::env::split_paths(&current_path).any(|entry| entry == dir) {
+        return Ok(false);
+    }
+
+    let profile = shell_profile_path()?;
+    let existing = fs::read_to_string(&profile).unwrap_or_default();
+    if existing.contains(PATH_BLOCK_START) {
+        // Already configured, perhaps for a different bin directory. Do not
+        // stack another block; new shells will read the existing one.
+        return Ok(false);
+    }
+
+    if let Some(parent) = profile.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+
+    let dir = shell_single_quote(&dir.display().to_string());
+    let block = if is_fish_shell() {
+        format!(
+            "{PATH_BLOCK_START}\n\
+             # Added by the Englishmen installer.\n\
+             fish_add_path -g {dir}\n\
+             {PATH_BLOCK_END}\n"
+        )
+    } else {
+        format!(
+            "{PATH_BLOCK_START}\n\
+             # Added by the Englishmen installer.\n\
+             ENGLISHMEN_BIN={dir}\n\
+             case \":$PATH:\" in\n\
+                 *\":$ENGLISHMEN_BIN:\"*) ;;\n\
+                 *) export PATH=\"$ENGLISHMEN_BIN:$PATH\" ;;\n\
+             esac\n\
+             unset ENGLISHMEN_BIN\n\
+             {PATH_BLOCK_END}\n"
+        )
+    };
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile)?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file)?;
+    }
+    if !existing.is_empty() {
+        writeln!(file)?;
+    }
+    file.write_all(block.as_bytes())?;
+    Ok(true)
 }
 
 #[cfg(not(windows))]
-pub fn path_contains(_dir: &std::path::Path) -> io::Result<bool> {
-    Ok(std::env::var("PATH")
-        .map(|p| p.contains(&_dir.display().to_string()))
-        .unwrap_or(false))
+fn shell_profile_path() -> io::Result<PathBuf> {
+    if let Ok(path) = std::env::var("EM_SHELL_PROFILE") {
+        return Ok(PathBuf::from(path));
+    }
+
+    let home = dirs::home_dir().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine your home directory",
+        )
+    })?;
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let shell = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+
+    Ok(match shell {
+        "zsh" => home.join(".zshrc"),
+        "bash" => home.join(".bashrc"),
+        "fish" => home.join(".config").join("fish").join("config.fish"),
+        _ => home.join(".profile"),
+    })
+}
+
+#[cfg(not(windows))]
+fn is_fish_shell() -> bool {
+    std::env::var("SHELL")
+        .ok()
+        .and_then(|shell| {
+            Path::new(&shell)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name == "fish")
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(not(windows))]
+pub fn path_contains(dir: &Path) -> io::Result<bool> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    Ok(std::env::split_paths(&current).any(|entry| entry == dir))
+}
+
+/// Whether `dir` is on the current PATH or already configured in the shell
+/// profile for new shells. The latter matters right after an install: the
+/// running shell cannot pick up the profile change until it is restarted.
+#[cfg(not(windows))]
+pub fn path_is_configured(dir: &Path) -> io::Result<bool> {
+    if path_contains(dir)? {
+        return Ok(true);
+    }
+    let profile = shell_profile_path()?;
+    let text = fs::read_to_string(profile).unwrap_or_default();
+    Ok(text.contains(PATH_BLOCK_START) && text.contains(&dir.display().to_string()))
+}
+
+#[cfg(windows)]
+pub fn path_is_configured(dir: &std::path::Path) -> io::Result<bool> {
+    path_contains(dir)
 }
 
 #[cfg(test)]

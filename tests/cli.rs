@@ -98,6 +98,82 @@ fn version_flag_prints_version() {
     assert!(stdout.contains("Englishmen"));
 }
 
+/// `em install --yes` is what install.sh calls. It must work without a
+/// terminal, copy the runtime into EM_HOME, create the ~/.local/bin launcher,
+/// and add a single guarded PATH block to the shell profile.
+#[cfg(unix)]
+#[test]
+fn install_yes_sets_up_a_working_unix_install() {
+    let dir = scratch("install_yes");
+    let install_home = dir.join("runtime");
+    let link_dir = dir.join("bin");
+    let home = dir.join("home");
+    let profile = home.join(".bashrc");
+    std::fs::create_dir_all(&home).unwrap();
+
+    let install_env = |command: &mut Command| {
+        command
+            .env("EM_HOME", &install_home)
+            .env("EM_BIN_DIR", &link_dir)
+            .env("EM_SHELL_PROFILE", &profile)
+            .env("EM_PROJECTS_DIR", dir.join("projects_unused"))
+            .env("HOME", &home)
+            .env("SHELL", "/bin/bash")
+            .stdin(Stdio::null());
+    };
+
+    let mut install = Command::new(bin());
+    install.args(["install", "--yes", "--no-projects"]);
+    install_env(&mut install);
+    let output = install.output().expect("failed to run em install");
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let installed_exe = install_home.join("bin").join("em");
+    assert!(installed_exe.exists(), "runtime was not copied");
+
+    let link = link_dir.join("em");
+    let link_meta = std::fs::symlink_metadata(&link).expect("launcher symlink missing");
+    assert!(link_meta.file_type().is_symlink(), "{link:?} is not a symlink");
+    assert_eq!(std::fs::read_link(&link).unwrap(), installed_exe);
+
+    let profile_text = std::fs::read_to_string(&profile).unwrap();
+    assert!(profile_text.contains("# >>> Englishmen PATH >>>"));
+    assert!(profile_text.contains(&link_dir.display().to_string()));
+
+    let config = std::fs::read_to_string(install_home.join("config/englishmen.emc")).unwrap();
+    assert!(config.contains("projects_enabled = \"false\""));
+
+    // The launcher itself has to work, not just exist.
+    let version = Command::new(&link)
+        .arg("--version")
+        .env("EM_HOME", &install_home)
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run the installed em");
+    assert!(version.status.success());
+    assert!(String::from_utf8_lossy(&version.stdout).contains("Englishmen"));
+
+    // Re-running is an upgrade/health check, not a second PATH block.
+    let mut again = Command::new(bin());
+    again.args(["install", "--yes", "--no-projects"]);
+    install_env(&mut again);
+    let output = again.output().expect("failed to re-run em install");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile_text = std::fs::read_to_string(&profile).unwrap();
+    assert_eq!(profile_text.matches("# >>> Englishmen PATH >>>").count(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn new_creates_a_project_with_emc_and_main() {
     let dir = std::env::temp_dir().join(format!("em_cli_test_new_{}", std::process::id()));

@@ -27,7 +27,7 @@ pub fn run() -> ExitCode {
 
     if args.is_empty() {
         if !installer::is_installed() {
-            return cmd_install();
+            return cmd_install(&[]);
         }
         repl::run_repl();
         return ExitCode::SUCCESS;
@@ -44,7 +44,7 @@ pub fn run() -> ExitCode {
         }
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "repair" => cmd_repair(),
-        "install" => cmd_install(),
+        "install" => cmd_install(&args[1..]),
         "build" => cmd_build(&args[1..]),
         "run" => match args.get(1) {
             Some(file) => finish(cmd_run_path(file, &args[2..])),
@@ -75,10 +75,15 @@ Usage:
     em run <file>             Same as the two above
     em build [file.em]        Compile to bytecode (defaults to the project main)
     em new [name]             Create a new project
+    em install [options]      Install or upgrade Englishmen
     em repair                 Check and repair the installation
     em                        Start the REPL
     em --help
     em --version
+
+Install options:
+    -y, --yes                 Accept defaults without prompting
+    --no-projects             Do not create a projects folder
 
 Run options:
     --interpret               Use the tree-walking interpreter instead of the
@@ -419,9 +424,40 @@ fn cmd_repair() -> ExitCode {
     }
 }
 
-fn cmd_install() -> ExitCode {
-    let create_projects = confirm_projects_dir();
-    match installer::run_installer(create_projects) {
+/// `em install [-y|--yes] [--no-projects]`
+///
+/// The flags exist so install scripts can run the installer without a terminal.
+/// Without `--yes`, the projects-folder question is still asked interactively.
+fn cmd_install(args: &[String]) -> ExitCode {
+    let mut assume_yes = false;
+    let mut create_projects: Option<bool> = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "-y" | "--yes" => assume_yes = true,
+            "--no-projects" => create_projects = Some(false),
+            "--projects" => create_projects = Some(true),
+            "--help" | "-h" => {
+                print_help();
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("Error: Unknown install option '{other}'\n");
+                print_help();
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let create_projects = create_projects.unwrap_or_else(|| {
+        if assume_yes {
+            true
+        } else {
+            confirm_projects_dir()
+        }
+    });
+
+    match installer::run_installer(create_projects, !assume_yes) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("Error: Installation failed: {e}");
