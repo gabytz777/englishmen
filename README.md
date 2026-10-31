@@ -264,6 +264,22 @@ deletes existing project files.
 em repair
 ```
 
+## `em uninstall`
+
+Removes Englishmen from the machine: the runtime, configuration, optional
+tools, the `em` launcher, and the guarded `PATH` block in your shell profile.
+Your projects folder is kept unless you ask otherwise.
+
+```bash
+em uninstall          # asks first
+em uninstall --yes    # no questions, keeps projects
+em uninstall --purge  # also delete the projects folder
+```
+
+`em uninstall` never removes a launcher or profile entry it does not recognise
+as its own, and an interactive uninstall asks separately before deleting
+projects.
+
 ## REPL
 
 Running `em` with no arguments (once installed) launches an interactive

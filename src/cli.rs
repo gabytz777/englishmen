@@ -44,6 +44,7 @@ pub fn run() -> ExitCode {
             ExitCode::SUCCESS
         }
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
+        "uninstall" => cmd_uninstall(&args[1..]),
         "repair" => cmd_repair(),
         "install" => cmd_install(&args[1..]),
         "build" => cmd_build(&args[1..]),
@@ -77,6 +78,7 @@ Usage:
     em build [file.em]        Compile to bytecode (defaults to the project main)
     em new [name]             Create a new project
     em install [options]      Install or upgrade Englishmen
+    em uninstall [options]    Remove Englishmen from this machine
     em repair                 Check and repair the installation
     em                        Start the REPL
     em --help
@@ -87,6 +89,11 @@ Install options:
     --no-projects             Do not create a projects folder
     --optional                Install optional packages (appimagetool, ~15 MB)
     --no-optional             Skip optional packages
+
+Uninstall options:
+    -y, --yes                 Remove without asking for confirmation
+    --purge                   Also delete the projects folder
+                              (projects are kept by default)
 
 Run options:
     --interpret               Use the tree-walking interpreter instead of the
@@ -462,6 +469,37 @@ fn front_end(source: &str, filename: &str) -> Result<Vec<Stmt>, ()> {
     let report = |e: EmError| eprintln!("{}", e.render(filename, source));
     let tokens = tokenize(source).map_err(report)?;
     parse(tokens).map_err(report)
+}
+
+/// `em uninstall [-y|--yes] [--purge]`
+fn cmd_uninstall(args: &[String]) -> ExitCode {
+    let mut assume_yes = false;
+    let mut purge = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "-y" | "--yes" => assume_yes = true,
+            "--purge" => purge = true,
+            "--keep-projects" => purge = false,
+            "--help" | "-h" => {
+                print_help();
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("Error: Unknown uninstall option '{other}'\n");
+                print_help();
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    match installer::run_uninstall(assume_yes, purge) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: Uninstall failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_repair() -> ExitCode {

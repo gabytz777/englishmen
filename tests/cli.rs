@@ -87,6 +87,7 @@ fn help_flag_lists_usage() {
     assert!(stdout.contains("Usage"));
     assert!(stdout.contains("em new"));
     assert!(stdout.contains("em repair"));
+    assert!(stdout.contains("em uninstall"));
     assert!(stdout.contains("em build"));
     assert!(stdout.contains("--optional"));
     assert!(stdout.contains("appimagetool"));
@@ -280,6 +281,127 @@ fn install_optional_downloads_the_tool_into_the_install_directory() {
         "{}",
         String::from_utf8_lossy(&repair.stdout)
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Environment for tests that install into a scratch directory.
+#[cfg(unix)]
+fn apply_install_env(command: &mut Command, dir: &Path) {
+    command
+        .env("EM_HOME", dir.join("runtime"))
+        .env("EM_BIN_DIR", dir.join("bin"))
+        .env("EM_SHELL_PROFILE", dir.join("home/.profile"))
+        .env("EM_PROJECTS_DIR", dir.join("projects"))
+        .env("HOME", dir.join("home"))
+        .env("SHELL", "/bin/sh")
+        .stdin(Stdio::null());
+}
+
+#[cfg(unix)]
+fn run_install(dir: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    let mut command = Command::new(bin());
+    command.args(["install", "--yes"]);
+    command.args(extra);
+    apply_install_env(&mut command, dir);
+    command.output().expect("failed to run em install")
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_removes_runtime_launcher_and_path_block() {
+    let dir = scratch("uninstall");
+    let profile = dir.join("home/.profile");
+    let link = dir.join("bin/em");
+
+    let install = run_install(&dir, &["--no-projects"]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(dir.join("runtime/bin/em").exists());
+    assert!(std::fs::symlink_metadata(&link).is_ok());
+    assert!(std::fs::read_to_string(&profile)
+        .unwrap()
+        .contains("Englishmen PATH"));
+
+    // Uninstall must keep unrelated profile content.
+    let mut text = std::fs::read_to_string(&profile).unwrap();
+    text.push_str("\nexport USER_SETTING=1\n");
+    std::fs::write(&profile, text).unwrap();
+
+    let mut command = Command::new(bin());
+    command.args(["uninstall", "--yes"]);
+    apply_install_env(&mut command, &dir);
+    let output = command.output().expect("failed to run em uninstall");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("uninstalled"), "{stdout}");
+
+    assert!(!dir.join("runtime").exists(), "install directory was left behind");
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "launcher was left behind"
+    );
+    let profile_text = std::fs::read_to_string(&profile).unwrap();
+    assert!(!profile_text.contains("Englishmen PATH"), "{profile_text}");
+    assert!(profile_text.contains("export USER_SETTING=1"), "{profile_text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_without_yes_cancels_when_not_confirmed() {
+    let dir = scratch("uninstall_cancel");
+
+    let install = run_install(&dir, &["--no-projects"]);
+    assert!(install.status.success());
+
+    let mut command = Command::new(bin());
+    command.arg("uninstall");
+    apply_install_env(&mut command, &dir);
+    let output = command.output().expect("failed to run em uninstall");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Uninstall cancelled."));
+    assert!(dir.join("runtime/bin/em").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_purge_deletes_the_projects_folder() {
+    let dir = scratch("uninstall_purge");
+    let projects = dir.join("projects");
+
+    // No --no-projects here, so the installer creates the projects folder.
+    let install = run_install(&dir, &[]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(projects.exists());
+    std::fs::write(projects.join("hello.em"), "say(\"hi\")\n").unwrap();
+
+    let mut command = Command::new(bin());
+    command.args(["uninstall", "--yes", "--purge"]);
+    apply_install_env(&mut command, &dir);
+    let output = command.output().expect("failed to run em uninstall");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!projects.exists(), "projects folder was not purged");
+    assert!(!dir.join("runtime").exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

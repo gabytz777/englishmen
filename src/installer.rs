@@ -2,7 +2,6 @@ use crate::config::EmConfig;
 use crate::modules;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
-#[cfg(not(windows))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -752,6 +751,275 @@ pub fn run_repair(interactive: bool) -> io::Result<()> {
     Ok(())
 }
 
+/// Remove Englishmen from this machine.
+///
+/// Projects are kept unless `purge` is true. The running binary may be inside
+/// the directory being removed; that is fine on Unix, and on Windows locked
+/// files are reported instead of aborting the rest of the cleanup.
+pub fn run_uninstall(assume_yes: bool, purge: bool) -> io::Result<()> {
+    println!("Englishmen Uninstall\n");
+
+    let dir = install_dir();
+    let launcher = path_entry_dir().join(installed_exe_name());
+    let launcher_is_separate = launcher != installed_exe_path();
+    let launcher_owned = launcher_is_separate && launcher.exists() && launcher_is_ours(&launcher);
+
+    let profile = uninstall_profile_path();
+    let has_block = profile
+        .as_ref()
+        .map(|path| {
+            fs::read_to_string(path)
+                .map(|text| text.contains(PATH_BLOCK_START))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    let config = EmConfig::load(&config_file()).unwrap_or_default();
+    let projects_dir = config
+        .sections
+        .get("installer")
+        .and_then(|section| section.get("projects_dir"))
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_projects_dir);
+    let projects_exist = projects_dir.exists();
+
+    if !dir.exists() && !launcher_owned && !has_block {
+        println!("Englishmen does not appear to be installed on this machine.");
+        return Ok(());
+    }
+
+    println!("This will remove:");
+    if dir.exists() {
+        println!("  - Runtime, configuration, and tools: {}", dir.display());
+    }
+    if launcher_owned {
+        println!("  - The 'em' launcher: {}", launcher.display());
+    }
+    if let Some(path) = &profile {
+        if has_block {
+            println!("  - The Englishmen PATH entry in: {}", path.display());
+        }
+    }
+    if projects_exist {
+        if purge {
+            println!("  - Your projects folder: {}", projects_dir.display());
+        } else {
+            println!(
+                "  - (Your projects folder is kept: {})",
+                projects_dir.display()
+            );
+        }
+    }
+    #[cfg(windows)]
+    println!("  - The Englishmen entry in your user PATH");
+    println!();
+
+    if !assume_yes && !confirm_default_no("Remove Englishmen?") {
+        println!("Uninstall cancelled.");
+        return Ok(());
+    }
+
+    // Deleting projects is destructive and off by default, so ask separately.
+    let remove_projects = projects_exist
+        && (purge
+            || (!assume_yes
+                && confirm_default_no(&format!(
+                    "Also delete your projects folder at '{}'?",
+                    projects_dir.display()
+                ))));
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    if let Some(path) = &profile {
+        if has_block {
+            match strip_profile_block(path) {
+                Ok(true) => println!("[OK] Removed PATH entry from {}", path.display()),
+                Ok(false) => {}
+                Err(e) => warnings.push(format!("Could not update '{}': {e}", path.display())),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    match remove_user_path_entry(&bin_dir()) {
+        Ok(true) => println!("[OK] Removed the Englishmen PATH entry"),
+        Ok(false) => {}
+        Err(e) => warnings.push(format!("Could not update the user PATH: {e}")),
+    }
+
+    if launcher_owned {
+        match fs::remove_file(&launcher) {
+            Ok(()) => println!("[OK] Removed launcher {}", launcher.display()),
+            Err(e) => warnings.push(format!("Could not remove '{}': {e}", launcher.display())),
+        }
+    }
+
+    // Remove known contents first so an unrelated file under a custom EM_HOME
+    // is never deleted. `bin` goes last because it holds the running binary.
+    for (name, label) in [
+        ("tools", "optional tools"),
+        ("config", "configuration"),
+        ("bin", "runtime"),
+    ] {
+        let path = dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+        match fs::remove_dir_all(&path) {
+            Ok(()) => println!("[OK] Removed {label} ({})", path.display()),
+            Err(e) => warnings.push(format!(
+                "Could not remove '{}': {e}\n      Close any running Englishmen programs and delete it manually.",
+                path.display()
+            )),
+        }
+    }
+
+    if dir.exists() {
+        match fs::remove_dir(&dir) {
+            Ok(()) => {}
+            Err(_) if warnings.is_empty() => {
+                println!("[--] Kept {} because it contains other files", dir.display());
+            }
+            Err(_) => {}
+        }
+    }
+
+    if remove_projects {
+        if projects_dir.exists() {
+            match remove_projects_dir(&projects_dir) {
+                Ok(()) => println!("[OK] Removed projects folder {}", projects_dir.display()),
+                Err(e) => warnings.push(format!(
+                    "Could not remove projects folder '{}': {e}",
+                    projects_dir.display()
+                )),
+            }
+        }
+    } else if projects_exist {
+        println!("[--] Kept your projects folder at {}", projects_dir.display());
+    }
+
+    println!();
+    if warnings.is_empty() {
+        println!("Englishmen has been uninstalled.");
+    } else {
+        println!("Englishmen was mostly uninstalled:");
+        for warning in &warnings {
+            println!("[WARN] {warning}");
+        }
+    }
+    #[cfg(not(windows))]
+    println!("Open a new terminal so the PATH change takes effect.");
+    println!();
+    Ok(())
+}
+
+fn installed_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "em.exe"
+    } else {
+        "em"
+    }
+}
+
+/// Only remove a launcher that points into the Englishmen install directory, or
+/// an old copied runtime whose bytes match the installed one. Anything else may
+/// belong to the user.
+fn launcher_is_ours(launcher: &Path) -> bool {
+    if let Ok(target) = fs::read_link(launcher) {
+        return target.starts_with(install_dir());
+    }
+    match (fs::read(launcher), fs::read(installed_exe_path())) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn remove_projects_dir(path: &Path) -> io::Result<()> {
+    // Never delete a home directory, a filesystem root, or something shallow.
+    let forbidden = [
+        dirs::home_dir(),
+        dirs::document_dir(),
+        Some(PathBuf::from("/")),
+        Some(PathBuf::from("C:\\")),
+    ];
+    if forbidden.iter().flatten().any(|bad| bad == path) || path.components().count() < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to delete a path that is too broad",
+        ));
+    }
+    fs::remove_dir_all(path)
+}
+
+#[cfg(not(windows))]
+fn uninstall_profile_path() -> Option<PathBuf> {
+    shell_profile_path().ok()
+}
+
+#[cfg(windows)]
+fn uninstall_profile_path() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(windows))]
+fn strip_profile_block(path: &Path) -> io::Result<bool> {
+    let existing = fs::read_to_string(path)?;
+    let (updated, changed) = strip_path_block(&existing);
+    if changed {
+        fs::write(path, updated)?;
+    }
+    Ok(changed)
+}
+
+/// Remove the guarded PATH block from a profile body, leaving everything else
+/// untouched. Returns the new text and whether the block was present.
+#[cfg(not(windows))]
+fn strip_path_block(text: &str) -> (String, bool) {
+    let Some(start) = text.find(PATH_BLOCK_START) else {
+        return (text.to_string(), false);
+    };
+    let Some(relative_end) = text[start..].find(PATH_BLOCK_END) else {
+        return (text.to_string(), false);
+    };
+    let end = start + relative_end + PATH_BLOCK_END.len();
+
+    let mut before = text[..start].to_string();
+    let mut after = text[end..].to_string();
+    if after.starts_with('\n') {
+        after.remove(0);
+    }
+    // The installer separates the block from earlier content with a blank line.
+    if before.ends_with("\n\n") && (after.is_empty() || after.starts_with('\n')) {
+        before.pop();
+    }
+    (before + &after, true)
+}
+
+#[cfg(windows)]
+fn remove_user_path_entry(dir: &Path) -> io::Result<bool> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (env_key, _) = hkcu.create_subkey("Environment")?;
+    let current: String = env_key.get_value("Path").unwrap_or_default();
+    let target = dir.display().to_string().to_lowercase();
+    let parts: Vec<&str> = current
+        .split(';')
+        .filter(|part| {
+            !part.trim().is_empty() && part.trim().to_lowercase() != target
+        })
+        .collect();
+    let updated = parts.join(";");
+    if updated == current {
+        return Ok(false);
+    }
+    env_key.set_value("Path", &updated)?;
+    broadcast_environment_change();
+    Ok(true)
+}
+
 fn module_display_name(name: &str) -> String {
     if name.eq_ignore_ascii_case("html") {
         "HTML".to_string()
@@ -876,9 +1144,7 @@ pub fn path_contains(dir: &std::path::Path) -> io::Result<bool> {
     Ok(path_var_contains(&current, dir))
 }
 
-#[cfg(not(windows))]
 const PATH_BLOCK_START: &str = "# >>> Englishmen PATH >>>";
-#[cfg(not(windows))]
 const PATH_BLOCK_END: &str = "# <<< Englishmen PATH <<<";
 
 /// Add `em` to the user's PATH without requiring admin rights.
@@ -1149,6 +1415,31 @@ mod tests {
     fn human_size_switches_units_at_a_tenth_of_a_megabyte() {
         assert_eq!(human_size(512), "512 bytes");
         assert_eq!(human_size(15 * 1024 * 1024), "15.0 MB");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn strip_path_block_removes_only_the_guarded_section() {
+        let text = "export FOO=1\n\n\
+# >>> Englishmen PATH >>>\n\
+# Added by the Englishmen installer.\n\
+export PATH=\"$HOME/.local/bin:$PATH\"\n\
+# <<< Englishmen PATH <<<\n\
+export BAR=2\n";
+        let (updated, changed) = strip_path_block(text);
+        assert!(changed);
+        assert!(updated.contains("export FOO=1"));
+        assert!(updated.contains("export BAR=2"));
+        assert!(!updated.contains("Englishmen PATH"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn strip_path_block_leaves_profiles_without_a_block_alone() {
+        let text = "export FOO=1\n";
+        let (updated, changed) = strip_path_block(text);
+        assert!(!changed);
+        assert_eq!(updated, text);
     }
 
     #[test]
