@@ -972,6 +972,12 @@ fn strip_profile_block(path: &Path) -> io::Result<bool> {
     Ok(changed)
 }
 
+/// Windows configures PATH through the registry, not a shell profile.
+#[cfg(windows)]
+fn strip_profile_block(_path: &Path) -> io::Result<bool> {
+    Ok(false)
+}
+
 /// Remove the guarded PATH block from a profile body, leaving everything else
 /// untouched. Returns the new text and whether the block was present.
 #[cfg(not(windows))]
