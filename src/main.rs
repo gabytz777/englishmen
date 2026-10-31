@@ -1,3 +1,4 @@
+mod appimage;
 mod ast;
 mod bundle;
 mod bytecode;

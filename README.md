@@ -27,7 +27,8 @@ grammar, not an AI sentence parser.
 parsed into an AST, compiled to bytecode, and executed by a virtual machine —
 all in Rust. `em build` saves that bytecode as a `.emb` file you can run
 directly, and `em build --exe` bundles it with the runtime into a single
-executable that needs nothing installed. There is no *native* machine-code
+executable that needs nothing installed. On Linux, add `--appimage` to package
+that executable as a portable AppImage. There is no *native* machine-code
 compiler; the original tree-walking interpreter is still available behind
 `--interpret`. See [Compiler](#compiler) for exactly what is and is not
 there.
@@ -159,6 +160,34 @@ What that means in practice:
   a hello-world and a large program are nearly the same size.
 - **It is not cross-platform.** Building on Windows produces a Windows
   executable, since it is a copy of the Windows `em`.
+
+### Linux AppImages
+
+On Linux, `--appimage` packages the standalone build as a portable
+[AppImage](https://appimage.org/):
+
+```bash
+em build hello.em --exe --appimage
+```
+
+```text
+Compiled hello.em -> hello-x86_64.AppImage (4 instructions, 1518072 bytes, portable Linux AppImage)
+```
+
+The result runs on x86-64 (or aarch64) Linux without Englishmen installed and
+includes a desktop entry and icon for launchers. `--appimage` implies `--exe`;
+pass `-o <file>` to choose the output name.
+
+Packaging uses the official
+[`appimagetool`](https://github.com/AppImage/appimagetool/releases). If it is
+not on your `PATH`, point `APPIMAGETOOL` at it:
+
+```bash
+APPIMAGETOOL=/path/to/appimagetool em build hello.em --exe --appimage
+```
+
+The build runs `appimagetool` with `APPIMAGE_EXTRACT_AND_RUN=1`, so FUSE is not
+required on the build machine. AppImages are only produced on Linux.
 
 ## The `.emb` format
 
@@ -471,6 +500,7 @@ machines that have the same `em` version.
 | `em build hello.em -o out.emb` | Choose the output path |
 | `em build hello.em --run` | Compile, save, then run |
 | `em build hello.em --exe` | Build a standalone executable (see [Standalone executables](#standalone-executables)) |
+| `em build hello.em --exe --appimage` | Package a Linux AppImage (see [Linux AppImages](#linux-appimages)) |
 | `em build hello.em --emit asm` | Print the disassembly, write nothing |
 | `em build` | Compile the `main` of the `englishmen.emc` in this directory |
 

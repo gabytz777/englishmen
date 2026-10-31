@@ -1,3 +1,4 @@
+use crate::appimage;
 use crate::ast::Stmt;
 use crate::bundle;
 use crate::bytecode::{self, Chunk};
@@ -93,6 +94,8 @@ Build options:
     -o, --out <file>          Where to write the compiled program
     --exe                     Build a standalone executable that runs without
                               Englishmen installed
+    --appimage                Package the build as a portable Linux AppImage
+                              (implies --exe; requires appimagetool)
     --emit asm                Print the disassembly instead of writing a file
     --run                     Run the program after compiling it
 "#
@@ -219,12 +222,13 @@ fn cmd_run_bytecode(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `em build [file.em] [-o out] [--emit asm] [--exe] [--run]`
+/// `em build [file.em] [-o out] [--emit asm] [--exe] [--appimage] [--run]`
 fn cmd_build(args: &[String]) -> ExitCode {
     let mut file: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut emit_asm = false;
     let mut standalone = false;
+    let mut appimage = false;
     let mut run_after = false;
 
     let mut i = 0;
@@ -261,6 +265,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 standalone = true;
                 i += 1;
             }
+            "--appimage" => {
+                appimage = true;
+                i += 1;
+            }
             "--run" => {
                 run_after = true;
                 i += 1;
@@ -279,6 +287,19 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 i += 1;
             }
         }
+    }
+
+    if appimage {
+        if !cfg!(target_os = "linux") {
+            eprintln!("Error: '--appimage' builds Linux AppImages and is only available on Linux");
+            return ExitCode::FAILURE;
+        }
+        if emit_asm {
+            eprintln!("Error: '--appimage' cannot be combined with '--emit asm'");
+            return ExitCode::FAILURE;
+        }
+        // An AppImage wraps the standalone binary, so ask for one.
+        standalone = true;
     }
 
     let source_path = match file {
@@ -318,14 +339,41 @@ fn cmd_build(args: &[String]) -> ExitCode {
 
     let instructions = count_instructions(&chunk);
     let out_path = out.unwrap_or_else(|| {
-        if standalone {
+        if appimage {
+            appimage::default_output_path(&source_path)
+        } else if standalone {
             bundle::default_output_path(&source_path)
         } else {
             source_path.with_extension("emb")
         }
     });
 
-    if standalone {
+    if appimage {
+        if out_path == source_path {
+            eprintln!(
+                "Error: The AppImage build would overwrite '{}'",
+                source_path.display()
+            );
+            eprintln!("Pass '-o <name>.AppImage' to choose a different output file.");
+            return ExitCode::FAILURE;
+        }
+        let stem = source_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "program".to_string());
+        let size = match appimage::create(&chunk, &stem, &out_path) {
+            Ok(size) => size,
+            Err(e) => {
+                eprintln!("{}", e.render(&filename, &source));
+                return ExitCode::FAILURE;
+            }
+        };
+        println!(
+            "Compiled {} -> {} ({instructions} instructions, {size} bytes, portable Linux AppImage)",
+            source_path.display(),
+            out_path.display(),
+        );
+    } else if standalone {
         // Refuse to write over the source: `em build --exe main` with a
         // missing extension would otherwise destroy the program.
         if out_path == source_path {

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn bin() -> PathBuf {
@@ -420,6 +420,101 @@ fn build_exe_produces_a_program_that_runs_on_its_own() {
         .stdin(Stdio::null())
         .output()
         .expect("failed to run the standalone program");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("total is 12"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_appimage_reports_a_missing_tool() {
+    let dir = scratch("build_appimage_missing");
+    let source = dir.join("prog.em");
+    std::fs::write(&source, SAMPLE).unwrap();
+
+    let output = Command::new(bin())
+        .args(["build", source.to_str().unwrap(), "--exe", "--appimage"])
+        .envs(isolated_env())
+        .env("PATH", "")
+        .env_remove("APPIMAGETOOL")
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run em build");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("appimagetool"), "{stderr}");
+    assert!(stderr.contains("APPIMAGETOOL"), "{stderr}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_appimage_refuses_to_combine_with_emit_asm() {
+    let dir = scratch("build_appimage_asm");
+    let source = dir.join("prog.em");
+    std::fs::write(&source, SAMPLE).unwrap();
+
+    let output = run(&[
+        "build",
+        source.to_str().unwrap(),
+        "--appimage",
+        "--emit",
+        "asm",
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--emit asm"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// End-to-end AppImage packaging only runs when a tool is provided, since
+/// `appimagetool` is not part of a normal `em` install.
+#[cfg(target_os = "linux")]
+#[test]
+fn build_appimage_packages_a_runnable_program() {
+    let Some(tool) = std::env::var_os("APPIMAGETOOL").filter(|p| Path::new(p).exists()) else {
+        return;
+    };
+
+    let dir = scratch("build_appimage");
+    let source = dir.join("prog.em");
+    std::fs::write(&source, SAMPLE).unwrap();
+    let appimage = dir.join("prog.AppImage");
+
+    let build = Command::new(bin())
+        .args([
+            "build",
+            source.to_str().unwrap(),
+            "--exe",
+            "--appimage",
+            "-o",
+            appimage.to_str().unwrap(),
+        ])
+        .envs(isolated_env())
+        .env("APPIMAGETOOL", &tool)
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run em build");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(String::from_utf8_lossy(&build.stdout).contains("portable Linux AppImage"));
+    assert!(appimage.exists());
+
+    let output = Command::new(&appimage)
+        .envs(isolated_env())
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run the AppImage");
     assert!(
         output.status.success(),
         "{}",
