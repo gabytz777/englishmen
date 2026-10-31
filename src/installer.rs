@@ -174,19 +174,12 @@ pub fn offer_optional_packages(choice: Option<bool>, interactive: bool) -> io::R
             confirm_default_no("Install optional packages?")
         }
         None => {
-            let names = packages
-                .iter()
-                .map(|package| format!("{} ({})", package.name, package.size))
-                .collect::<Vec<_>>()
-                .join(", ");
-            println!("Skipped optional packages: {names}.");
-            println!("Run 'em install --optional' to add them later.\n");
+            // Scripted installs never download extras unless asked.
             return Ok(());
         }
     };
 
     if !install {
-        println!("Skipped optional packages. Run 'em install --optional' to add them later.\n");
         return Ok(());
     }
 
@@ -379,27 +372,11 @@ pub fn run_installer(
     offer_optional_packages(optional, interactive)?;
 
     println!();
-    println!("Englishmen has been installed successfully!\n");
-    println!("Here's what just happened:");
-    println!("  - The runtime (compiler, VM, and standard library) was copied to:");
-    println!("        {}", install_dir().display());
-    #[cfg(windows)]
-    println!("  - That folder's \"bin\" directory was added to your user PATH.");
-    #[cfg(not(windows))]
-    {
-        println!("  - The 'em' command was linked into:");
-        println!("        {}", path_dir.display());
-        println!("  - That folder was added to your PATH (in your shell profile).");
-    }
+    println!("Installed at {}", install_dir().display());
     if create_projects_dir {
-        println!(
-            "  - A projects folder was created at:\n        {}",
-            projects_dir.display()
-        );
+        println!("Projects: {}", projects_dir.display());
     }
-    println!();
-    println!("Open a NEW terminal and run:\n");
-    println!("    em --version\n");
+    println!("Open a new terminal and run: em --version\n");
 
     if interactive && io::stdin().is_terminal() {
         offer_vscode_setup();

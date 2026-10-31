@@ -198,6 +198,18 @@ if [ -z "$em_bin" ]; then
     [ -x "$em_bin" ] || die "the build did not produce target/release/em"
 fi
 
+# Ask about optional packages when a real terminal is available and the user
+# did not already pass --optional. curl|sh redirects stdin, so use /dev/tty.
+# Only Linux has optional packages today (appimagetool).
+if [ "$OPTIONAL" -eq 0 ] && [ "$os" = "linux" ] && [ -c /dev/tty ]; then
+    printf 'Install optional packages (appimagetool, ~15 MB)? [y/N] ' >/dev/tty
+    # shellcheck disable=SC2162
+    read answer </dev/tty || answer=
+    case "$answer" in
+        y|Y|yes|YES) OPTIONAL=1 ;;
+    esac
+fi
+
 say "Installing..."
 set -- install --yes
 if [ "$NO_PROJECTS" -eq 1 ]; then
@@ -205,17 +217,9 @@ if [ "$NO_PROJECTS" -eq 1 ]; then
 fi
 if [ "$OPTIONAL" -eq 1 ]; then
     set -- "$@" --optional
+else
+    set -- "$@" --no-optional
 fi
 # Redirect stdin so even an older em release (before --yes existed) falls back
 # to the default answer instead of waiting for input.
 "$em_bin" "$@" </dev/null
-
-say ""
-say "Englishmen is installed."
-say ""
-say "Open a new terminal and run:"
-say "    em --version"
-say ""
-say "Then try:"
-say "    em new MyProject"
-say "    em MyProject/main.em"

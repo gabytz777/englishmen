@@ -207,9 +207,8 @@ fn install_yes_skips_optional_packages_by_default() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Skipped optional packages"), "{stdout}");
-    assert!(stdout.contains("appimagetool"), "{stdout}");
-    assert!(stdout.contains("--optional"), "{stdout}");
+    assert!(stdout.contains("Installed at"), "{stdout}");
+    assert!(!stdout.contains("appimagetool"), "{stdout}");
     assert!(!runtime.join("tools/appimagetool").exists());
 
     let _ = std::fs::remove_dir_all(&dir);
