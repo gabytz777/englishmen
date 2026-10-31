@@ -131,10 +131,16 @@ fn workspace() -> Result<Workspace, EmError> {
 }
 
 fn tool() -> PathBuf {
-    match std::env::var_os(TOOL_ENV) {
-        Some(path) if Path::new(&path).exists() => PathBuf::from(path),
-        _ => PathBuf::from("appimagetool"),
+    if let Some(path) = std::env::var_os(TOOL_ENV) {
+        if Path::new(&path).exists() {
+            return PathBuf::from(path);
+        }
     }
+    // `em install --optional` places appimagetool under the install directory.
+    if let Some(path) = crate::installer::optional_tool("appimagetool") {
+        return path;
+    }
+    PathBuf::from("appimagetool")
 }
 
 fn missing_tool(e: &std::io::Error) -> EmError {

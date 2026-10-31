@@ -88,6 +88,8 @@ fn help_flag_lists_usage() {
     assert!(stdout.contains("em new"));
     assert!(stdout.contains("em repair"));
     assert!(stdout.contains("em build"));
+    assert!(stdout.contains("--optional"));
+    assert!(stdout.contains("appimagetool"));
 }
 
 #[test]
@@ -170,6 +172,114 @@ fn install_yes_sets_up_a_working_unix_install() {
     );
     let profile_text = std::fs::read_to_string(&profile).unwrap();
     assert_eq!(profile_text.matches("# >>> Englishmen PATH >>>").count(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Optional packages are opt-in for scripted installs so `install.sh` never
+/// pulls an extra ~15 MB without being asked.
+#[cfg(unix)]
+#[test]
+fn install_yes_skips_optional_packages_by_default() {
+    let dir = scratch("install_skip_optional");
+    let runtime = dir.join("runtime");
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+
+    let output = Command::new(bin())
+        .args(["install", "--yes", "--no-projects"])
+        .env("EM_HOME", &runtime)
+        .env("EM_BIN_DIR", dir.join("bin"))
+        .env("EM_SHELL_PROFILE", home.join(".profile"))
+        .env("EM_PROJECTS_DIR", dir.join("projects_unused"))
+        .env("HOME", &home)
+        .env("SHELL", "/bin/sh")
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run em install");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Skipped optional packages"), "{stdout}");
+    assert!(stdout.contains("appimagetool"), "{stdout}");
+    assert!(stdout.contains("--optional"), "{stdout}");
+    assert!(!runtime.join("tools/appimagetool").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--optional` downloads the tool into the install directory and repair then
+/// reports it. A file:// URL keeps the test off the network.
+#[cfg(target_os = "linux")]
+#[test]
+fn install_optional_downloads_the_tool_into_the_install_directory() {
+    let have_curl = Command::new("curl")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !have_curl {
+        return;
+    }
+
+    let dir = scratch("install_optional");
+    let runtime = dir.join("runtime");
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let fake = dir.join("fake-appimagetool");
+    std::fs::write(&fake, "#!/bin/sh\necho fake appimagetool\n").unwrap();
+    let url = format!("file://{}", fake.display());
+
+    let output = Command::new(bin())
+        .args(["install", "--yes", "--no-projects", "--optional"])
+        .env("EM_HOME", &runtime)
+        .env("EM_BIN_DIR", dir.join("bin"))
+        .env("EM_SHELL_PROFILE", home.join(".profile"))
+        .env("EM_PROJECTS_DIR", dir.join("projects_unused"))
+        .env("EM_APPIMAGETOOL_URL", &url)
+        .env("HOME", &home)
+        .env("SHELL", "/bin/sh")
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run em install");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("appimagetool"), "{stdout}");
+    assert!(stdout.contains("~15 MB"), "{stdout}");
+
+    let tool = runtime.join("tools/appimagetool");
+    assert!(tool.exists(), "optional tool was not installed at {tool:?}");
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(
+        std::fs::metadata(&tool).unwrap().permissions().mode() & 0o111,
+        0,
+        "optional tool should be executable"
+    );
+
+    let repair = Command::new(bin())
+        .arg("repair")
+        .env("EM_HOME", &runtime)
+        .env("EM_BIN_DIR", dir.join("bin"))
+        .env("EM_SHELL_PROFILE", home.join(".profile"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run em repair");
+    assert!(repair.status.success());
+    assert!(
+        String::from_utf8_lossy(&repair.stdout).contains("[OK] appimagetool (optional)"),
+        "{}",
+        String::from_utf8_lossy(&repair.stdout)
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

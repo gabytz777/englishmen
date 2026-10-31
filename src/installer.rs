@@ -32,6 +32,17 @@ pub fn config_file() -> PathBuf {
     config_dir().join("englishmen.emc")
 }
 
+/// Directory for optional tools that `em install --optional` adds.
+pub fn tools_dir() -> PathBuf {
+    install_dir().join("tools")
+}
+
+/// An optional tool installed by Englishmen itself, if it is present.
+pub fn optional_tool(name: &str) -> Option<PathBuf> {
+    let path = tools_dir().join(name);
+    path.is_file().then_some(path)
+}
+
 /// Honors `EM_PROJECTS_DIR` as an override for the same reason as `EM_HOME` above.
 pub fn default_projects_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("EM_PROJECTS_DIR") {
@@ -94,11 +105,214 @@ fn copy_running_exe() -> io::Result<()> {
     Ok(())
 }
 
+/// An extra tool that is useful, but not required to run Englishmen.
+struct OptionalPackage {
+    name: &'static str,
+    size: &'static str,
+    purpose: &'static str,
+    url: fn() -> Option<String>,
+}
+
+/// The optional packages available on this platform.
+fn optional_packages() -> Vec<OptionalPackage> {
+    let mut packages = Vec::new();
+    if cfg!(target_os = "linux") {
+        packages.push(OptionalPackage {
+            name: "appimagetool",
+            size: "~15 MB",
+            purpose: "building portable Linux apps with 'em build --appimage'",
+            url: appimagetool_url,
+        });
+    }
+    packages
+}
+
+fn appimagetool_url() -> Option<String> {
+    if let Ok(url) = std::env::var("EM_APPIMAGETOOL_URL") {
+        if !url.trim().is_empty() {
+            return Some(url);
+        }
+    }
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        "arm" => "armhf",
+        "x86" => "i686",
+        _ => return None,
+    };
+    Some(format!(
+        "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-{arch}.AppImage"
+    ))
+}
+
+fn print_optional_packages(packages: &[OptionalPackage]) {
+    println!("Optional packages\n");
+    for package in packages {
+        println!("  {} ({})", package.name, package.size);
+        println!("      Needed for: {}\n", package.purpose);
+    }
+}
+
+/// Offer the optional packages during installation.
+///
+/// `choice` comes from `--optional` / `--no-optional`; `None` asks when a real
+/// terminal is attached and skips otherwise, so scripted installs never block
+/// and never download anything unexpectedly.
+pub fn offer_optional_packages(choice: Option<bool>, interactive: bool) -> io::Result<()> {
+    let packages = optional_packages();
+    if packages.is_empty() {
+        return Ok(());
+    }
+    // Re-running `em install` should not ask again when everything is present.
+    if choice.is_none() && packages.iter().all(|package| optional_tool(package.name).is_some()) {
+        return Ok(());
+    }
+
+    let install = match choice {
+        Some(value) => value,
+        None if interactive && io::stdin().is_terminal() => {
+            print_optional_packages(&packages);
+            confirm_default_no("Install optional packages?")
+        }
+        None => {
+            let names = packages
+                .iter()
+                .map(|package| format!("{} ({})", package.name, package.size))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("Skipped optional packages: {names}.");
+            println!("Run 'em install --optional' to add them later.\n");
+            return Ok(());
+        }
+    };
+
+    if !install {
+        println!("Skipped optional packages. Run 'em install --optional' to add them later.\n");
+        return Ok(());
+    }
+
+    if choice.is_some() {
+        print_optional_packages(&packages);
+    }
+    for package in &packages {
+        install_optional_package(package);
+    }
+    Ok(())
+}
+
+fn install_optional_package(package: &OptionalPackage) -> bool {
+    let dest = tools_dir().join(package.name);
+    if dest.is_file() {
+        println!("[OK] {} (already installed)", package.name);
+        return true;
+    }
+
+    let Some(url) = (package.url)() else {
+        println!(
+            "[WARN] {} is not available for this CPU architecture",
+            package.name
+        );
+        return false;
+    };
+
+    print!("Installing {} ({})... ", package.name, package.size);
+    let _ = io::stdout().flush();
+    match download(&url, &dest) {
+        Ok(()) => {
+            make_file_executable(&dest);
+            match fs::metadata(&dest) {
+                Ok(metadata) => println!(
+                    "done ({}).",
+                    human_size(metadata.len())
+                ),
+                Err(_) => println!("done."),
+            }
+            println!();
+            true
+        }
+        Err(e) => {
+            println!("failed.");
+            println!("[WARN] Could not install {}: {e}", package.name);
+            println!("       Download it from https://github.com/AppImage/appimagetool/releases");
+            println!("       and set APPIMAGETOOL=/path/to/appimagetool.\n");
+            false
+        }
+    }
+}
+
+/// Download `url` to `dest` with curl or wget. Kept dependency-free on purpose:
+/// both tools already exist on the systems the one-line installer supports.
+fn download(url: &str, dest: &std::path::Path) -> io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = dest.with_extension("download");
+    let _ = fs::remove_file(&tmp);
+
+    let mut last_error: Option<String> = None;
+    for tool in ["curl", "wget"] {
+        let mut command = Command::new(tool);
+        if tool == "curl" {
+            command
+                .args(["-fsSL", "--retry", "2", "-o"])
+                .arg(&tmp)
+                .arg(url);
+        } else {
+            command.args(["-q", "-O"]).arg(&tmp).arg(url);
+        }
+
+        match command.stdin(Stdio::null()).status() {
+            Ok(status) if status.success() => {
+                fs::rename(&tmp, dest)?;
+                return Ok(());
+            }
+            Ok(status) => last_error = Some(format!("{tool} exited with {status}")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => last_error = Some(format!("could not run {tool}: {e}")),
+        }
+    }
+
+    let _ = fs::remove_file(&tmp);
+    Err(io::Error::other(last_error.unwrap_or_else(|| {
+        "neither curl nor wget is available".to_string()
+    })))
+}
+
+fn human_size(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 0.1 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+fn make_file_executable(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            let _ = fs::set_permissions(path, permissions);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Run the first-launch installer. Safe to call more than once (idempotent).
 ///
 /// `interactive` controls prompts and the final "press Enter" pause. Scripted
 /// installs (`em install --yes`, or `install.sh`) pass `false`.
-pub fn run_installer(create_projects_dir: bool, interactive: bool) -> io::Result<()> {
+///
+/// `optional` is the user's `--optional` / `--no-optional` choice. `None` asks
+/// interactively and skips in scripted runs.
+pub fn run_installer(
+    create_projects_dir: bool,
+    interactive: bool,
+    optional: Option<bool>,
+) -> io::Result<()> {
     println!("Englishmen Setup\n");
     if is_installed() {
         println!(
@@ -112,6 +326,11 @@ pub fn run_installer(create_projects_dir: bool, interactive: bool) -> io::Result
         let path_dir = path_entry_dir();
         if let Err(e) = add_to_user_path(&path_dir) {
             println!("[WARN] Could not update PATH automatically: {e}");
+        }
+        // Only revisit optional packages when asked to (or when a person runs
+        // the installer themselves); `em repair` stays a read-only check.
+        if optional.is_some() || (interactive && io::stdin().is_terminal()) {
+            offer_optional_packages(optional, interactive)?;
         }
         return run_repair(interactive);
     }
@@ -157,6 +376,8 @@ pub fn run_installer(create_projects_dir: bool, interactive: bool) -> io::Result
         Ok(false) => print_step("[OK] PATH configuration (already present)"),
         Err(e) => println!("[WARN] Could not update PATH automatically: {e}"),
     }
+
+    offer_optional_packages(optional, interactive)?;
 
     println!();
     println!("Englishmen has been installed successfully!\n");
@@ -422,6 +643,18 @@ pub fn run_repair(interactive: bool) -> io::Result<()> {
         }
     }
 
+    // Optional tools are reported, but their absence is not a problem: they are
+    // only needed for specific build targets.
+    for package in optional_packages() {
+        match optional_tool(package.name) {
+            Some(_) => println!("[OK] {} (optional)", package.name),
+            None => println!(
+                "[--] {} (optional, not installed; 'em install --optional' adds it)",
+                package.name
+            ),
+        }
+    }
+
     // Install directory
     if !install_dir().exists() {
         all_ok = false;
@@ -544,6 +777,19 @@ fn confirm(prompt: &str) -> bool {
     }
     let input = input.trim().to_lowercase();
     input.is_empty() || input == "y" || input == "yes"
+}
+
+/// Like `confirm`, but an empty answer means "no". Used for optional extras so
+/// pressing Enter does not download anything by accident.
+fn confirm_default_no(prompt: &str) -> bool {
+    print!("{prompt} [y/N] ");
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    let input = input.trim().to_lowercase();
+    input == "y" || input == "yes"
 }
 
 /// Pure helper: does `path_var` (a `;`-joined PATH string) already contain `dir`?
@@ -880,6 +1126,29 @@ mod tests {
             merge_vscode_settings(existing),
             SettingsMerge::Unsafe
         ));
+    }
+
+    #[test]
+    fn optional_packages_describe_their_size_and_purpose() {
+        for package in optional_packages() {
+            assert!(!package.name.is_empty());
+            assert!(package.size.contains("MB"), "{}", package.size);
+            assert!(!package.purpose.is_empty());
+            assert!((package.url)().is_some());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimagetool_is_the_linux_optional_package() {
+        let names: Vec<_> = optional_packages().iter().map(|p| p.name).collect();
+        assert!(names.contains(&"appimagetool"));
+    }
+
+    #[test]
+    fn human_size_switches_units_at_a_tenth_of_a_megabyte() {
+        assert_eq!(human_size(512), "512 bytes");
+        assert_eq!(human_size(15 * 1024 * 1024), "15.0 MB");
     }
 
     #[test]

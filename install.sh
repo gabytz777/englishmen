@@ -13,6 +13,7 @@ REPO="gabytz777/englishmen"
 VERSION="${EM_VERSION:-latest}"
 FROM_SOURCE=0
 NO_PROJECTS=0
+OPTIONAL=0
 
 usage() {
     cat <<EOF
@@ -25,6 +26,7 @@ Options:
     --version <tag>    Install a specific release (default: latest)
     --from-source      Build from source even if a prebuilt binary exists
     --no-projects      Do not create the default projects folder
+    --optional         Also install optional packages (appimagetool, ~15 MB)
     -h, --help         Show this help
 
 Environment:
@@ -86,6 +88,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-projects)
             NO_PROJECTS=1
+            shift
+            ;;
+        --optional)
+            OPTIONAL=1
             shift
             ;;
         -h|--help)
@@ -196,6 +202,9 @@ say "Installing..."
 set -- install --yes
 if [ "$NO_PROJECTS" -eq 1 ]; then
     set -- "$@" --no-projects
+fi
+if [ "$OPTIONAL" -eq 1 ]; then
+    set -- "$@" --optional
 fi
 # Redirect stdin so even an older em release (before --yes existed) falls back
 # to the default answer instead of waiting for input.

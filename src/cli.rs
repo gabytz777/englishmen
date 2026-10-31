@@ -85,6 +85,8 @@ Usage:
 Install options:
     -y, --yes                 Accept defaults without prompting
     --no-projects             Do not create a projects folder
+    --optional                Install optional packages (appimagetool, ~15 MB)
+    --no-optional             Skip optional packages
 
 Run options:
     --interpret               Use the tree-walking interpreter instead of the
@@ -472,19 +474,22 @@ fn cmd_repair() -> ExitCode {
     }
 }
 
-/// `em install [-y|--yes] [--no-projects]`
+/// `em install [-y|--yes] [--no-projects] [--optional|--no-optional]`
 ///
 /// The flags exist so install scripts can run the installer without a terminal.
 /// Without `--yes`, the projects-folder question is still asked interactively.
 fn cmd_install(args: &[String]) -> ExitCode {
     let mut assume_yes = false;
     let mut create_projects: Option<bool> = None;
+    let mut optional: Option<bool> = None;
 
     for arg in args {
         match arg.as_str() {
             "-y" | "--yes" => assume_yes = true,
             "--no-projects" => create_projects = Some(false),
             "--projects" => create_projects = Some(true),
+            "--optional" => optional = Some(true),
+            "--no-optional" => optional = Some(false),
             "--help" | "-h" => {
                 print_help();
                 return ExitCode::SUCCESS;
@@ -505,7 +510,7 @@ fn cmd_install(args: &[String]) -> ExitCode {
         }
     });
 
-    match installer::run_installer(create_projects, !assume_yes) {
+    match installer::run_installer(create_projects, !assume_yes, optional) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("Error: Installation failed: {e}");

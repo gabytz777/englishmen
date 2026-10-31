@@ -46,8 +46,8 @@ curl -fsSL https://raw.githubusercontent.com/gabytz777/englishmen/master/install
 It installs entirely under your home directory — no `sudo`, no system
 packages. If the current release has a prebuilt binary for your platform it
 uses that; otherwise it builds from source, which needs a Rust toolchain
-(https://rustup.rs). The script accepts `--from-source`, `--version <tag>`, and
-`--no-projects`; run it with `--help` for details.
+(https://rustup.rs). The script accepts `--from-source`, `--version <tag>`,
+`--no-projects`, and `--optional`; run it with `--help` for details.
 
 `em` is linked into `~/.local/bin`, and the installer adds that directory to
 your shell profile (`~/.bashrc`, `~/.zshrc`, `~/.profile`, or the fish config)
@@ -73,6 +73,8 @@ that:
 - Makes the `em` command available (`PATH` on Windows, a `~/.local/bin`
   symlink plus a shell-profile entry on Linux/macOS)
 - Optionally creates a projects folder at `Documents/EMProjects`
+- Offers **optional packages** with their download size and what they unlock —
+  currently `appimagetool` (~15 MB), needed for `em build --appimage`
 - If VS Code is detected on your machine, offers to install the free
   ["Code Runner"](https://marketplace.visualstudio.com/items?itemName=formulahendry.code-runner)
   extension and wire it up so `.em` files get a ▶ Run button
@@ -96,7 +98,10 @@ cargo build --release
 ```
 
 `em install` is idempotent and also upgrades an existing installation. Add
-`--no-projects` to skip the projects folder and `--yes` to run without prompts.
+`--no-projects` to skip the projects folder, `--yes` to run without prompts,
+and `--optional` / `--no-optional` to decide up front whether to install the
+optional packages. Scripted installs (`--yes`, including `install.sh`) skip
+them unless `--optional` is passed.
 
 ## The `.em` format
 
@@ -179,8 +184,16 @@ includes a desktop entry and icon for launchers. `--appimage` implies `--exe`;
 pass `-o <file>` to choose the output name.
 
 Packaging uses the official
-[`appimagetool`](https://github.com/AppImage/appimagetool/releases). If it is
-not on your `PATH`, point `APPIMAGETOOL` at it:
+[`appimagetool`](https://github.com/AppImage/appimagetool/releases). Install it
+automatically with:
+
+```bash
+em install --optional
+```
+
+It is stored under the Englishmen install directory (`tools/appimagetool`), so
+`em build --appimage` finds it without changing your `PATH`. You can also point
+`APPIMAGETOOL` at your own copy:
 
 ```bash
 APPIMAGETOOL=/path/to/appimagetool em build hello.em --exe --appimage
