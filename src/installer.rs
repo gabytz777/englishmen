@@ -1199,15 +1199,15 @@ pub fn add_to_user_path(_dir: &Path) -> io::Result<bool> {
     Ok(changed)
 }
 
-/// Append a guarded PATH block to the profile of the login shell, unless it is
-/// already there or the directory is already on PATH.
+/// Append a guarded PATH block to the profile of the login shell, unless one is
+/// already there.
+///
+/// This deliberately does not skip when the directory happens to be on the
+/// current PATH: `em uninstall` removes the block, and a reinstall started from
+/// a terminal that still has the old PATH must restore it for future shells.
+/// The block guards against duplicate entries itself, so writing it is harmless.
 #[cfg(not(windows))]
 fn ensure_path_in_shell_profile(dir: &Path) -> io::Result<bool> {
-    let current_path = std::env::var_os("PATH").unwrap_or_default();
-    if std::env::split_paths(&current_path).any(|entry| entry == dir) {
-        return Ok(false);
-    }
-
     let profile = shell_profile_path()?;
     let existing = fs::read_to_string(&profile).unwrap_or_default();
     if existing.contains(PATH_BLOCK_START) {

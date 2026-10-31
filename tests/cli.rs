@@ -308,6 +308,37 @@ fn run_install(dir: &Path, extra: &[&str]) -> std::process::Output {
     command.output().expect("failed to run em install")
 }
 
+/// After `em uninstall` removes the profile block, reinstalling from a terminal
+/// that still has the old PATH must put it back — otherwise the next terminal
+/// would not find `em`.
+#[cfg(unix)]
+#[test]
+fn install_restores_the_profile_block_even_when_bin_dir_is_on_path() {
+    let dir = scratch("install_path_block");
+    let profile = dir.join("home/.profile");
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let path = format!("{}:{}", dir.join("bin").display(), current_path);
+
+    let mut command = Command::new(bin());
+    command.args(["install", "--yes", "--no-projects"]);
+    apply_install_env(&mut command, &dir);
+    command.env("PATH", path);
+    let output = command.output().expect("failed to run em install");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = std::fs::read_to_string(&profile).unwrap();
+    assert!(text.contains("# >>> Englishmen PATH >>>"), "{text}");
+    assert!(text.contains(&dir.join("bin").display().to_string()), "{text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn uninstall_removes_runtime_launcher_and_path_block() {
