@@ -371,9 +371,39 @@ qrc.make("https://example.com", "code.png")
 - **time** — `now`, `sleep`, `year`, `month`, `day`, `hour`, `minute`, `second`
 - **qrc** — `make(text, path)` generates a QR code PNG (no external binaries)
 - **cowsay** — `say(message)` prints ASCII-art cow speech (implemented natively, no `cowsay` executable required)
+- **html** — `page`, `h1`–`h6`, `heading`, `p`, `div`, `section`, `span`, `link`, `image`, `list`, `ol`, `tag`, `element`, `escape`, and `save` build and write HTML pages
 
 All standard libraries are implemented in Rust and ship inside the `em`
 binary — no Python, Node, or other external runtimes required.
+
+## Building a website
+
+The `html` library builds pages from ordinary Englishmen values and writes
+them to disk:
+
+```text
+import html
+
+page = html.page("My Site", [
+    html.h1("Hello, world!"),
+    html.p("Welcome to my corner of the internet."),
+    html.link("About me", "about.html"),
+    html.list(["Home", "About", "Contact"])
+])
+
+html.save("site/index.html", page)
+```
+
+Open `site/index.html` in a browser. `html.save` creates parent directories
+when needed, and text helpers escape `&`, `<`, `>`, `"`, and `'` automatically.
+When you need nested markup or attributes, compose raw elements:
+
+```text
+html.element("div", { class: "card" }, [
+    html.h2("A card"),
+    html.p("Built with Englishmen.")
+])
+```
 
 ## Project structure
 
@@ -392,7 +422,7 @@ deleted and rebuilt at any time with `em build`.
 ## Examples
 
 See [`examples/`](examples/) for runnable programs: `hello.em`,
-`conditions.em`, `objects.em`, `libraries.em`, and the canonical
+`conditions.em`, `objects.em`, `libraries.em`, `site.em`, and the canonical
 `example.em`.
 
 ## Compiler

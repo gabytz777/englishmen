@@ -127,6 +127,7 @@ pub fn run_installer(create_projects_dir: bool, interactive: bool) -> io::Result
     print_step("[OK] Time library");
     print_step("[OK] QRC library");
     print_step("[OK] Cowsay library");
+    print_step("[OK] HTML library");
 
     copy_running_exe()?;
 
@@ -411,10 +412,13 @@ pub fn run_repair(interactive: bool) -> io::Result<()> {
 
     for name in modules::STD_MODULES {
         if modules::load_module(name).is_some() {
-            println!("[OK] {} library", capitalize(name));
+            println!("[OK] {} library", module_display_name(name));
         } else {
             all_ok = false;
-            println!("[WARN] {} library failed to load", capitalize(name));
+            println!(
+                "[WARN] {} library failed to load",
+                module_display_name(name)
+            );
         }
     }
 
@@ -513,6 +517,14 @@ pub fn run_repair(interactive: bool) -> io::Result<()> {
         pause_before_exit("Press Enter to close this window...");
     }
     Ok(())
+}
+
+fn module_display_name(name: &str) -> String {
+    if name.eq_ignore_ascii_case("html") {
+        "HTML".to_string()
+    } else {
+        capitalize(name)
+    }
 }
 
 fn capitalize(s: &str) -> String {
