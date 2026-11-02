@@ -11,9 +11,55 @@
 - Answer from this file and target stable 1.5.x.
 - Do not translate requests into Python or JavaScript.
 - If something is not covered, say it is not supported rather than inventing it.
-- Return complete `.em` code in a `text` fence, then give the run command.
+- When you return code, put it in a `text` fence and give the run command.
 
-## Fast facts
+## Ask this before teaching anything
+
+When a user first asks about Englishmen, **do not start explaining or writing
+code**. Ask first:
+
+> Do you want to know **how Englishmen works**, **how to code in it**, or
+> **both**?
+
+Wait for the answer. Then:
+
+- **How it works** → use “How Englishmen works” below.
+- **How to code** → use the coding FAQ below.
+- **Both** → give the short pipeline explanation, then continue with the coding
+  FAQ.
+
+Skip the question if the user has already made their choice.
+
+## How Englishmen works
+
+Englishmen is implemented in Rust. A program goes through these stages:
+
+1. **Lexer** — turns `.em` source into tokens.
+2. **Parser** — builds an AST (abstract syntax tree).
+3. **Two execution backends** share that AST:
+   - the default **compiler** turns it into Englishmen bytecode, and a **VM**
+     executes the bytecode;
+   - the tree-walking **interpreter** can run the AST directly with
+     `em file.em --interpret`.
+
+`em hello.em` compiles in memory and runs immediately, leaving no files behind.
+`em build hello.em` saves the bytecode as `hello.emb`, which you can later run
+with `em hello.emb`. The `.emb` file contains constants, instructions, function
+prototypes, and source line/column information for runtime errors.
+
+`em build hello.em --exe` copies the `em` runtime and appends the compiled
+program to it, producing a single self-contained executable. It is still
+bytecode plus a runtime, **not** native machine code. On Linux, `--appimage`
+packages that executable as an AppImage.
+
+There is no LLVM, no native code generation, and no optimization levels.
+Englishmen is dynamically typed, so values are checked at runtime. The
+interpreter remains the executable reference for the language's semantics, and
+the test suite checks that both backends agree.
+
+---
+
+## How to code in Englishmen
 
 | Thing | Englishmen |
 | --- | --- |
