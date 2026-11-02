@@ -82,9 +82,12 @@ pub fn call_array_method(
                 array.borrow().iter().any(|v| v.equals(&target)),
             ))
         }
-        other => Err(EmError::new(format!("Array has no method '{other}'"))
-            .with_span(span)
-            .with_hint("Available array methods: add, remove, removeAt, length, contains.")),
+        other => Err(method_error(
+            "Array",
+            other,
+            &["add", "remove", "removeAt", "length", "contains"],
+            span,
+        )),
     }
 }
 
@@ -105,9 +108,12 @@ pub fn call_object_method(
         "values" => Ok(Value::new_array(
             object.borrow().values().cloned().collect(),
         )),
-        other => Err(EmError::new(format!("Object has no method '{other}'"))
-            .with_span(span)
-            .with_hint("Available object methods: keys, values.")),
+        other => Err(method_error(
+            "Object",
+            other,
+            &["keys", "values"],
+            span,
+        )),
     }
 }
 
@@ -143,10 +149,28 @@ pub fn call_string_method(
                 .unwrap_or_default();
             Ok(Value::Bool(s.contains(target.as_str())))
         }
-        other => Err(EmError::new(format!("String has no method '{other}'"))
-            .with_span(span)
-            .with_hint("Available string methods: length, upper, lower, trim, split, contains.")),
+        other => Err(method_error(
+            "String",
+            other,
+            &["length", "upper", "lower", "trim", "split", "contains"],
+            span,
+        )),
     }
+}
+
+fn method_error(kind: &str, method: &str, available: &[&str], span: Span) -> EmError {
+    let candidates: Vec<String> = available.iter().map(|s| s.to_string()).collect();
+    let mut err = EmError::type_error(format!("{kind} has no method '{method}'")).with_span(span);
+    if let Some(hint) = crate::error::suggest_closest(method, candidates.iter()) {
+        err = err.with_hint(format!("Did you mean '{hint}'?"));
+    } else {
+        err = err.with_hint(format!(
+            "Available {} methods: {}.",
+            kind.to_lowercase(),
+            available.join(", ")
+        ));
+    }
+    err
 }
 
 #[cfg(test)]

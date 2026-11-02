@@ -389,13 +389,28 @@ impl Vm {
         match callee {
             Value::Compiled(func) => {
                 if args.len() != func.proto.params.len() {
+                    let signature = format!("({})", func.proto.params.join(", "));
                     return Err(at(
-                        EmError::new(format!(
-                            "Function '{}' expects {} argument(s) but got {}",
+                        EmError::arity(format!(
+                            "Function '{}{}' expects {} argument(s) but got {}",
                             func.proto.name,
+                            signature,
                             func.proto.params.len(),
                             args.len()
-                        )),
+                        ))
+                        .with_hint(if func.proto.params.is_empty() {
+                            "This function takes no arguments.".to_string()
+                        } else {
+                            format!(
+                                "Pass {}: {}.",
+                                if func.proto.params.len() == 1 {
+                                    "one argument"
+                                } else {
+                                    "the arguments"
+                                },
+                                func.proto.params.join(", ")
+                            )
+                        }),
                         span,
                     ));
                 }
@@ -530,7 +545,7 @@ fn at(mut error: EmError, span: Span) -> EmError {
 
 fn unknown_variable(name: &str, env: &Rc<Environment>) -> EmError {
     let names = env.names();
-    let mut err = EmError::new(format!("Unknown variable '{name}'"));
+    let mut err = EmError::name(format!("Unknown variable '{name}'"));
     if let Some(hint) = suggest_closest(name, names.iter()) {
         err = err.with_hint(format!("Did you mean '{hint}'?"));
     }
@@ -539,7 +554,7 @@ fn unknown_variable(name: &str, env: &Rc<Environment>) -> EmError {
 
 fn unknown_module(name: &str) -> EmError {
     let module_names: Vec<String> = modules::STD_MODULES.iter().map(|s| s.to_string()).collect();
-    let mut err = EmError::new(format!("Unknown module '{name}'"));
+    let mut err = EmError::import(format!("Unknown module '{name}'"));
     if let Some(hint) = suggest_closest(name, module_names.iter()) {
         err = err.with_hint(format!("Did you mean '{hint}'?"));
     } else {
@@ -558,7 +573,7 @@ fn get_property(base: &Value, name: &str) -> Result<Value, EmError> {
                 return Ok(v.clone());
             }
             let names: Vec<String> = obj.borrow().keys().cloned().collect();
-            let mut err = EmError::new(format!("Unknown property '{name}'"));
+            let mut err = EmError::name(format!("Unknown property '{name}'"));
             if let Some(hint) = suggest_closest(name, names.iter()) {
                 err = err.with_hint(format!("Did you mean '{hint}'?"));
             }
@@ -832,6 +847,23 @@ mod tests {
         let err =
             run_err("function loop_forever()\n  return loop_forever()\nend\nx = loop_forever()\n");
         assert!(err.message.contains("Too many nested calls"));
+    }
+
+    #[test]
+    fn interpolation_concatenates_values() {
+        let src = "name = \"Alex\"\nage = 18\ntext = \"Hello, {name}! Next year: {age + 1}.\"\n";
+        assert_eq!(
+            eval_var(src, "text").display(),
+            "Hello, Alex! Next year: 19."
+        );
+        assert_eq!(
+            eval_var("x = \"{1}{2}\"\n", "x").display(),
+            "12"
+        );
+        assert_eq!(
+            eval_var("x = \"Braces {{ }} \\{ \\}\"\n", "x").display(),
+            "Braces { } { }"
+        );
     }
 
     #[test]

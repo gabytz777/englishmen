@@ -1,6 +1,6 @@
 use crate::ast::{Assignable, BinOp, Expr, Stmt, UnOp};
 use crate::error::{EmError, Span};
-use crate::lexer::{SpannedToken, Token};
+use crate::lexer::{InterpPart, SpannedToken, Token};
 
 pub struct Parser {
     tokens: Vec<SpannedToken>,
@@ -62,7 +62,7 @@ impl Parser {
             Ok(self.advance())
         } else {
             let span = self.peek_span();
-            Err(EmError::new(format!(
+            Err(EmError::syntax(format!(
                 "Expected {} {context}, found {}",
                 token.describe(),
                 self.peek().describe()
@@ -85,7 +85,7 @@ impl Parser {
             }
             _ => {
                 let span = self.peek_span();
-                Err(EmError::new(format!(
+                Err(EmError::syntax(format!(
                     "Expected end of line, found {}",
                     self.peek().describe()
                 ))
@@ -132,7 +132,7 @@ impl Parser {
             }
             other => {
                 let span = self.peek_span();
-                Err(EmError::new(format!(
+                Err(EmError::syntax(format!(
                     "Expected identifier {context}, found {}",
                     other.describe()
                 ))
@@ -399,6 +399,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::String(s))
             }
+            Token::Interpolated(parts) => {
+                self.advance();
+                self.parse_interpolated(parts, span)
+            }
             Token::True => {
                 self.advance();
                 Ok(Expr::Bool(true))
@@ -426,9 +430,59 @@ impl Parser {
             Token::LBracket => self.parse_array_literal(),
             Token::LBrace => self.parse_object_literal(),
             other => {
-                Err(EmError::new(format!("Unexpected token {}", other.describe())).with_span(span))
+                Err(EmError::syntax(format!("Unexpected token {}", other.describe())).with_span(span))
             }
         }
+    }
+
+    /// Lower an interpolated string into ordinary `+` expressions. This keeps
+    /// the compiler, VM and interpreter unchanged and guarantees that an
+    /// interpolated value is always converted to text.
+    fn parse_interpolated(
+        &mut self,
+        parts: Vec<InterpPart>,
+        outer_span: Span,
+    ) -> Result<Expr, EmError> {
+        let has_expression = parts
+            .iter()
+            .any(|part| matches!(part, InterpPart::Expr(_)));
+        let mut acc = if has_expression {
+            Some(Expr::String(String::new()))
+        } else {
+            None
+        };
+
+        for part in parts {
+            let (expr, span) = match part {
+                InterpPart::Literal(text) => (Expr::String(text), outer_span),
+                InterpPart::Expr(tokens) => {
+                    let span = tokens
+                        .iter()
+                        .find(|token| !matches!(token.token, Token::Newline | Token::Eof))
+                        .map(|token| token.span)
+                        .unwrap_or(outer_span);
+                    let mut parser = Parser::new(tokens);
+                    parser.skip_newlines();
+                    let expr = parser.parse_expression()?;
+                    parser.skip_newlines();
+                    if !parser.is_at_end() {
+                        return Err(EmError::syntax(format!(
+                            "Unexpected token {} in interpolation",
+                            parser.peek().describe()
+                        ))
+                        .with_span(parser.peek_span())
+                        .with_hint("Each '{...}' must contain one complete expression."));
+                    }
+                    (expr, span)
+                }
+            };
+            acc = Some(match acc {
+                Some(left) => Expr::Binary(Box::new(left), BinOp::Add, Box::new(expr), span),
+                None => expr,
+            });
+        }
+
+        Ok(acc.unwrap_or(Expr::String(String::new())))
     }
 
     fn parse_array_literal(&mut self) -> Result<Expr, EmError> {
@@ -483,7 +537,7 @@ fn expr_to_assignable(expr: Expr, span: Span) -> Result<Assignable, EmError> {
         Expr::Variable(name) => Ok(Assignable::Variable(name)),
         Expr::PropertyAccess(base, name) => Ok(Assignable::Property(base, name)),
         Expr::Index(base, index) => Ok(Assignable::Index(base, index)),
-        _ => Err(EmError::new("Invalid assignment target")
+        _ => Err(EmError::syntax("Invalid assignment target")
             .with_span(span)
             .with_hint("Only variables, properties, and array indexes can be assigned to.")),
     }
@@ -528,8 +582,33 @@ mod tests {
     }
 
     #[test]
-    fn property_access_ast_shape() {
-        let stmts = parse_src("say(person.age)\n");
+    fn interpolation_lowers_to_addition() {
+        let stmts = parse_src("say(\"Hello, {name}!\")\n");
+        let Stmt::ExprStmt(Expr::Call(_, args), _) = &stmts[0] else {
+            panic!("unexpected stmt: {:?}", stmts[0]);
+        };
+        let Expr::Binary(left, BinOp::Add, right, _) = &args[0] else {
+            panic!("expected concatenation, got {:?}", args[0]);
+        };
+        assert!(matches!(**left, Expr::Binary(_, BinOp::Add, _, _)));
+        assert!(matches!(**right, Expr::String(ref s) if s == "!"));
+    }
+
+    #[test]
+    fn invalid_interpolation_expression_is_reported() {
+        let err = parse(tokenize("x = \"Hi {1 +}\"\n").unwrap()).unwrap_err();
+        assert!(err.message.contains("Unexpected token"));
+        assert_eq!(err.span.unwrap().line, 1);
+    }
+
+    #[test]
+    fn empty_interpolation_is_reported() {
+        let err = tokenize("x = \"Hi {}\"\n").unwrap_err();
+        assert_eq!(err.message, "Empty interpolation");
+    }
+
+    #[test]
+    fn property_access_ast_shape() {        let stmts = parse_src("say(person.age)\n");
         match &stmts[0] {
             Stmt::ExprStmt(Expr::Call(_, args), _) => match &args[0] {
                 Expr::PropertyAccess(base, name) => {

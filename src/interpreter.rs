@@ -123,7 +123,7 @@ impl Interpreter {
                     let module_names: Vec<String> =
                         modules::STD_MODULES.iter().map(|s| s.to_string()).collect();
                     let hint = suggest_closest(name, module_names.iter());
-                    let mut err = EmError::new(format!("Unknown module '{name}'")).with_span(*span);
+                    let mut err = EmError::import(format!("Unknown module '{name}'")).with_span(*span);
                     if let Some(h) = hint {
                         err = err.with_hint(format!("Did you mean '{h}'?"));
                     } else {
@@ -236,7 +236,7 @@ impl Interpreter {
                 } else {
                     let names = env.names();
                     let hint = suggest_closest(name, names.iter());
-                    let mut err = EmError::new(format!("Unknown variable '{name}'"));
+                    let mut err = EmError::name(format!("Unknown variable '{name}'"));
                     if let Some(h) = hint {
                         err = err.with_hint(format!("Did you mean '{h}'?"));
                     }
@@ -252,7 +252,7 @@ impl Interpreter {
                         } else {
                             let names: Vec<String> = obj.borrow().keys().cloned().collect();
                             let hint = suggest_closest(name, names.iter());
-                            let mut err = EmError::new(format!("Unknown property '{name}'"));
+                            let mut err = EmError::name(format!("Unknown property '{name}'"));
                             if let Some(h) = hint {
                                 err = err.with_hint(format!("Did you mean '{h}'?"));
                             }
@@ -385,12 +385,27 @@ impl Interpreter {
             call_env.define(param, value);
         }
         if args.len() != func.params.len() {
-            return Err(EmError::new(format!(
-                "Function '{}' expects {} argument(s) but got {}",
+            let signature = format!("({})", func.params.join(", "));
+            return Err(EmError::arity(format!(
+                "Function '{}{}' expects {} argument(s) but got {}",
                 func.name,
+                signature,
                 func.params.len(),
                 args.len()
-            )));
+            ))
+            .with_hint(if func.params.is_empty() {
+                "This function takes no arguments.".to_string()
+            } else {
+                format!(
+                    "Pass {}: {}.",
+                    if func.params.len() == 1 {
+                        "one argument"
+                    } else {
+                        "the arguments"
+                    },
+                    func.params.join(", ")
+                )
+            }));
         }
         match self.exec_block(&func.body, &call_env)? {
             Signal::Return(v) => Ok(v),

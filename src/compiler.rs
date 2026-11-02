@@ -222,7 +222,7 @@ impl Compiler {
         span: Span,
     ) -> Result<FunctionProto, EmError> {
         if let Some(dup) = first_duplicate(params) {
-            return Err(EmError::new(format!(
+            return Err(EmError::syntax(format!(
                 "Function '{name}' has two parameters named '{dup}'"
             ))
             .with_span(span)

@@ -5,6 +5,10 @@ pub enum Token {
     // Literals
     Number(f64),
     String(String),
+    /// A string containing `{expression}` parts. The lexer keeps literal text
+    /// and tokenized expressions separate so the parser can report precise
+    /// positions for bad interpolations.
+    Interpolated(Vec<InterpPart>),
     Identifier(String),
     True,
     False,
@@ -55,6 +59,7 @@ impl Token {
         match self {
             Token::Number(n) => format!("number '{n}'"),
             Token::String(s) => format!("string \"{s}\""),
+            Token::Interpolated(_) => "an interpolated string".to_string(),
             Token::Identifier(s) => format!("identifier '{s}'"),
             Token::Eof => "end of file".to_string(),
             Token::Newline => "newline".to_string(),
@@ -63,7 +68,14 @@ impl Token {
     }
 }
 
-#[derive(Debug, Clone)]
+/// One piece of an interpolated string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpPart {
+    Literal(String),
+    Expr(Vec<SpannedToken>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpannedToken {
     pub token: Token,
     pub span: Span,
@@ -183,7 +195,7 @@ impl Lexer {
                         self.advance();
                     }
                     if !closed {
-                        return Err(EmError::new("Unterminated comment")
+                        return Err(EmError::syntax("Unterminated comment")
                             .with_span(start_span)
                             .with_hint("Comments must be closed with '-$'."));
                     }
@@ -222,31 +234,168 @@ impl Lexer {
 
     fn read_string(&mut self, start: Span) -> Result<Token, EmError> {
         self.advance(); // opening quote
-        let mut s = String::new();
+        let mut literal = String::new();
+        let mut parts: Vec<InterpPart> = Vec::new();
         loop {
             match self.advance() {
                 Some('"') => break,
                 Some('\\') => match self.advance() {
-                    Some('n') => s.push('\n'),
-                    Some('t') => s.push('\t'),
-                    Some('"') => s.push('"'),
-                    Some('\\') => s.push('\\'),
-                    Some(other) => s.push(other),
+                    Some('n') => literal.push('\n'),
+                    Some('t') => literal.push('\t'),
+                    Some('"') => literal.push('"'),
+                    Some('\\') => literal.push('\\'),
+                    Some('{') => literal.push('{'),
+                    Some('}') => literal.push('}'),
+                    Some(other) => literal.push(other),
                     None => {
-                        return Err(EmError::new("Unterminated string literal")
+                        return Err(EmError::syntax("Unterminated string literal")
                             .with_span(start)
                             .with_hint("Strings must be closed with a matching '\"'."))
                     }
                 },
-                Some(c) => s.push(c),
+                Some('{') => {
+                    // `{{` is an escaped literal brace.
+                    if self.peek() == Some('{') {
+                        self.advance();
+                        literal.push('{');
+                        continue;
+                    }
+                    if !literal.is_empty() {
+                        parts.push(InterpPart::Literal(std::mem::take(&mut literal)));
+                    }
+                    let expr_start = self.span();
+                    let tokens = self.read_interpolation(start, expr_start)?;
+                    if tokens.is_empty() || matches!(tokens.first().map(|t| &t.token), Some(Token::Eof))
+                    {
+                        return Err(EmError::syntax("Empty interpolation")
+                            .with_span(expr_start)
+                            .with_hint("Put an expression between '{' and '}', or write '{{' for a literal brace."));
+                    }
+                    parts.push(InterpPart::Expr(tokens));
+                }
+                Some('}') => {
+                    // `}}` is an escaped literal brace.
+                    if self.peek() == Some('}') {
+                        self.advance();
+                    }
+                    literal.push('}');
+                }
+                Some(c) => literal.push(c),
                 None => {
-                    return Err(EmError::new("Unterminated string literal")
+                    return Err(EmError::syntax("Unterminated string literal")
                         .with_span(start)
                         .with_hint("Strings must be closed with a matching '\"'."))
                 }
             }
         }
-        Ok(Token::String(s))
+        if parts.is_empty() {
+            return Ok(Token::String(literal));
+        }
+        if !literal.is_empty() {
+            parts.push(InterpPart::Literal(literal));
+        }
+        Ok(Token::Interpolated(parts))
+    }
+
+    /// Consume the body of a `{...}` interpolation and return tokens with
+    /// positions adjusted to the surrounding source file.
+    fn read_interpolation(
+        &mut self,
+        string_start: Span,
+        expr_start: Span,
+    ) -> Result<Vec<SpannedToken>, EmError> {
+        let mut raw = String::new();
+        let mut depth = 0usize;
+        loop {
+            match self.peek() {
+                None => {
+                    return Err(EmError::syntax("Unclosed interpolation")
+                        .with_span(expr_start)
+                        .with_hint("Add a closing '}' at the end of the expression."))
+                }
+                Some('\\') => {
+                    // Escapes inside an interpolation belong to the
+                    // expression's source; copy them so a `\"` does not start
+                    // a nested string by accident.
+                    raw.push('\\');
+                    self.advance();
+                    if let Some(c) = self.advance() {
+                        raw.push(c);
+                    }
+                }
+                Some('"') => {
+                    raw.push('"');
+                    self.advance();
+                    loop {
+                        match self.advance() {
+                            Some('"') => {
+                                raw.push('"');
+                                break;
+                            }
+                            Some('\\') => {
+                                raw.push('\\');
+                                if let Some(c) = self.advance() {
+                                    raw.push(c);
+                                }
+                            }
+                            Some(c) => raw.push(c),
+                            None => {
+                                return Err(EmError::syntax("Unterminated string literal")
+                                    .with_span(string_start)
+                                    .with_hint(
+                                        "Strings must be closed with a matching '\"'.",
+                                    ))
+                            }
+                        }
+                    }
+                }
+                Some('$') if self.peek_at(1) == Some('-') => {
+                    raw.push('$');
+                    raw.push('-');
+                    self.advance();
+                    self.advance();
+                    while let Some(c) = self.advance() {
+                        raw.push(c);
+                        if c == '-' && self.peek() == Some('$') {
+                            raw.push('$');
+                            self.advance();
+                            break;
+                        }
+                    }
+                }
+                Some('{') => {
+                    depth += 1;
+                    raw.push('{');
+                    self.advance();
+                }
+                Some('}') => {
+                    self.advance();
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    raw.push('}');
+                }
+                Some(c) => {
+                    raw.push(c);
+                    self.advance();
+                }
+            }
+        }
+
+        let tokens = Lexer::new(&raw).tokenize().map_err(|mut err| {
+            if let Some(span) = err.span {
+                err.span = Some(offset_span(span, expr_start));
+            }
+            err
+        })?;
+        Ok(tokens
+            .into_iter()
+            .map(|mut token| {
+                token.span = offset_span(token.span, expr_start);
+                token
+            })
+            .collect())
     }
 
     fn read_identifier(&mut self) -> Token {
@@ -309,7 +458,7 @@ impl Lexer {
                     self.advance();
                     Token::NotEq
                 } else {
-                    return Err(EmError::new("Unexpected character '!'")
+                    return Err(EmError::syntax("Unexpected character '!'")
                         .with_span(span)
                         .with_hint("Did you mean '!=' or 'not'?"));
                 }
@@ -331,7 +480,7 @@ impl Lexer {
                 }
             }
             other => {
-                return Err(EmError::new(format!("Unexpected character '{other}'")).with_span(span))
+                return Err(EmError::syntax(format!("Unexpected character '{other}'")).with_span(span))
             }
         };
         Ok(token)
@@ -344,6 +493,27 @@ pub fn tokenize(source: &str) -> Result<Vec<SpannedToken>, EmError> {
     // character on line 1 is baffling when the line looks perfectly fine.
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     Lexer::new(source).tokenize()
+}
+
+/// Shift a fragment span (line 1, col 1 based) into the surrounding source.
+fn offset_span(span: Span, base: Span) -> Span {
+    let line = base.line + span.line.saturating_sub(1);
+    let col = if span.line == 1 {
+        base.col + span.col.saturating_sub(1)
+    } else {
+        span.col
+    };
+    Span {
+        line,
+        col,
+        end_col: span.end_col.map(|end| {
+            if span.line == 1 {
+                base.col + end.saturating_sub(1)
+            } else {
+                end
+            }
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -363,6 +533,39 @@ mod tests {
         // Files saved as "UTF-8 with BOM" (Notepad's default) must lex
         // exactly like the same file without one.
         assert_eq!(toks("\u{feff}say(1)\n"), toks("say(1)\n"));
+    }
+
+    #[test]
+    fn interpolated_strings_split_literals_and_expressions() {
+        let tokens = tokenize("\"Hi {name}!\"\n").unwrap();
+        let Token::Interpolated(parts) = &tokens[0].token else {
+            panic!("expected an interpolated string");
+        };
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(&parts[0], InterpPart::Literal(s) if s == "Hi "));
+        assert!(matches!(&parts[1], InterpPart::Expr(tokens) if matches!(tokens[0].token, Token::Identifier(_))));
+        assert!(matches!(&parts[2], InterpPart::Literal(s) if s == "!"));
+    }
+
+    #[test]
+    fn escaped_braces_stay_literal() {
+        assert_eq!(
+            toks("\"{{name}} and \\{x\\}\"\n"),
+            vec![Token::String("{name} and {x}".to_string()), Token::Newline, Token::Eof]
+        );
+    }
+
+    #[test]
+    fn interpolation_fragment_spans_point_into_the_file() {
+        let tokens = tokenize("say(\"Hi {name}!\")\n").unwrap();
+        let Token::Interpolated(parts) = &tokens[2].token else {
+            panic!("expected an interpolated string");
+        };
+        let InterpPart::Expr(expr) = &parts[1] else {
+            panic!("expected an expression part");
+        };
+        assert_eq!(expr[0].span.line, 1);
+        assert_eq!(expr[0].span.col, 10);
     }
 
     #[test]
