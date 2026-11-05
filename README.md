@@ -172,7 +172,7 @@ On Linux, `--appimage` packages the standalone build as a portable
 [AppImage](https://appimage.org/):
 
 ```bash
-em build hello.em --exe --appimage
+em build hello.em --appimage
 ```
 
 ```text
@@ -196,7 +196,7 @@ It is stored under the Englishmen install directory (`tools/appimagetool`), so
 `APPIMAGETOOL` at your own copy:
 
 ```bash
-APPIMAGETOOL=/path/to/appimagetool em build hello.em --exe --appimage
+APPIMAGETOOL=/path/to/appimagetool em build hello.em --appimage
 ```
 
 The build runs `appimagetool` with `APPIMAGE_EXTRACT_AND_RUN=1`, so FUSE is not
