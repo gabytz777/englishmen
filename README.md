@@ -14,6 +14,19 @@ say("Hello, world!")
 em hello.em
 ```
 
+## Contents
+
+- [Why Englishmen exists](#why-englishmen-exists)
+- [Installation](#installation)
+- [Standalone executables](#standalone-executables)
+- [Running programs](#running-programs)
+- [Language tour](#language-tour)
+- [Building a website](#building-a-website)
+- [Project structure](#project-structure)
+- [Examples](#examples)
+- [Compiler](#compiler)
+- [License](#license)
+
 ## Why Englishmen exists
 
 Most beginner languages either dumb down programming into blocks/visual tools,
@@ -34,6 +47,13 @@ compiler; the original tree-walking interpreter is still available behind
 there.
 
 ## Installation
+
+### Requirements
+
+Running `em` needs nothing beyond the binary itself: the standard library and
+all five modules ship inside it. Building from source instead — either
+`install.sh --from-source` or a local `cargo build --release` — needs a Rust
+toolchain from https://rustup.rs.
 
 ### Linux and macOS
 
@@ -125,6 +145,8 @@ build a single file directly with `em file.em` or `em build file.em`. Inside
 a project, `em build` with no arguments compiles the file named by `main`.
 
 ## Standalone executables
+
+⚠️ **OS requirement:** You must build executables on the target platform. Building on Windows produces a Windows executable; building on Linux produces a Linux executable. The runtime is platform-specific.
 
 `em build --exe` produces a single file that runs on a machine with no
 Englishmen installed:
@@ -581,3 +603,7 @@ number now and a string later, so `a + b` cannot become a CPU `add`
 instruction. Native code would have to call back into a runtime that checks
 the types anyway. This is the same reason Python, Ruby, Java, and C# all ship
 bytecode and a VM.
+
+## License
+
+Englishmen is MIT licensed. See [LICENSE](LICENSE).
