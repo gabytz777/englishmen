@@ -145,8 +145,8 @@ build a single file directly with `em file.em` or `em build file.em`. Inside
 a project, `em build` with no arguments compiles the file named by `main`.
 
 ## Standalone executables
-
-⚠️ **OS requirement:** You must build executables on the target platform. Building on Windows produces a Windows executable; building on Linux produces a Linux executable. The runtime is platform-specific.
+>[!WARNING]
+>⚠️ **OS requirement:** You must build executables on the target platform. Building on Windows produces a Windows executable; building on Linux produces a Linux executable. The runtime is platform-specific.
 
 `em build --exe` produces a single file that runs on a machine with no
 Englishmen installed:
