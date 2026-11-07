@@ -10,7 +10,9 @@ fn bin() -> PathBuf {
 /// Every test runs with EM_HOME/EM_PROJECTS_DIR pointed at nonexistent scratch
 /// paths so `em`'s "prefer the configured install" logic never touches the real
 /// machine's Englishmen install, even if one happens to be present.
-fn isolated_env() -> [(&'static str, String); 2] {
+/// EM_NO_UPDATE_CHECK=1 keeps the automatic update check off in every test;
+/// the update tests re-enable it explicitly where they need it.
+fn isolated_env() -> [(&'static str, String); 3] {
     let dir = std::env::temp_dir().join(format!("em_cli_isolated_env_{}", std::process::id()));
     [
         ("EM_HOME", dir.join("home").display().to_string()),
@@ -18,6 +20,7 @@ fn isolated_env() -> [(&'static str, String); 2] {
             "EM_PROJECTS_DIR",
             dir.join("projects_unused").display().to_string(),
         ),
+        ("EM_NO_UPDATE_CHECK", "1".to_string()),
     ]
 }
 
@@ -90,6 +93,7 @@ fn help_flag_lists_usage() {
     assert!(stdout.contains("em new"));
     assert!(stdout.contains("em repair"));
     assert!(stdout.contains("em uninstall"));
+    assert!(stdout.contains("em update"));
     assert!(stdout.contains("em build"));
     assert!(stdout.contains("--optional"));
     assert!(stdout.contains("appimagetool"));
@@ -864,6 +868,314 @@ fn runs_a_file_saved_with_a_utf8_byte_order_mark() {
         "{}",
         String::from_utf8_lossy(&build.stderr)
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- em update -------------------------------------------------------------
+
+/// A command running against a scratch install directory with the release API
+/// pointed at a local file (or a dead URL for failure tests).
+fn update_command(home: &std::path::Path, api_url: &str) -> Command {
+    let mut command = Command::new(bin());
+    command
+        .env("EM_HOME", home.display().to_string())
+        .env("EM_RELEASES_API_URL", api_url)
+        .env("EM_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null());
+    command
+}
+
+fn release_json(tag: &str) -> String {
+    format!("{{\"tag_name\": \"{tag}\", \"name\": \"{tag}\"}}")
+}
+
+fn write_release_file(dir: &std::path::Path, tag: &str) -> String {
+    let file = dir.join("release.json");
+    std::fs::write(&file, release_json(tag)).unwrap();
+    format!("file://{}", file.display())
+}
+
+fn state_path(home: &std::path::Path) -> PathBuf {
+    home.join("config/updates.emc")
+}
+
+/// Gate on curl being available (the file:// fetch goes through it), mirroring
+/// the optional-packages test above.
+fn have_curl() -> bool {
+    Command::new("curl")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn update_help_lists_the_update_commands() {
+    let output = run(&["update", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("em update --check"));
+    assert!(stdout.contains("Check for updates without installing anything"));
+    assert!(stdout.contains("Turn the automatic startup notification"));
+}
+
+#[test]
+fn update_rejects_unknown_options() {
+    let output = run(&["update", "--bogus"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Unknown update option"));
+}
+
+#[test]
+fn update_notifications_setting_is_persisted() {
+    let dir = scratch("update_notifications");
+    let home = dir.join("home");
+
+    let off = update_command(&home, "unused")
+        .args(["update", "--notifications", "off"])
+        .output()
+        .expect("failed to run em update");
+    assert!(
+        off.status.success(),
+        "{}",
+        String::from_utf8_lossy(&off.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&off.stdout);
+    assert!(stdout.contains("Automatic update notifications disabled"));
+    let state = std::fs::read_to_string(state_path(&home)).unwrap();
+    assert!(state.contains("notifications = \"off\""), "{state}");
+
+    let on = update_command(&home, "unused")
+        .args(["update", "--notifications", "on"])
+        .output()
+        .expect("failed to run em update");
+    assert!(on.status.success());
+    let state = std::fs::read_to_string(state_path(&home)).unwrap();
+    assert!(state.contains("notifications = \"on\""), "{state}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn update_check_reports_the_latest_version_when_up_to_date() {
+    if !have_curl() {
+        return;
+    }
+    let dir = scratch("update_check_latest");
+    let home = dir.join("home");
+    let url = write_release_file(&dir, &format!("v{}", env!("CARGO_PKG_VERSION")));
+
+    let output = update_command(&home, &url)
+        .args(["update", "--check"])
+        .output()
+        .expect("failed to run em update");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Checking for Englishmen updates..."), "{stdout}");
+    assert!(stdout.contains("You are running the latest version!"), "{stdout}");
+    assert!(!stdout.contains("Update available"), "{stdout}");
+
+    let state = std::fs::read_to_string(state_path(&home)).unwrap();
+    assert!(state.contains("last_check = \"1"), "{state}");
+    assert!(
+        state.contains(&format!("latest_version = \"v{}\"", env!("CARGO_PKG_VERSION"))),
+        "{state}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn update_check_reports_an_available_update() {
+    if !have_curl() {
+        return;
+    }
+    let dir = scratch("update_check_available");
+    let home = dir.join("home");
+    let url = write_release_file(&dir, "v99.0.0");
+
+    let output = update_command(&home, &url)
+        .args(["update", "--check"])
+        .output()
+        .expect("failed to run em update");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Update available!"), "{stdout}");
+    assert!(stdout.contains("Latest:    v99.0.0"), "{stdout}");
+    assert!(stdout.contains("Run 'em update' to install."), "{stdout}");
+    // A check must never install anything.
+    assert!(!stdout.contains("Downloading"), "{stdout}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn update_check_fails_gracefully_when_the_api_is_unreachable() {
+    if !have_curl() {
+        return;
+    }
+    let dir = scratch("update_check_offline");
+    let home = dir.join("home");
+
+    // Port 9 (discard) refuses connections immediately, so no long timeouts.
+    let output = update_command(&home, "http://127.0.0.1:9/releases/latest")
+        .args(["update", "--check"])
+        .output()
+        .expect("failed to run em update");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Unable to check for updates."), "{stderr}");
+    assert!(
+        stderr.contains("Please check your internet connection and try again."),
+        "{stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn update_check_bypasses_the_automatic_cooldown() {
+    if !have_curl() {
+        return;
+    }
+    let dir = scratch("update_check_cooldown");
+    let home = dir.join("home");
+
+    // A state file that claims a check just happened and found v0.0.9. The
+    // manual check must ignore both: it always contacts the API.
+    std::fs::create_dir_all(home.join("config")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        state_path(&home),
+        format!("[updates]\nlast_check = \"{now}\"\nlatest_version = \"v0.0.9\"\n"),
+    )
+    .unwrap();
+
+    let url = write_release_file(&dir, "v99.0.0");
+    let output = update_command(&home, &url)
+        .args(["update", "--check"])
+        .output()
+        .expect("failed to run em update");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Update available!"), "{stdout}");
+
+    let state = std::fs::read_to_string(state_path(&home)).unwrap();
+    assert!(state.contains("latest_version = \"v99.0.0\""), "{state}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn update_check_preserves_the_notification_preference() {
+    if !have_curl() {
+        return;
+    }
+    let dir = scratch("update_check_preference");
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join("config")).unwrap();
+    std::fs::write(
+        state_path(&home),
+        "[updates]\nnotifications = \"off\"\nlatest_version = \"v0.0.9\"\n",
+    )
+    .unwrap();
+
+    let url = write_release_file(&dir, &format!("v{}", env!("CARGO_PKG_VERSION")));
+    let output = update_command(&home, &url)
+        .args(["update", "--check"])
+        .output()
+        .expect("failed to run em update");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let state = std::fs::read_to_string(state_path(&home)).unwrap();
+    assert!(state.contains("notifications = \"off\""), "{state}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The automatic check prints a notice on program runs when the cooldown has
+/// expired and a newer release exists — and stays silent when notifications
+/// were turned off. EM_UPDATE_CHECK_FORCE=1 stands in for a terminal stdout.
+#[cfg(target_os = "linux")]
+#[test]
+fn automatic_check_notifies_once_the_cooldown_has_expired() {
+    if !have_curl() {
+        return;
+    }
+    let dir = scratch("auto_check");
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join("config")).unwrap();
+    // The automatic check only runs on an installed Englishmen.
+    std::fs::write(home.join("config/englishmen.emc"), "[installer]\n").unwrap();
+    let stale = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 100_000;
+
+    let program = dir.join("hello.em");
+    std::fs::write(&program, "say(\"hi\")\n").unwrap();
+    let url = write_release_file(&dir, "v99.0.0");
+
+    let notified = Command::new(bin())
+        .arg(&program)
+        .env("EM_HOME", home.display().to_string())
+        .env("EM_RELEASES_API_URL", &url)
+        .env("EM_NO_UPDATE_CHECK", "0")
+        .env("EM_UPDATE_CHECK_FORCE", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run em");
+    let stdout = String::from_utf8_lossy(&notified.stdout);
+    assert!(stdout.contains("hi"), "{stdout}");
+    assert!(
+        stdout.contains("Update available: v99.0.0"),
+        "{stdout}"
+    );
+    let state = std::fs::read_to_string(state_path(&home)).unwrap();
+    assert!(state.contains("latest_version = \"v99.0.0\""), "{state}");
+
+    // With notifications off, the same run stays quiet.
+    std::fs::write(
+        state_path(&home),
+        format!("[updates]\nnotifications = \"off\"\nlast_check = \"{stale}\"\n"),
+    )
+    .unwrap();
+    let quiet = Command::new(bin())
+        .arg(&program)
+        .env("EM_HOME", home.display().to_string())
+        .env("EM_RELEASES_API_URL", &url)
+        .env("EM_NO_UPDATE_CHECK", "0")
+        .env("EM_UPDATE_CHECK_FORCE", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run em");
+    let stdout = String::from_utf8_lossy(&quiet.stdout);
+    assert!(stdout.contains("hi"), "{stdout}");
+    assert!(!stdout.contains("Update available"), "{stdout}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

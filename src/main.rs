@@ -15,6 +15,7 @@ mod modules;
 mod parser;
 mod repl;
 mod runtime;
+mod updater;
 mod value;
 mod vm;
 

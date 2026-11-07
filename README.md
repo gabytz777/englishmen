@@ -536,6 +536,32 @@ qrc.make("https://example.com", "code.png")
 All standard libraries are implemented in Rust and ship inside the `em`
 binary — no Python, Node, or other external runtimes required.
 
+## Updating Englishmen
+
+```text
+em update                Check for and install the latest version
+em update --check        Check only — never downloads or installs
+em update --notifications off
+                         Turn off the automatic startup notice (on by default)
+```
+
+`em update --check` always contacts GitHub Releases and shows whether your
+installed version is current:
+
+```text
+Checking for Englishmen updates...
+
+Update available!
+
+Installed: v1.2.0
+Latest:    v1.3.0
+
+Run 'em update' to install.
+```
+
+Automatic checks run at most once every 24 hours, only print a notice when a
+newer version exists, and never install anything.
+
 ## Project structure
 
 ```text
@@ -553,7 +579,7 @@ deleted and rebuilt at any time with `em build`.
 ## Examples
 
 See [`examples/`](examples/) for runnable programs: `hello.em`,
-`conditions.em`, `objects.em`, `libraries.em`, `site.em`, and the canonical
+`conditions.em`, `objects.em`, `libraries.em`, and the canonical
 `example.em`.
 
 ## Compiler

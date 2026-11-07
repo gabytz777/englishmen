@@ -11,6 +11,7 @@ use crate::interpreter::Interpreter;
 use crate::lexer::tokenize;
 use crate::parser::parse;
 use crate::repl;
+use crate::updater;
 use crate::vm::Vm;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -25,6 +26,16 @@ pub fn run() -> ExitCode {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // The automatic update check belongs to everyday use (REPL, running and
+    // building programs). Update-related commands check by themselves, and
+    // help output stays clean.
+    let auto_check_due = !args
+        .first()
+        .is_some_and(|arg| matches!(arg.as_str(), "update" | "install" | "uninstall" | "repair" | "--help" | "-h" | "--version" | "-v"));
+    if auto_check_due {
+        updater::auto_check();
+    }
 
     if args.is_empty() {
         if !installer::is_installed() {
@@ -45,6 +56,7 @@ pub fn run() -> ExitCode {
         }
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "uninstall" => cmd_uninstall(&args[1..]),
+        "update" => cmd_update(&args[1..]),
         "repair" => cmd_repair(),
         "install" => cmd_install(&args[1..]),
         "build" => cmd_build(&args[1..]),
@@ -79,6 +91,7 @@ Usage:
     em new [name]             Create a new project
     em install [options]      Install or upgrade Englishmen
     em uninstall [options]    Remove Englishmen from this machine
+    em update [options]       Check for and install Englishmen updates
     em repair                 Check and repair the installation
     em                        Start the REPL
     em --help
@@ -94,6 +107,10 @@ Uninstall options:
     -y, --yes                 Remove without asking for confirmation
     --purge                   Also delete the projects folder
                               (projects are kept by default)
+
+Update options:
+    --check                   Check only; never downloads or installs
+    --notifications on|off    Enable or disable automatic update notices
 
 Run options:
     --interpret               Use the tree-walking interpreter instead of the
@@ -510,6 +527,82 @@ fn cmd_repair() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn print_update_help() {
+    println!(
+        r#"Englishmen update commands
+
+    em update                 Check for and install the latest version
+    em update --check         Check for updates without installing anything
+    em update --notifications on|off
+                              Turn the automatic startup notification on or
+                              off (default: on)
+
+Notes:
+    'em update --check' always contacts GitHub, even when an automatic check
+    ran recently or notifications are turned off. It never downloads or
+    installs anything. Automatic checks run at most once every 24 hours and
+    also never install anything — they only print a notice when a newer
+    version exists.
+"#
+    );
+}
+
+/// `em update [--check] [--notifications on|off]`
+fn cmd_update(args: &[String]) -> ExitCode {
+    let mut check_only = false;
+    let mut notifications: Option<bool> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--check" => {
+                check_only = true;
+                i += 1;
+            }
+            "--notifications" => match args.get(i + 1).map(|s| s.as_str()) {
+                Some("on") => {
+                    notifications = Some(true);
+                    i += 2;
+                }
+                Some("off") => {
+                    notifications = Some(false);
+                    i += 2;
+                }
+                Some(other) => {
+                    eprintln!("Error: Unknown notifications setting '{other}' (expected 'on' or 'off')");
+                    return ExitCode::FAILURE;
+                }
+                None => {
+                    eprintln!("Error: '--notifications' needs a value ('on' or 'off')");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--help" | "-h" => {
+                print_update_help();
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("Error: Unknown update option '{other}'\n");
+                print_update_help();
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    if notifications.is_some() && check_only {
+        eprintln!("Error: '--notifications' cannot be combined with '--check'");
+        return ExitCode::FAILURE;
+    }
+
+    if let Some(enabled) = notifications {
+        return updater::set_notifications(enabled);
+    }
+    if check_only {
+        return updater::run_manual_check();
+    }
+    updater::run_install()
 }
 
 /// `em install [-y|--yes] [--no-projects] [--optional|--no-optional]`

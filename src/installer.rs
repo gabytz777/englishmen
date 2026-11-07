@@ -234,7 +234,7 @@ fn install_optional_package(package: &OptionalPackage) -> bool {
 
 /// Download `url` to `dest` with curl or wget. Kept dependency-free on purpose:
 /// both tools already exist on the systems the one-line installer supports.
-fn download(url: &str, dest: &std::path::Path) -> io::Result<()> {
+pub(crate) fn download(url: &str, dest: &std::path::Path) -> io::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -279,7 +279,7 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-fn make_file_executable(path: &std::path::Path) {
+pub(crate) fn make_file_executable(path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
