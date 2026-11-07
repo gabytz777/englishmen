@@ -400,7 +400,7 @@ There is no `None`, `nil`, or `undefined`.
 
 ### How do I import modules, and what is in math/time?
 
-Only five modules exist: `math`, `time`, `qrc`, `cowsay`, and `html`. Import
+Only four modules exist: `math`, `time`, `qrc`, and `cowsay`. Import
 before use:
 
 ```text
@@ -419,27 +419,15 @@ and `e`. `min` and `max` take exactly two arguments, and `pow` takes two.
 `time` has `now`, `sleep`, `year`, `month`, `day`, `hour`, `minute`, and
 `second`; `time.now()` returns seconds since the Unix epoch.
 
-### How do I build HTML, a QR code, or a cow?
+### How do I build a QR code or a cow?
 
 ```text
-import html
 import qrc
 import cowsay
-
-page = html.page("My Site", [
-    html.h1("Hello"),
-    html.p("Welcome."),
-    html.list(["Home", "About"])
-])
-html.save("site/index.html", page)
 
 qrc.make("https://example.com", "code.png")
 cowsay.say("Moo from Englishmen!")
 ```
-
-Other HTML helpers: `h1`–`h6`, `heading`, `div`, `section`, `span`, `link`,
-`image`, `ol`, `tag`, `element`, and `escape`. `html.save` creates missing
-parent directories.
 
 ### How do I build a standalone executable?
 

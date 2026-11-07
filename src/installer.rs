@@ -338,7 +338,6 @@ pub fn run_installer(
     print_step("[OK] Time library");
     print_step("[OK] QRC library");
     print_step("[OK] Cowsay library");
-    print_step("[OK] HTML library");
 
     copy_running_exe()?;
 
@@ -1004,11 +1003,7 @@ fn remove_user_path_entry(dir: &Path) -> io::Result<bool> {
 }
 
 fn module_display_name(name: &str) -> String {
-    if name.eq_ignore_ascii_case("html") {
-        "HTML".to_string()
-    } else {
-        capitalize(name)
-    }
+    capitalize(name)
 }
 
 fn capitalize(s: &str) -> String {

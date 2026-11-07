@@ -18,6 +18,7 @@ em hello.em
 
 - [Why Englishmen exists](#why-englishmen-exists)
 - [Installation](#installation)
+- [Updating Englishmen](#updating-englishmen)
 - [Standalone executables](#standalone-executables)
 - [Running programs](#running-programs)
 - [Language tour](#language-tour)
@@ -122,6 +123,87 @@ cargo build --release
 and `--optional` / `--no-optional` to decide up front whether to install the
 optional packages. Scripted installs (`--yes`, including `install.sh`) skip
 them unless `--optional` is passed.
+
+## Updating Englishmen
+
+Englishmen can check GitHub Releases for a newer stable version and install it
+for you. Nothing is installed automatically: automatic checks only print a
+short notice, and only `em update` changes the executable.
+
+### Automatic checks
+
+An installed `em` checks for updates at most once every 24 hours. The result is
+cached in the platform configuration directory (or `$EM_HOME/config` when
+`EM_HOME` is set), so normal commands do not make a network request every time.
+When a newer stable release exists, the next command prints a notification on
+stderr:
+
+```text
+A new Englishmen version is available!
+
+Installed: v1.5.1
+Latest:    v1.6.0
+
+Run 'em update' to install.
+```
+
+Automatic checks are quiet, bounded by a short timeout, and never fail a
+command if the network is unavailable. They are skipped for `em update`, when
+`--quiet`/`-q` or `ENGLISHMEN_QUIET` is set, in CI, and when notifications are
+disabled. Deprecated and prerelease tags (such as `v1.6.0-beta`) are ignored,
+and an older release is never installed over a newer build.
+
+### Manual updates
+
+```bash
+em update                       # install the latest stable release
+em update --check               # check without installing
+em update --ignore              # dismiss notifications for 24 hours
+em update --later               # snooze notifications for 7 days
+em update --disable-notifications
+em update --enable-notifications
+em update --quiet               # suppress progress messages
+em update --help
+```
+
+`--check` refreshes the cached release information but does not change your
+notification preferences or snooze schedule. `--ignore` and `--later` only
+affect when the next automatic notice appears. Turning notifications off also
+stops automatic network checks; manual `em update` and `em update --check`
+still work.
+
+### Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `ENGLISHMEN_NO_UPDATE_CHECK=1` | Disable automatic checks only. Manual checks still work. |
+| `ENGLISHMEN_NO_UPDATES=1` | Disable the updater completely, including `em update`. |
+| `ENGLISHMEN_UPDATE_CONFIG=<path>` | Use a custom updater state file. |
+| `ENGLISHMEN_QUIET=1` | Suppress automatic notifications. |
+
+`EM_NO_UPDATES=1` and `EM_UPDATE_CONFIG=<path>` are also accepted as short
+aliases.
+
+### How installation is verified
+
+`em update` selects the asset for the current OS and architecture, downloads it
+to a temporary file, checks its size, and verifies GitHub's SHA-256 digest
+and/or a published `<asset>.sha256` checksum when the release provides one. It
+rejects download URLs outside `github.com`/`githubusercontent.com`, extracts
+archives only after checking for unsafe paths, and checks that the result is a
+valid executable for the platform.
+
+The new binary is tested with `--version` before the old one is replaced. The
+replacement is transactional: the previous executable is kept as a backup, and
+is restored if verification or replacement fails. On Windows, where a running
+executable cannot be overwritten, the old file is renamed out of the way first.
+A lock file prevents two updates from running at once.
+
+Prebuilt release assets are currently produced for Linux x86_64/aarch64, macOS
+Intel/Apple Silicon, and Windows x86_64. The updater also recognises matching
+`em-<os>-<arch>` assets (including `.tar.gz`, `.tgz`, and `.zip`) for other
+platforms. If no asset matches, download the release manually from the
+[releases page](https://github.com/gabytz777/englishmen/releases).
 
 ## The `.em` format
 
@@ -451,39 +533,9 @@ qrc.make("https://example.com", "code.png")
 - **time** — `now`, `sleep`, `year`, `month`, `day`, `hour`, `minute`, `second`
 - **qrc** — `make(text, path)` generates a QR code PNG (no external binaries)
 - **cowsay** — `say(message)` prints ASCII-art cow speech (implemented natively, no `cowsay` executable required)
-- **html** — `page`, `h1`–`h6`, `heading`, `p`, `div`, `section`, `span`, `link`, `image`, `list`, `ol`, `tag`, `element`, `escape`, and `save` build and write HTML pages
 
 All standard libraries are implemented in Rust and ship inside the `em`
 binary — no Python, Node, or other external runtimes required.
-
-## Building a website
-
-The `html` library builds pages from ordinary Englishmen values and writes
-them to disk:
-
-```text
-import html
-
-page = html.page("My Site", [
-    html.h1("Hello, world!"),
-    html.p("Welcome to my corner of the internet."),
-    html.link("About me", "about.html"),
-    html.list(["Home", "About", "Contact"])
-])
-
-html.save("site/index.html", page)
-```
-
-Open `site/index.html` in a browser. `html.save` creates parent directories
-when needed, and text helpers escape `&`, `<`, `>`, `"`, and `'` automatically.
-When you need nested markup or attributes, compose raw elements:
-
-```text
-html.element("div", { class: "card" }, [
-    html.h2("A card"),
-    html.p("Built with Englishmen.")
-])
-```
 
 ## Project structure
 
