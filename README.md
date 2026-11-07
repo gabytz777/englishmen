@@ -22,7 +22,6 @@ em hello.em
 - [Standalone executables](#standalone-executables)
 - [Running programs](#running-programs)
 - [Language tour](#language-tour)
-- [Building a website](#building-a-website)
 - [Project structure](#project-structure)
 - [Examples](#examples)
 - [Compiler](#compiler)
