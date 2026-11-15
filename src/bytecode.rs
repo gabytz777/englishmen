@@ -13,6 +13,9 @@ pub const EMB_MAGIC: &[u8; 4] = b"EMBC";
 /// Bytecode format version. Bumped whenever the encoding changes
 /// incompatibly; the VM refuses files it does not recognise.
 pub const EMB_VERSION: u16 = 1;
+/// Deepest function nesting a `.emb` image may declare. Loading recurses once
+/// per level, so without a cap a small file can overflow the host stack.
+const MAX_CHUNK_DEPTH: usize = 128;
 
 /// A compile-time constant. Only scalars are constants — arrays, objects and
 /// closures are built at runtime by dedicated instructions.
@@ -225,7 +228,7 @@ pub fn deserialize(bytes: &[u8]) -> Result<Chunk, EmError> {
         ))
         .with_hint("Recompile the program with 'em build'."));
     }
-    read_chunk(&mut r)
+    read_chunk(&mut r, 0)
 }
 
 fn write_chunk(out: &mut Vec<u8>, chunk: &Chunk) {
@@ -270,7 +273,10 @@ fn write_chunk(out: &mut Vec<u8>, chunk: &Chunk) {
     }
 }
 
-fn read_chunk(r: &mut Reader) -> Result<Chunk, EmError> {
+fn read_chunk(r: &mut Reader, depth: usize) -> Result<Chunk, EmError> {
+    if depth > MAX_CHUNK_DEPTH {
+        return Err(EmError::new("Corrupt bytecode: functions are nested too deeply"));
+    }
     let mut chunk = Chunk::new();
 
     let const_count = r.u32()?;
@@ -294,11 +300,13 @@ fn read_chunk(r: &mut Reader) -> Result<Chunk, EmError> {
     for _ in 0..func_count {
         let name = r.string()?;
         let param_count = r.u32()?;
-        let mut params = Vec::with_capacity(param_count as usize);
+        // The count comes straight from the file, so never reserve more
+        // than the bytes left could hold (a name is at least 4 bytes).
+        let mut params = Vec::with_capacity((param_count as usize).min(r.remaining() / 4));
         for _ in 0..param_count {
             params.push(r.string()?);
         }
-        let body = read_chunk(r)?;
+        let body = read_chunk(r, depth + 1)?;
         chunk.functions.push(Rc::new(FunctionProto {
             name,
             params,
@@ -392,12 +400,16 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], EmError> {
-        if self.pos + n > self.bytes.len() {
+        if n > self.remaining() {
             return Err(EmError::new("Corrupt bytecode: unexpected end of file"));
         }
         let slice = &self.bytes[self.pos..self.pos + n];
         self.pos += n;
         Ok(slice)
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.pos
     }
 
     fn u8(&mut self) -> Result<u8, EmError> {
@@ -661,6 +673,36 @@ mod tests {
         chunk.emit(Op::Jump(999), Span::new(1, 1));
         let err = deserialize(&serialize(&chunk)).unwrap_err();
         assert!(err.message.contains("jump target out of range"));
+    }
+
+    #[test]
+    fn a_huge_parameter_count_does_not_reserve_memory() {
+        // No constants, one function with an empty name that claims 4 billion
+        // parameters and then ends.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(EMB_MAGIC);
+        bytes.extend_from_slice(&EMB_VERSION.to_le_bytes());
+        write_u32(&mut bytes, 0);
+        write_u32(&mut bytes, 1);
+        write_u32(&mut bytes, 0);
+        write_u32(&mut bytes, u32::MAX);
+        let err = deserialize(&bytes).unwrap_err();
+        assert!(err.message.contains("unexpected end of file"));
+    }
+
+    #[test]
+    fn rejects_functions_nested_too_deeply() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(EMB_MAGIC);
+        bytes.extend_from_slice(&EMB_VERSION.to_le_bytes());
+        // Each level: no constants, one function, empty name, no parameters.
+        for _ in 0..100_000 {
+            for value in [0, 1, 0, 0] {
+                write_u32(&mut bytes, value);
+            }
+        }
+        let err = deserialize(&bytes).unwrap_err();
+        assert!(err.message.contains("nested too deeply"));
     }
 
     #[test]
