@@ -108,7 +108,7 @@ impl Vm {
                         self.stack.push(value);
                     }
                     Op::Pop => {
-                        self.pop();
+                        self.pop()?;
                     }
 
                     Op::GetVar(idx) => {
@@ -119,23 +119,23 @@ impl Vm {
                         }
                     }
                     Op::SetVar(idx) => {
-                        let value = self.pop();
+                        let value = self.pop()?;
                         env.assign(chunk.name(idx), value);
                     }
                     Op::DefineVar(idx) => {
-                        let value = self.pop();
+                        let value = self.pop()?;
                         env.define(chunk.name(idx), value);
                     }
 
                     Op::GetProp(idx) => {
-                        let base = self.pop();
+                        let base = self.pop()?;
                         let name = chunk.name(idx);
                         let value = get_property(&base, name).map_err(|e| at(e, span))?;
                         self.stack.push(value);
                     }
                     Op::SetProp(idx) => {
-                        let base = self.pop();
-                        let value = self.pop();
+                        let base = self.pop()?;
+                        let value = self.pop()?;
                         let name = chunk.name(idx);
                         match base {
                             Value::Object(obj) => {
@@ -161,7 +161,7 @@ impl Vm {
                         self.stack.push(value);
                     }
                     Op::GetPropOrObject(idx) => {
-                        let base = self.pop();
+                        let base = self.pop()?;
                         let name = chunk.name(idx);
                         let value = match &base {
                             Value::Object(obj) => {
@@ -180,24 +180,24 @@ impl Vm {
                     }
 
                     Op::GetIndex => {
-                        let index = self.pop();
-                        let base = self.pop();
+                        let index = self.pop()?;
+                        let base = self.pop()?;
                         let value = get_index(&base, &index).map_err(|e| at(e, span))?;
                         self.stack.push(value);
                     }
                     Op::SetIndex => {
-                        let index = self.pop();
-                        let base = self.pop();
-                        let value = self.pop();
+                        let index = self.pop()?;
+                        let base = self.pop()?;
+                        let value = self.pop()?;
                         set_index(&base, &index, value).map_err(|e| at(e, span))?;
                     }
 
                     Op::MakeArray(count) => {
-                        let items = self.drain(count as usize);
+                        let items = self.drain(count as usize)?;
                         self.stack.push(Value::new_array(items));
                     }
                     Op::MakeObject(count) => {
-                        let flat = self.drain(count as usize * 2);
+                        let flat = self.drain((count as usize).saturating_mul(2))?;
                         let mut map = BTreeMap::new();
                         let mut it = flat.into_iter();
                         while let (Some(key), Some(value)) = (it.next(), it.next()) {
@@ -214,22 +214,22 @@ impl Vm {
                     }
 
                     Op::Call(argc, name_idx) => {
-                        let args = self.drain(argc as usize);
-                        let callee = self.pop();
+                        let args = self.drain(argc as usize)?;
+                        let callee = self.pop()?;
                         if self.call(&callee, args, span, chunk.name(name_idx))? {
                             continue 'frames;
                         }
                     }
                     Op::MethodCall(name_idx, argc) => {
-                        let args = self.drain(argc as usize);
-                        let receiver = self.pop();
+                        let args = self.drain(argc as usize)?;
+                        let receiver = self.pop()?;
                         let method = chunk.name(name_idx);
                         if self.method_call(&receiver, method, args, span)? {
                             continue 'frames;
                         }
                     }
                     Op::Say(argc) => {
-                        let args = self.drain(argc as usize);
+                        let args = self.drain(argc as usize)?;
                         runtime::say(&args);
                         self.stack.push(Value::Null);
                     }
@@ -245,45 +245,45 @@ impl Vm {
                     | Op::Lt
                     | Op::GtEq
                     | Op::LtEq => {
-                        let right = self.pop();
-                        let left = self.pop();
+                        let right = self.pop()?;
+                        let left = self.pop()?;
                         let value = binary(op, &left, &right).map_err(|e| at(e, span))?;
                         self.stack.push(value);
                     }
                     Op::Neg => {
-                        let value = self.pop();
+                        let value = self.pop()?;
                         let n = runtime::expect_number(&value, "for unary '-'")
                             .map_err(|m| at(EmError::new(m), span))?;
                         self.stack.push(Value::Number(-n));
                     }
                     Op::Not => {
-                        let value = self.pop();
+                        let value = self.pop()?;
                         self.stack.push(Value::Bool(!value.is_truthy()));
                     }
                     Op::ToBool => {
-                        let value = self.pop();
+                        let value = self.pop()?;
                         self.stack.push(Value::Bool(value.is_truthy()));
                     }
 
                     Op::Jump(target) => self.jump(target),
                     Op::JumpIfFalse(target) => {
-                        if !self.pop().is_truthy() {
+                        if !self.pop()?.is_truthy() {
                             self.jump(target);
                         }
                     }
                     Op::JumpIfFalsePeek(target) => {
-                        if !self.peek().is_truthy() {
+                        if !self.peek()?.is_truthy() {
                             self.jump(target);
                         }
                     }
                     Op::JumpIfTruePeek(target) => {
-                        if self.peek().is_truthy() {
+                        if self.peek()?.is_truthy() {
                             self.jump(target);
                         }
                     }
 
                     Op::RepeatSetup => {
-                        let count = self.pop();
+                        let count = self.pop()?;
                         let n = runtime::expect_number(&count, "as a repeat count")
                             .map_err(|m| at(EmError::new(m), span))?;
                         if n < 0.0 {
@@ -295,12 +295,12 @@ impl Vm {
                         self.stack.push(Value::Number((n as i64) as f64));
                     }
                     Op::RepeatNext(target) => {
-                        let remaining = match self.peek() {
+                        let remaining = match self.peek()? {
                             Value::Number(n) => *n,
-                            _ => unreachable!("repeat counter is always a number"),
+                            _ => return Err(corrupt_stack()),
                         };
                         if remaining <= 0.0 {
-                            self.pop();
+                            self.pop()?;
                             self.jump(target);
                         } else {
                             let last = self.stack.len() - 1;
@@ -308,7 +308,7 @@ impl Vm {
                         }
                     }
                     Op::IterSetup => {
-                        let iterable = self.pop();
+                        let iterable = self.pop()?;
                         // Snapshot the array so mutation inside the body does
                         // not disturb the iteration, as the interpreter does.
                         let items = match &iterable {
@@ -328,13 +328,14 @@ impl Vm {
                         self.stack.push(Value::Number(0.0));
                     }
                     Op::IterNext(name_idx, target) => {
-                        let cursor = match self.peek() {
+                        let cursor = match self.peek()? {
                             Value::Number(n) => *n as usize,
-                            _ => unreachable!("iterator cursor is always a number"),
+                            _ => return Err(corrupt_stack()),
                         };
-                        let items = match &self.stack[self.stack.len() - 2] {
-                            Value::Array(a) => Rc::clone(a),
-                            _ => unreachable!("iterator source is always an array"),
+                        let source = self.stack.len().checked_sub(2).map(|i| &self.stack[i]);
+                        let items = match source {
+                            Some(Value::Array(a)) => Rc::clone(a),
+                            _ => return Err(corrupt_stack()),
                         };
                         let item = items.borrow().get(cursor).cloned();
                         match item {
@@ -344,15 +345,15 @@ impl Vm {
                                 self.stack[last] = Value::Number((cursor + 1) as f64);
                             }
                             None => {
-                                self.pop();
-                                self.pop();
+                                self.pop()?;
+                                self.pop()?;
                                 self.jump(target);
                             }
                         }
                     }
 
                     Op::Return => {
-                        let value = self.pop();
+                        let value = self.pop()?;
                         if self.pop_frame(value) {
                             return Ok(());
                         }
@@ -506,17 +507,17 @@ impl Vm {
         self.frames.last_mut().expect("a frame to run").ip = target as usize;
     }
 
-    fn pop(&mut self) -> Value {
-        self.stack.pop().expect("a value on the stack")
+    fn pop(&mut self) -> Result<Value, EmError> {
+        self.stack.pop().ok_or_else(stack_underflow)
     }
 
-    fn peek(&self) -> &Value {
-        self.stack.last().expect("a value on the stack")
+    fn peek(&self) -> Result<&Value, EmError> {
+        self.stack.last().ok_or_else(stack_underflow)
     }
 
-    fn drain(&mut self, count: usize) -> Vec<Value> {
-        let at = self.stack.len() - count;
-        self.stack.split_off(at)
+    fn drain(&mut self, count: usize) -> Result<Vec<Value>, EmError> {
+        let at = self.stack.len().checked_sub(count).ok_or_else(stack_underflow)?;
+        Ok(self.stack.split_off(at))
     }
 }
 
@@ -533,6 +534,18 @@ fn const_to_value(c: &Const) -> Value {
         Const::Bool(b) => Value::Bool(*b),
         Const::Null => Value::Null,
     }
+}
+
+/// Compiled code never pops more than it pushed, so these only fire for a
+/// damaged or hand-edited `.emb` file. Report it instead of panicking.
+fn stack_underflow() -> EmError {
+    EmError::new("Corrupt bytecode: the value stack ran empty")
+        .with_hint("Recompile the program with 'em build'.")
+}
+
+fn corrupt_stack() -> EmError {
+    EmError::new("Corrupt bytecode: unexpected value on the stack")
+        .with_hint("Recompile the program with 'em build'.")
 }
 
 /// Attach a source position to an error that does not have one yet.
@@ -892,6 +905,28 @@ mod tests {
     fn runtime_errors_carry_a_source_position() {
         let err = run_err("x = 1\ny = x / 0\n");
         assert_eq!(err.span.map(|s| s.line), Some(2));
+    }
+
+    #[test]
+    fn corrupt_stack_use_is_an_error_not_a_panic() {
+        // None of these can come out of the compiler, but a hand-edited
+        // `.emb` file passes validation and reaches the VM with them.
+        let text = |chunk: &mut Chunk| chunk.add_const(Const::String("x".to_string()));
+        let cases: Vec<Box<dyn Fn(&mut Chunk) -> Vec<Op>>> = vec![
+            Box::new(|_| vec![Op::Pop]),
+            Box::new(|_| vec![Op::Say(999)]),
+            Box::new(|_| vec![Op::MakeObject(u32::MAX)]),
+            Box::new(move |c| vec![Op::LoadConst(text(c)), Op::RepeatNext(2)]),
+            Box::new(move |c| vec![Op::LoadConst(text(c)), Op::IterNext(text(c), 2)]),
+        ];
+        for build in cases {
+            let mut chunk = Chunk::new();
+            for op in build(&mut chunk) {
+                chunk.emit(op, Span::new(1, 1));
+            }
+            let err = Vm::new().run(chunk).unwrap_err();
+            assert!(err.message.contains("Corrupt bytecode"), "{}", err.message);
+        }
     }
 
     #[test]
