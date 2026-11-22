@@ -1,6 +1,7 @@
 pub mod collections;
 pub mod cowsay;
 pub mod fs;
+pub mod gfx;
 pub mod json;
 pub mod math;
 pub mod os;
@@ -24,6 +25,7 @@ pub const STD_MODULES: &[&str] = &[
     "os",
     "random",
     "collections",
+    "gfx",
 ];
 
 /// Resolve a standard module by name into its runtime value (an object of native functions).
@@ -39,6 +41,7 @@ pub fn load_module(name: &str) -> Option<Value> {
         "os" => Some(os::module()),
         "random" => Some(random::module()),
         "collections" => Some(collections::module()),
+        "gfx" => Some(gfx::module()),
         _ => None,
     }
 }
@@ -118,6 +121,7 @@ import random
 import time
 import os
 import fs
+import gfx
 
 text = string.upper("hello")
 power = math.pow(2, 8)
@@ -127,6 +131,9 @@ dice = random.int(1, 6)
 weekday_name = time.weekday()
 platform_name = os.platform()
 working_dir = fs.cwd()
+canvas = gfx.canvas(2, 2)
+canvas.set(1, 1, 10, 20, 30)
+pixel = canvas.get(1, 1)
 "#;
         let interpreted = run_interpreted(source);
         let compiled = run_compiled(source);
@@ -138,6 +145,7 @@ working_dir = fs.cwd()
             "weekday_name",
             "platform_name",
             "working_dir",
+            "pixel",
         ] {
             let left = interpreted.globals.get(name).unwrap();
             let right = compiled.globals.get(name).unwrap();
