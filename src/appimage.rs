@@ -5,7 +5,7 @@
 //! the AppDir. Rather than reimplementing SquashFS, this module builds a
 //! temporary AppDir and asks the official `appimagetool` to package it.
 //!
-//! `em build hello.em --exe --appimage` therefore does the usual standalone
+//! `em build hello.enm --exe --appimage` therefore does the usual standalone
 //! build, puts the result in `usr/bin/`, adds a desktop entry and an icon, and
 //! leaves a single portable `hello-x86_64.AppImage` behind.
 
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn default_output_keeps_the_directory_and_adds_the_arch() {
-        let out = default_output_path(Path::new("some/dir/hello.em"));
+        let out = default_output_path(Path::new("some/dir/hello.enm"));
         let name = out.file_name().unwrap().to_string_lossy();
         assert!(name.starts_with("hello-"), "{name}");
         assert!(name.ends_with(".AppImage"), "{name}");
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn names_are_safe_for_desktop_entries_and_scripts() {
         assert_eq!(app_name("my cool app!"), "my-cool-app");
-        assert_eq!(app_name("hello.em"), "hello-em");
+        assert_eq!(app_name("hello.enm"), "hello-enm");
         assert_eq!(app_name("!!!"), "program");
     }
 

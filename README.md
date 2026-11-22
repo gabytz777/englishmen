@@ -1,7 +1,7 @@
 # Englishmen
 
 Englishmen is an English-inspired, beginner-friendly general-purpose programming
-language, implemented entirely in Rust. It uses `.em` source files and a `em`
+language, implemented entirely in Rust. It uses `.enm` source files and an `em`
 command-line tool to run them.
 
 ```text
@@ -11,7 +11,7 @@ say("Hello, world!")
 ```
 
 ```bash
-em hello.em
+em hello.enm
 ```
 
 ## Contents
@@ -97,7 +97,7 @@ that:
   currently `appimagetool` (~15 MB), needed for `em build --appimage`
 - If VS Code is detected on your machine, offers to install the free
   ["Code Runner"](https://marketplace.visualstudio.com/items?itemName=formulahendry.code-runner)
-  extension and wire it up so `.em` files get a ▶ Run button
+  extension and wire it up so `.enm` files get a ▶ Run button
 - Pauses for you to read the summary before the window closes (the
   installer used to exit the instant it finished, which — especially when
   launched by double-clicking `em.exe` — closed the console before anyone
@@ -204,10 +204,13 @@ Intel/Apple Silicon, and Windows x86_64. The updater also recognises matching
 platforms. If no asset matches, download the release manually from the
 [releases page](https://github.com/gabytz777/englishmen/releases).
 
-## The `.em` format
+## The `.enm` format
 
-`.em` files contain Englishmen source code. They're plain UTF-8 text files
+`.enm` files contain Englishmen source code. They're plain UTF-8 text files
 parsed by Englishmen's own lexer/parser — not a subset of any other language.
+
+The old `.em` extension has been retired. Running or building a `.em` file only
+prints a warning asking you to rename it to `.enm`.
 
 ## The `.emc` format
 
@@ -217,12 +220,12 @@ TOML-style key/value format:
 ```toml
 name = "MyProject"
 version = "1.0.0"
-main = "main.em"
+main = "main.enm"
 ```
 
 This is intentionally a simple, predictable configuration format — not a
 natural-language parser. A `.emc` file is optional; you can always run or
-build a single file directly with `em file.em` or `em build file.em`. Inside
+build a single file directly with `em file.enm` or `em build file.enm`. Inside
 a project, `em build` with no arguments compiles the file named by `main`.
 
 ## Standalone executables
@@ -233,11 +236,11 @@ a project, `em build` with no arguments compiles the file named by `main`.
 Englishmen installed:
 
 ```bash
-em build hello.em --exe
+em build hello.enm --exe
 ```
 
 ```text
-Compiled hello.em -> hello.exe (4 instructions, 913 KB, runs on its own)
+Compiled hello.enm -> hello.exe (4 instructions, 913 KB, runs on its own)
 ```
 
 ```bash
@@ -275,11 +278,11 @@ On Linux, `--appimage` packages the standalone build as a portable
 [AppImage](https://appimage.org/):
 
 ```bash
-em build hello.em --appimage
+em build hello.enm --appimage
 ```
 
 ```text
-Compiled hello.em -> hello-x86_64.AppImage (4 instructions, 1518072 bytes, portable Linux AppImage)
+Compiled hello.enm -> hello-x86_64.AppImage (4 instructions, 1518072 bytes, portable Linux AppImage)
 ```
 
 The result runs on x86-64 (or aarch64) Linux without Englishmen installed and
@@ -299,7 +302,7 @@ It is stored under the Englishmen install directory (`tools/appimagetool`), so
 `APPIMAGETOOL` at your own copy:
 
 ```bash
-APPIMAGETOOL=/path/to/appimagetool em build hello.em --appimage
+APPIMAGETOOL=/path/to/appimagetool em build hello.enm --appimage
 ```
 
 The build runs `appimagetool` with `APPIMAGE_EXTRACT_AND_RUN=1`, so FUSE is not
@@ -316,7 +319,7 @@ message rather than misbehaving halfway through a run. See
 ## Running programs
 
 ```bash
-em hello.em
+em hello.enm
 ```
 
 This compiles the program and runs it. To run a program you compiled earlier:
@@ -328,13 +331,13 @@ em hello.emb
 To run it on the original tree-walking interpreter instead:
 
 ```bash
-em hello.em --interpret
+em hello.enm --interpret
 ```
 
 ## `em new`
 
 Creates a new Englishmen project (an `englishmen.emc` plus a starter
-`main.em`). If Englishmen is installed and a projects directory is
+`main.enm`). If Englishmen is installed and a projects directory is
 configured, new projects go there by default; otherwise they're created in
 the current directory.
 
@@ -351,8 +354,8 @@ See [Compiler](#compiler) and
 [Standalone executables](#standalone-executables).
 
 ```bash
-em build main.em
-em build main.em --exe
+em build main.enm
+em build main.enm --exe
 ```
 
 ## `em repair`
@@ -398,7 +401,7 @@ Englishmen REPL
 
 Multiline constructs (`if`/`function`/`repeat`/`for` ... `end`) are buffered
 until they're complete. Each completed snippet is compiled and run on the same
-VM as a program file, so the REPL and `em file.em` behave identically; the
+VM as a program file, so the REPL and `em file.enm` behave identically; the
 variables you define stay in the VM between inputs.
 
 ## Editing in VS Code
@@ -411,13 +414,13 @@ you automatically. To do it by hand instead:
 
    ```json
    "code-runner.executorMapByFileExtension": {
-       ".em": "em"
+       ".enm": "em"
    },
    "code-runner.runInTerminal": true,
    "code-runner.saveFileBeforeRun": true
    ```
 
-Reopen a `.em` file and a ▶ Run button appears in the editor's title bar
+Reopen an `.enm` file and a ▶ Run button appears in the editor's title bar
 (also available via right-click → "Run Code", or `Ctrl+Alt+N`); it runs
 `em <file>` in the integrated terminal.
 
@@ -568,19 +571,19 @@ newer version exists, and never install anything.
 EMProjects/
 └── MyProject/
     ├── englishmen.emc
-    ├── main.em
+    ├── main.enm
     └── main.emb        (after 'em build')
 ```
 
-Larger projects can add more `.em` files and an `assets/` directory
-alongside `main.em`. Compiled `.emb` files are build output — they can be
+Larger projects can add more `.enm` files and an `assets/` directory
+alongside `main.enm`. Compiled `.emb` files are build output — they can be
 deleted and rebuilt at any time with `em build`.
 
 ## Examples
 
-See [`examples/`](examples/) for runnable programs: `hello.em`,
-`conditions.em`, `objects.em`, `libraries.em`, and the canonical
-`example.em`.
+See [`examples/`](examples/) for runnable programs: `hello.enm`,
+`conditions.enm`, `objects.enm`, `libraries.enm`, and the canonical
+`example.enm`.
 
 ## Compiler
 
@@ -593,21 +596,21 @@ behind them:
               /     \
      Interpreter    Compiler
          ↓             ↓
-      run .em       bytecode  →  VM  →  run
+      run .enm      bytecode  →  VM  →  run
                        ↓
                     .emb file
 ```
 
-Running a program compiles it first — `em hello.em` lexes, parses, compiles
+Running a program compiles it first — `em hello.enm` lexes, parses, compiles
 and runs the bytecode in one go, leaving no files behind. `em build` keeps the
 bytecode instead:
 
 ```bash
-em build hello.em
+em build hello.enm
 ```
 
 ```text
-Compiled hello.em -> hello.emb (4 instructions, 104 bytes)
+Compiled hello.enm -> hello.emb (4 instructions, 104 bytes)
 ```
 
 ```bash
@@ -624,19 +627,19 @@ machines that have the same `em` version.
 
 | Command | Effect |
 | --- | --- |
-| `em build hello.em` | Compile to `hello.emb` |
-| `em build hello.em -o out.emb` | Choose the output path |
-| `em build hello.em --run` | Compile, save, then run |
-| `em build hello.em --exe` | Build a standalone executable (see [Standalone executables](#standalone-executables)) |
-| `em build hello.em --exe --appimage` | Package a Linux AppImage (see [Linux AppImages](#linux-appimages)) |
-| `em build hello.em --emit asm` | Print the disassembly, write nothing |
+| `em build hello.enm` | Compile to `hello.emb` |
+| `em build hello.enm -o out.emb` | Choose the output path |
+| `em build hello.enm --run` | Compile, save, then run |
+| `em build hello.enm --exe` | Build a standalone executable (see [Standalone executables](#standalone-executables)) |
+| `em build hello.enm --exe --appimage` | Package a Linux AppImage (see [Linux AppImages](#linux-appimages)) |
+| `em build hello.enm --emit asm` | Print the disassembly, write nothing |
 | `em build` | Compile the `main` of the `englishmen.emc` in this directory |
 
 `--emit asm` prints the instruction stream, which is the readable form of
 exactly what the VM executes:
 
 ```text
-== hello.em ==
+== hello.enm ==
    3     0  LOAD_CONST     0  ("Hello, world!")
    3     1  SAY            1
    3     2  POP
@@ -661,7 +664,7 @@ exactly what the VM executes:
 ### The interpreter is still there
 
 ```bash
-em hello.em --interpret
+em hello.enm --interpret
 ```
 
 Both backends implement the same language, and the test suite checks that they

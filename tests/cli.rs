@@ -40,7 +40,7 @@ fn run(args: &[&str]) -> std::process::Output {
 fn runs_the_required_example_program() {
     let dir = std::env::temp_dir().join(format!("em_cli_test_example_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("example.em");
+    let file = dir.join("example.enm");
     std::fs::write(
         &file,
         r#"$-
@@ -72,7 +72,7 @@ end
 fn reports_a_helpful_error_for_unknown_variables() {
     let dir = std::env::temp_dir().join(format!("em_cli_test_err_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("bad.em");
+    let file = dir.join("bad.enm");
     std::fs::write(&file, "age = 18\nsay(agee)\n").unwrap();
 
     let output = run(&[file.to_str().unwrap()]);
@@ -425,7 +425,7 @@ fn uninstall_purge_deletes_the_projects_folder() {
         String::from_utf8_lossy(&install.stderr)
     );
     assert!(projects.exists());
-    std::fs::write(projects.join("hello.em"), "say(\"hi\")\n").unwrap();
+    std::fs::write(projects.join("hello.enm"), "say(\"hi\")\n").unwrap();
 
     let mut command = Command::new(bin());
     command.args(["uninstall", "--yes", "--purge"]);
@@ -458,7 +458,7 @@ fn new_creates_a_project_with_emc_and_main() {
 
     let project_dir = dir.join("TestProject");
     assert!(project_dir.join("englishmen.emc").exists());
-    assert!(project_dir.join("main.em").exists());
+    assert!(project_dir.join("main.enm").exists());
 
     let emc = std::fs::read_to_string(project_dir.join("englishmen.emc")).unwrap();
     assert!(emc.contains("TestProject"));
@@ -524,7 +524,7 @@ say("total is " + total)
 #[test]
 fn build_writes_bytecode_that_runs_the_same_as_the_source() {
     let dir = scratch("build");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
 
     let build = run(&["build", source.to_str().unwrap()]);
@@ -554,7 +554,7 @@ fn build_writes_bytecode_that_runs_the_same_as_the_source() {
 #[test]
 fn build_honours_the_output_flag_and_can_run_immediately() {
     let dir = scratch("build_out");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
     let out = dir.join("custom.emb");
 
@@ -576,13 +576,13 @@ fn build_honours_the_output_flag_and_can_run_immediately() {
 #[test]
 fn build_emit_asm_prints_a_disassembly_without_writing_a_file() {
     let dir = scratch("build_asm");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
 
     let output = run(&["build", source.to_str().unwrap(), "--emit", "asm"]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("== prog.em =="), "{stdout}");
+    assert!(stdout.contains("== prog.enm =="), "{stdout}");
     assert!(stdout.contains("MAKE_CLOSURE"), "{stdout}");
     assert!(stdout.contains("function double"), "{stdout}");
     assert!(!dir.join("prog.emb").exists());
@@ -595,10 +595,10 @@ fn build_with_no_file_uses_the_project_main() {
     let dir = scratch("build_project");
     std::fs::write(
         dir.join("englishmen.emc"),
-        "name = \"Demo\"\nversion = \"1.0.0\"\nmain = \"main.em\"\n",
+        "name = \"Demo\"\nversion = \"1.0.0\"\nmain = \"main.enm\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("main.em"), "say(\"from the project main\")\n").unwrap();
+    std::fs::write(dir.join("main.enm"), "say(\"from the project main\")\n").unwrap();
 
     let output = Command::new(bin())
         .args(["build", "--run"])
@@ -664,7 +664,7 @@ fn exe_name(stem: &str) -> String {
 #[test]
 fn build_exe_produces_a_program_that_runs_on_its_own() {
     let dir = scratch("build_exe");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
 
     let build = run(&["build", source.to_str().unwrap(), "--exe"]);
@@ -702,7 +702,7 @@ fn build_exe_produces_a_program_that_runs_on_its_own() {
 #[test]
 fn build_appimage_reports_a_missing_tool() {
     let dir = scratch("build_appimage_missing");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
 
     let output = Command::new(bin())
@@ -726,7 +726,7 @@ fn build_appimage_reports_a_missing_tool() {
 #[test]
 fn build_appimage_refuses_to_combine_with_emit_asm() {
     let dir = scratch("build_appimage_asm");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
 
     let output = run(&[
@@ -752,7 +752,7 @@ fn build_appimage_packages_a_runnable_program() {
     };
 
     let dir = scratch("build_appimage");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
     let appimage = dir.join("prog.AppImage");
 
@@ -796,7 +796,7 @@ fn build_appimage_packages_a_runnable_program() {
 #[test]
 fn a_standalone_program_ignores_em_commands_and_stays_itself() {
     let dir = scratch("build_exe_args");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
     assert!(run(&["build", source.to_str().unwrap(), "--exe"])
         .status
@@ -819,7 +819,7 @@ fn a_standalone_program_ignores_em_commands_and_stays_itself() {
 #[test]
 fn build_exe_refuses_to_overwrite_the_source() {
     let dir = scratch("build_exe_clobber");
-    let source = dir.join("prog.em");
+    let source = dir.join("prog.enm");
     std::fs::write(&source, SAMPLE).unwrap();
 
     let output = run(&[
@@ -847,7 +847,7 @@ fn em_itself_is_not_mistaken_for_a_standalone_program() {
 #[test]
 fn runs_a_file_saved_with_a_utf8_byte_order_mark() {
     let dir = scratch("bom");
-    let file = dir.join("bom.em");
+    let file = dir.join("bom.enm");
     // Notepad and PowerShell's Out-File write this BOM by default.
     let mut contents = String::from("\u{feff}");
     contents.push_str("say(\"hello from a BOM file\")\n");
@@ -1136,7 +1136,7 @@ fn automatic_check_notifies_once_the_cooldown_has_expired() {
         .as_secs()
         - 100_000;
 
-    let program = dir.join("hello.em");
+    let program = dir.join("hello.enm");
     std::fs::write(&program, "say(\"hi\")\n").unwrap();
     let url = write_release_file(&dir, "v99.0.0");
 
@@ -1176,6 +1176,42 @@ fn automatic_check_notifies_once_the_cooldown_has_expired() {
     let stdout = String::from_utf8_lossy(&quiet.stdout);
     assert!(stdout.contains("hi"), "{stdout}");
     assert!(!stdout.contains("Update available"), "{stdout}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn old_em_extension_only_warns_instead_of_running() {
+    let dir = std::env::temp_dir().join(format!("em_cli_legacy_ext_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join("old.em");
+    std::fs::write(&old, "say(\"should not run\")\n").unwrap();
+
+    let direct = run(&[old.to_str().unwrap()]);
+    let via_run = run(&["run", old.to_str().unwrap()]);
+    for output in [direct, via_run] {
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("switched from '.em' to '.enm'"), "{stderr}");
+        assert!(stderr.contains("old.enm"), "{stderr}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("should not run"));
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn building_an_old_em_file_only_warns() {
+    let dir = std::env::temp_dir().join(format!("em_cli_legacy_build_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join("old.em");
+    std::fs::write(&old, "say(\"should not build\")\n").unwrap();
+
+    let output = run(&["build", old.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("switched from '.em' to '.enm'"), "{stderr}");
+    assert!(!dir.join("old.emb").exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -79,7 +79,7 @@ fn parse_value(raw: &str) -> String {
 }
 
 pub fn default_emc(project_name: &str) -> String {
-    format!("name = \"{project_name}\"\nversion = \"1.0.0\"\nmain = \"main.em\"\n")
+    format!("name = \"{project_name}\"\nversion = \"1.0.0\"\nmain = \"main.enm\"\n")
 }
 
 #[cfg(test)]
@@ -89,10 +89,10 @@ mod tests {
     #[test]
     fn parses_root_key_values() {
         let config =
-            EmConfig::parse("name = \"MyProject\"\nversion = \"1.0.0\"\nmain = \"main.em\"\n");
+            EmConfig::parse("name = \"MyProject\"\nversion = \"1.0.0\"\nmain = \"main.enm\"\n");
         assert_eq!(config.name(), Some("MyProject"));
         assert_eq!(config.get("version"), Some("1.0.0"));
-        assert_eq!(config.main_file(), Some("main.em"));
+        assert_eq!(config.main_file(), Some("main.enm"));
     }
 
     #[test]
@@ -115,6 +115,6 @@ mod tests {
         let text = default_emc("MyProject");
         let config = EmConfig::parse(&text);
         assert_eq!(config.name(), Some("MyProject"));
-        assert_eq!(config.main_file(), Some("main.em"));
+        assert_eq!(config.main_file(), Some("main.enm"));
     }
 }

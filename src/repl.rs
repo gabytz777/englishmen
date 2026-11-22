@@ -8,7 +8,7 @@ pub fn run_repl() {
     println!("Englishmen REPL");
     println!("Type 'exit' or press Ctrl+C to quit.\n");
 
-    // The REPL runs on the compiler and VM, like `em <file.em>`, so a snippet
+    // The REPL runs on the compiler and VM, like `em <file.enm>`, so a snippet
     // behaves exactly as it would inside a program. Globals live in the VM and
     // persist between inputs.
     let mut vm = Vm::new();

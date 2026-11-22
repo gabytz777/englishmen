@@ -198,9 +198,9 @@ mod tests {
     }
 
     #[test]
-    fn the_output_name_drops_the_em_extension() {
-        let out = default_output_path(Path::new("some/dir/hello.em"));
+    fn the_output_name_drops_the_enm_extension() {
+        let out = default_output_path(Path::new("some/dir/hello.enm"));
         assert_eq!(out.file_stem().unwrap(), "hello");
-        assert_ne!(out.extension().map(|e| e.to_str().unwrap()), Some("em"));
+        assert_ne!(out.extension().map(|e| e.to_str().unwrap()), Some("enm"));
     }
 }

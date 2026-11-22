@@ -340,8 +340,8 @@ mod tests {
         let err = EmError::name("Unknown variable 'agee'")
             .with_span(Span::new(2, 5))
             .with_hint("Did you mean 'age'?");
-        let rendered = err.render("main.em", "age = 18\nsay(agee)\n");
-        assert!(rendered.contains("main.em:2:5"));
+        let rendered = err.render("main.enm", "age = 18\nsay(agee)\n");
+        assert!(rendered.contains("main.enm:2:5"));
         assert!(rendered.contains("2 | say(agee)"));
         assert!(rendered.contains("  |     ^"));
         assert!(rendered.contains("Did you mean 'age'?"));
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn render_expands_tabs_and_underlines_spans() {
         let err = EmError::syntax("bad token").with_span(Span::new(1, 2).with_len(3));
-        let rendered = err.render("x.em", "\tfoo");
+        let rendered = err.render("x.enm", "\tfoo");
         assert!(rendered.contains("1 |     foo"));
         assert!(rendered.contains("  |     ^^^"));
     }
@@ -361,7 +361,7 @@ mod tests {
             .with_span(Span::new(2, 1))
             .with_secondary(Span::new(1, 1), "first defined here")
             .with_note("choose a different name");
-        let rendered = err.render("x.em", "x = 1\nx = 2\n");
+        let rendered = err.render("x.enm", "x = 1\nx = 2\n");
         assert!(rendered.contains("first defined here"));
         assert!(rendered.contains("= note: choose a different name"));
     }

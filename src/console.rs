@@ -1,7 +1,7 @@
 //! Keeping the window open for double-clicked programs.
 //!
 //! When a console program is started from Explorer — double-clicking a
-//! standalone build, or a `.em` file associated with `em` — Windows creates a
+//! standalone build, or an `.enm` file associated with `em` — Windows creates a
 //! console just for it and destroys that console the moment the process exits.
 //! The output flashes past and the window is gone, which looks exactly like
 //! "my program did nothing".

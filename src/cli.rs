@@ -68,7 +68,8 @@ pub fn run() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        other if other.ends_with(".em") || other.ends_with(".emb") => {
+        other if other.ends_with(".em") => legacy_extension_notice(Path::new(other)),
+        other if other.ends_with(".enm") || other.ends_with(".emb") => {
             finish(cmd_run_path(other, &args[1..]))
         }
         other => {
@@ -84,10 +85,10 @@ fn print_help() {
         r#"Englishmen
 
 Usage:
-    em <file.em>              Compile and run a program
+    em <file.enm>             Compile and run a program
     em <file.emb>             Run compiled Englishmen bytecode
     em run <file>             Same as the two above
-    em build [file.em]        Compile to bytecode (defaults to the project main)
+    em build [file.enm]       Compile to bytecode (defaults to the project main)
     em new [name]             Create a new project
     em install [options]      Install or upgrade Englishmen
     em uninstall [options]    Remove Englishmen from this machine
@@ -137,6 +138,18 @@ fn finish(code: ExitCode) -> ExitCode {
     code
 }
 
+/// `.em` was the old source extension. Point people at the new one instead of
+/// silently running a file that the current tooling no longer recognises.
+fn legacy_extension_notice(path: &Path) -> ExitCode {
+    eprintln!("Warning: Englishmen has switched from '.em' to '.enm' source files.");
+    eprintln!(
+        "         Rename '{}' to '{}' and try again.",
+        path.display(),
+        path.with_extension("enm").display()
+    );
+    ExitCode::FAILURE
+}
+
 /// Run the program bundled into this executable by `em build --exe`.
 fn run_embedded(program: Result<Chunk, EmError>) -> ExitCode {
     let name = std::env::current_exe()
@@ -161,7 +174,7 @@ fn run_embedded(program: Result<Chunk, EmError>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Run a `.em` source file or a pre-compiled `.emb` bytecode file.
+/// Run an `.enm` source file or a pre-compiled `.emb` bytecode file.
 fn cmd_run_path(path: &str, rest: &[String]) -> ExitCode {
     let interpret = rest.iter().any(|a| a == "--interpret");
     if let Some(bad) = rest
@@ -174,9 +187,12 @@ fn cmd_run_path(path: &str, rest: &[String]) -> ExitCode {
     }
 
     let path = Path::new(path);
+    if path.extension().and_then(|e| e.to_str()) == Some("em") {
+        return legacy_extension_notice(path);
+    }
     if path.extension().and_then(|e| e.to_str()) == Some("emb") {
         if interpret {
-            eprintln!("Error: '--interpret' only applies to '.em' source files");
+            eprintln!("Error: '--interpret' only applies to '.enm' source files");
             return ExitCode::FAILURE;
         }
         return cmd_run_bytecode(path);
@@ -248,7 +264,7 @@ fn cmd_run_bytecode(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `em build [file.em] [-o out] [--emit asm] [--exe] [--appimage] [--run]`
+/// `em build [file.enm] [-o out] [--emit asm] [--exe] [--appimage] [--run]`
 fn cmd_build(args: &[String]) -> ExitCode {
     let mut file: Option<String> = None;
     let mut out: Option<PathBuf> = None;
@@ -335,12 +351,16 @@ fn cmd_build(args: &[String]) -> ExitCode {
             None => {
                 eprintln!("Error: No source file given and no project found here.");
                 eprintln!();
-                eprintln!("Run 'em build <file.em>', or run 'em build' in a project directory");
+                eprintln!("Run 'em build <file.enm>', or run 'em build' in a project directory");
                 eprintln!("containing an 'englishmen.emc' with a 'main' entry.");
                 return ExitCode::FAILURE;
             }
         },
     };
+
+    if source_path.extension().and_then(|e| e.to_str()) == Some("em") {
+        return legacy_extension_notice(&source_path);
+    }
 
     let (source, filename) = match read_source(&source_path) {
         Some(pair) => pair,
@@ -461,7 +481,7 @@ fn count_instructions(chunk: &Chunk) -> usize {
 fn project_main() -> Option<PathBuf> {
     let dir = std::env::current_dir().ok()?;
     let config = config::EmConfig::load(&dir.join("englishmen.emc")).ok()?;
-    let path = dir.join(config.main_file().unwrap_or("main.em"));
+    let path = dir.join(config.main_file().unwrap_or("main.enm"));
     path.exists().then_some(path)
 }
 
@@ -683,7 +703,7 @@ fn cmd_new(name: Option<&str>) -> ExitCode {
     }
 
     let emc_path = project_dir.join("englishmen.emc");
-    let main_path = project_dir.join("main.em");
+    let main_path = project_dir.join("main.enm");
 
     let emc_contents = config::default_emc(&project_name);
     let main_contents = "$- Welcome to Englishmen! -$\n\nsay(\"Hello, world!\")\n";

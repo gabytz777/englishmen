@@ -412,7 +412,7 @@ fn pause_before_exit(prompt: &str) {
 }
 
 /// If VS Code looks like it's installed, offer to install the "Code Runner"
-/// extension and wire it up to run `.em` files with a single click.
+/// extension and wire it up to run `.enm` files with a single click.
 fn offer_vscode_setup() {
     if !detect_vscode() {
         return;
@@ -421,7 +421,7 @@ fn offer_vscode_setup() {
     println!("We noticed Visual Studio Code is installed on this machine.");
     let wants_setup = confirm(
         "Would you like Englishmen to set up an easier editing experience in VS Code \
-(installs the free 'Code Runner' extension and adds a Run button for .em files)?",
+(installs the free 'Code Runner' extension and adds a Run button for .enm files)?",
     );
     if !wants_setup {
         return;
@@ -442,7 +442,7 @@ VS Code Extensions panel."
 
     match configure_vscode_run_button() {
         Ok(VsCodeSetupOutcome::Configured) => {
-            println!("[OK] VS Code configured. Reopen any open .em files to see the Run button.")
+            println!("[OK] VS Code configured. Reopen any open .enm files to see the Run button.")
         }
         Ok(VsCodeSetupOutcome::AlreadyConfigured) => {
             println!("[OK] VS Code was already set up for Englishmen.")
@@ -455,7 +455,7 @@ VS Code Extensions panel."
                 "[WARN] Your VS Code settings.json didn't look safe to edit automatically, so it was left untouched."
             );
             println!("Add this yourself if you'd like the Run button:");
-            println!("    \"code-runner.executorMapByFileExtension\": {{ \".em\": \"em\" }}");
+            println!("    \"code-runner.executorMapByFileExtension\": {{ \".enm\": \"em\" }}");
         }
         Err(e) => println!("[WARN] Could not update VS Code settings: {e}"),
     }
@@ -560,7 +560,7 @@ fn merge_vscode_settings(existing: &str) -> SettingsMerge {
         return SettingsMerge::AlreadyConfigured;
     }
 
-    let insertion = "\"code-runner.executorMapByFileExtension\": {\n        \".em\": \"em\"\n    },\n    \"code-runner.runInTerminal\": true,\n    \"code-runner.saveFileBeforeRun\": true\n";
+    let insertion = "\"code-runner.executorMapByFileExtension\": {\n        \".enm\": \"em\"\n    },\n    \"code-runner.runInTerminal\": true,\n    \"code-runner.saveFileBeforeRun\": true\n";
 
     if existing.trim().is_empty() {
         return SettingsMerge::Merged(format!("{{\n    {insertion}}}\n"));
@@ -1319,7 +1319,7 @@ mod tests {
     fn merge_vscode_settings_creates_fresh_file() {
         let result = merged_text(merge_vscode_settings(""));
         assert!(result.contains("code-runner.executorMapByFileExtension"));
-        assert!(result.contains(".em"));
+        assert!(result.contains(".enm"));
         assert!(result.trim_start().starts_with('{'));
         assert!(result.trim_end().ends_with('}'));
     }
@@ -1331,7 +1331,7 @@ mod tests {
         // thing after the opening brace, not preceded by a comma.
         assert_eq!(
             result,
-            "{\n    \"code-runner.executorMapByFileExtension\": {\n        \".em\": \"em\"\n    },\n    \"code-runner.runInTerminal\": true,\n    \"code-runner.saveFileBeforeRun\": true\n}\n"
+            "{\n    \"code-runner.executorMapByFileExtension\": {\n        \".enm\": \"em\"\n    },\n    \"code-runner.runInTerminal\": true,\n    \"code-runner.saveFileBeforeRun\": true\n}\n"
         );
     }
 
@@ -1347,7 +1347,7 @@ mod tests {
     #[test]
     fn merge_vscode_settings_is_idempotent_when_already_present() {
         let existing =
-            "{\n    \"code-runner.executorMapByFileExtension\": { \".em\": \"em\" }\n}\n";
+            "{\n    \"code-runner.executorMapByFileExtension\": { \".enm\": \"em\" }\n}\n";
         assert!(matches!(
             merge_vscode_settings(existing),
             SettingsMerge::AlreadyConfigured

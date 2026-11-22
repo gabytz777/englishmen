@@ -707,8 +707,8 @@ mod tests {
 
     #[test]
     fn disassembly_names_every_instruction() {
-        let text = disassemble(&compiled(), "test.em");
-        assert!(text.contains("== test.em =="));
+        let text = disassemble(&compiled(), "test.enm");
+        assert!(text.contains("== test.enm =="));
         assert!(text.contains("function add"));
         assert!(text.contains("IMPORT"));
         assert!(text.contains("ITER_NEXT"));

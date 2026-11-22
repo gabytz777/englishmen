@@ -34,20 +34,20 @@ Skip the question if the user has already made their choice.
 
 Englishmen is implemented in Rust. A program goes through these stages:
 
-1. **Lexer** — turns `.em` source into tokens.
+1. **Lexer** — turns `.enm` source into tokens.
 2. **Parser** — builds an AST (abstract syntax tree).
 3. **Two execution backends** share that AST:
    - the default **compiler** turns it into Englishmen bytecode, and a **VM**
      executes the bytecode;
    - the tree-walking **interpreter** can run the AST directly with
-     `em file.em --interpret`.
+     `em file.enm --interpret`.
 
-`em hello.em` compiles in memory and runs immediately, leaving no files behind.
-`em build hello.em` saves the bytecode as `hello.emb`, which you can later run
+`em hello.enm` compiles in memory and runs immediately, leaving no files behind.
+`em build hello.enm` saves the bytecode as `hello.emb`, which you can later run
 with `em hello.emb`. The `.emb` file contains constants, instructions, function
 prototypes, and source line/column information for runtime errors.
 
-`em build hello.em --exe` copies the `em` runtime and appends the compiled
+`em build hello.enm --exe` copies the `em` runtime and appends the compiled
 program to it, producing a single self-contained executable. It is still
 bytecode plus a runtime, **not** native machine code. On Linux, `--appimage`
 packages that executable as an AppImage.
@@ -63,13 +63,13 @@ the test suite checks that both backends agree.
 
 | Thing | Englishmen |
 | --- | --- |
-| Source file | `.em` |
+| Source file | `.enm` |
 | Output | `say(...)` |
 | Variable | `age = 18` |
 | Equality | `==` |
 | Block end | `end` |
 | Comment | `$- ... -$` |
-| Run | `em hello.em` |
+| Run | `em hello.enm` |
 
 ---
 
@@ -84,13 +84,13 @@ say("Hello, world!")
 
 ### How do I run a program?
 
-Save it as `hello.em`, then:
+Save it as `hello.enm`, then:
 
 ```bash
-em hello.em
+em hello.enm
 ```
 
-`em hello.em` compiles to bytecode and runs it immediately.
+`em hello.enm` compiles to bytecode and runs it immediately.
 
 ### Is it Python or JavaScript? Is it compiled?
 
@@ -98,11 +98,11 @@ No, it is its own language. It has no semicolons, no `let`/`const`, and no
 indentation-based blocks. It compiles to Englishmen bytecode and runs on a VM:
 
 ```bash
-em build hello.em      # writes hello.emb
+em build hello.enm     # writes hello.emb
 em hello.emb           # runs the bytecode
 ```
 
-`em build hello.em --exe` bundles the runtime into a standalone executable.
+`em build hello.enm --exe` bundles the runtime into a standalone executable.
 That is still bytecode plus a runtime, not native machine code.
 
 ### How do I print something?
@@ -432,12 +432,12 @@ cowsay.say("Moo from Englishmen!")
 ### How do I build a standalone executable?
 
 ```bash
-em build hello.em --exe
+em build hello.enm --exe
 ```
 
 On Windows the result is a `.exe`; on Unix it has no extension. It runs without
 Englishmen installed, but it is not native machine code and is not
-cross-platform. On Linux, `em build hello.em --appimage` packages it as an
+cross-platform. On Linux, `em build hello.enm --appimage` packages it as an
 AppImage.
 
 ### How do I start a project?
@@ -446,7 +446,7 @@ AppImage.
 em new MyProject
 ```
 
-A project has an `englishmen.emc` file plus `main.em`. Inside it, `em build`
+A project has an `englishmen.emc` file plus `main.enm`. Inside it, `em build`
 with no arguments compiles the `main` file.
 
 ### What is missing from the language?
