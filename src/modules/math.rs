@@ -81,10 +81,222 @@ pub fn module() -> Value {
         }),
     );
 
+    fields.insert(
+        "log".to_string(),
+        native("math.log", |args| {
+            let value = expect_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.log",
+            )?;
+            let base = expect_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the base for math.log",
+            )?;
+            if value <= 0.0 || base <= 0.0 || base == 1.0 {
+                return Err("math.log requires a positive value and a positive base other than 1".to_string());
+            }
+            Ok(Value::Number(value.log(base)))
+        }),
+    );
+
+    fields.insert(
+        "ln".to_string(),
+        native("math.ln", |args| {
+            let n = expect_number(args.get(0).unwrap_or(&Value::Null), "for math.ln")?;
+            if n <= 0.0 {
+                return Err("math.ln requires a positive number".to_string());
+            }
+            Ok(Value::Number(n.ln()))
+        }),
+    );
+
+    fields.insert(
+        "exp".to_string(),
+        native("math.exp", |args| {
+            let n = expect_number(args.get(0).unwrap_or(&Value::Null), "for math.exp")?;
+            Ok(Value::Number(n.exp()))
+        }),
+    );
+
+    for (method, name) in [("sin", "math.sin"), ("cos", "math.cos"), ("tan", "math.tan")] {
+        fields.insert(
+            method.to_string(),
+            native(name, move |args| {
+                let n = expect_number(
+                    args.get(0).unwrap_or(&Value::Null),
+                    "for trigonometry",
+                )?;
+                Ok(Value::Number(match method {
+                    "sin" => n.sin(),
+                    "cos" => n.cos(),
+                    _ => n.tan(),
+                }))
+            }),
+        );
+    }
+
+    fields.insert(
+        "hypot".to_string(),
+        native("math.hypot", |args| {
+            let a = expect_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.hypot",
+            )?;
+            let b = expect_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "for math.hypot",
+            )?;
+            Ok(Value::Number(a.hypot(b)))
+        }),
+    );
+
+    fields.insert(
+        "sign".to_string(),
+        native("math.sign", |args| {
+            let n = expect_number(args.get(0).unwrap_or(&Value::Null), "for math.sign")?;
+            if n.is_nan() {
+                return Err("math.sign cannot be applied to NaN".to_string());
+            }
+            Ok(Value::Number(if n > 0.0 { 1.0 } else if n < 0.0 { -1.0 } else { 0.0 }))
+        }),
+    );
+
+    fields.insert(
+        "gcd".to_string(),
+        native("math.gcd", |args| {
+            let a = whole_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.gcd",
+            )?
+            .unsigned_abs();
+            let b = whole_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "for math.gcd",
+            )?
+            .unsigned_abs();
+            let mut x = a as u128;
+            let mut y = b as u128;
+            while y != 0 {
+                (x, y) = (y, x % y);
+            }
+            Ok(Value::Number(x as f64))
+        }),
+    );
+
+    fields.insert(
+        "lcm".to_string(),
+        native("math.lcm", |args| {
+            let a = whole_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.lcm",
+            )?
+            .unsigned_abs() as u128;
+            let b = whole_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "for math.lcm",
+            )?
+            .unsigned_abs() as u128;
+            if a == 0 || b == 0 {
+                return Ok(Value::Number(0.0));
+            }
+            let mut x = a;
+            let mut y = b;
+            let product = a * b;
+            while y != 0 {
+                (x, y) = (y, x % y);
+            }
+            Ok(Value::Number((product / x) as f64))
+        }),
+    );
+
+    fields.insert(
+        "clamp".to_string(),
+        native("math.clamp", |args| {
+            let value = expect_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.clamp",
+            )?;
+            let min = expect_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the lower bound for math.clamp",
+            )?;
+            let max = expect_number(
+                args.get(2).unwrap_or(&Value::Null),
+                "as the upper bound for math.clamp",
+            )?;
+            if min > max {
+                return Err("math.clamp lower bound cannot exceed the upper bound".to_string());
+            }
+            Ok(Value::Number(value.clamp(min, max)))
+        }),
+    );
+
+    fields.insert(
+        "degrees".to_string(),
+        native("math.degrees", |args| {
+            let radians = expect_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.degrees",
+            )?;
+            Ok(Value::Number(radians.to_degrees()))
+        }),
+    );
+
+    fields.insert(
+        "radians".to_string(),
+        native("math.radians", |args| {
+            let degrees = expect_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.radians",
+            )?;
+            Ok(Value::Number(degrees.to_radians()))
+        }),
+    );
+
+    fields.insert(
+        "isPrime".to_string(),
+        native("math.isPrime", |args| {
+            let n = whole_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.isPrime",
+            )?;
+            if n < 2 {
+                return Ok(Value::Bool(false));
+            }
+            if n == 2 {
+                return Ok(Value::Bool(true));
+            }
+            if n % 2 == 0 {
+                return Ok(Value::Bool(false));
+            }
+            let mut divisor = 3i64;
+            let mut prime = true;
+            while divisor
+                .checked_mul(divisor)
+                .is_some_and(|square| square <= n)
+            {
+                if n % divisor == 0 {
+                    prime = false;
+                    break;
+                }
+                divisor += 2;
+            }
+            Ok(Value::Bool(prime))
+        }),
+    );
+
     fields.insert("pi".to_string(), Value::Number(std::f64::consts::PI));
     fields.insert("e".to_string(), Value::Number(std::f64::consts::E));
 
     Value::new_object(fields)
+}
+
+fn whole_number(value: &Value, context: &str) -> Result<i64, String> {
+    let n = crate::runtime::expect_number(value, context)?;
+    if !n.is_finite() || n.fract() != 0.0 || n < i64::MIN as f64 || n > i64::MAX as f64 {
+        return Err(format!("Expected a whole number {context}, found {n}"));
+    }
+    Ok(n as i64)
 }
 
 #[cfg(test)]
@@ -139,5 +351,53 @@ mod tests {
             unreachable!()
         };
         assert!((native.func)(&[Value::Number(-1.0)]).is_err());
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn logarithms_and_exponentials() {
+        assert!(matches!(call("log", &[Value::Number(8.0), Value::Number(2.0)]), Value::Number(n) if close(n, 3.0)));
+        assert!(matches!(call("ln", &[Value::Number(std::f64::consts::E)]), Value::Number(n) if close(n, 1.0)));
+        assert!(matches!(call("exp", &[Value::Number(0.0)]), Value::Number(n) if close(n, 1.0)));
+        assert!(call("log", &[Value::Number(-1.0), Value::Number(2.0)]).is_err());
+        assert!(call("ln", &[Value::Number(0.0)]).is_err());
+    }
+
+    #[test]
+    fn trigonometry_and_hypot() {
+        assert!(matches!(call("sin", &[Value::Number(0.0)]), Value::Number(n) if close(n, 0.0)));
+        assert!(matches!(call("cos", &[Value::Number(0.0)]), Value::Number(n) if close(n, 1.0)));
+        assert!(matches!(call("tan", &[Value::Number(0.0)]), Value::Number(n) if close(n, 0.0)));
+        assert!(matches!(call("hypot", &[Value::Number(3.0), Value::Number(4.0)]), Value::Number(n) if close(n, 5.0)));
+        assert!(matches!(call("degrees", &[Value::Number(std::f64::consts::PI)]), Value::Number(n) if close(n, 180.0)));
+        assert!(matches!(call("radians", &[Value::Number(180.0)]), Value::Number(n) if close(n, std::f64::consts::PI)));
+    }
+
+    #[test]
+    fn integer_helpers_and_clamp() {
+        assert!(matches!(call("sign", &[Value::Number(-3.0)]), Value::Number(n) if n == -1.0));
+        assert!(matches!(call("sign", &[Value::Number(0.0)]), Value::Number(n) if n == 0.0));
+        assert!(matches!(call("gcd", &[Value::Number(12.0), Value::Number(18.0)]), Value::Number(n) if n == 6.0));
+        assert!(matches!(call("lcm", &[Value::Number(4.0), Value::Number(6.0)]), Value::Number(n) if n == 12.0));
+        assert!(matches!(
+            call("clamp", &[Value::Number(15.0), Value::Number(0.0), Value::Number(10.0)]),
+            Value::Number(n) if n == 10.0
+        ));
+        assert!(call("clamp", &[Value::Number(1.0), Value::Number(3.0), Value::Number(2.0)]).is_err());
+        assert!(call("gcd", &[Value::Number(1.5), Value::Number(2.0)]).is_err());
+    }
+
+    #[test]
+    fn primality() {
+        for prime in [2.0, 3.0, 7.0, 97.0] {
+            assert!(matches!(call("isPrime", &[Value::Number(prime)]), Value::Bool(true)));
+        }
+        for composite in [-3.0, 0.0, 1.0, 4.0, 9.0, 100.0] {
+            assert!(matches!(call("isPrime", &[Value::Number(composite)]), Value::Bool(false)));
+        }
+        assert!(call("isPrime", &[Value::Number(2.5)]).is_err());
     }
 }
