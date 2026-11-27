@@ -9,7 +9,7 @@ use crate::runtime::native;
 use crate::value::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -426,6 +426,46 @@ fn json_decode(src: &str) -> Result<Value, String> {
     Ok(val)
 }
 
+/// Locate a value inside a string, array or object key, returning -1 when it
+/// is not present. Strings search by substring; arrays use value equality.
+fn index_of_value(haystack: &Value, needle: &Value) -> i64 {
+    match (haystack, needle) {
+        (Value::String(s), Value::String(part)) => {
+            s.find(part.as_str()).map(|i| i as i64).unwrap_or(-1)
+        }
+        (Value::Array(items), _) => items
+            .borrow()
+            .iter()
+            .position(|v| v.equals(needle))
+            .map(|i| i as i64)
+            .unwrap_or(-1),
+        (Value::Object(fields), Value::String(key)) => fields
+            .borrow()
+            .keys()
+            .position(|k| k == key)
+            .map(|i| i as i64)
+            .unwrap_or(-1),
+        _ => -1,
+    }
+}
+
+fn contains_value(haystack: &Value, needle: &Value) -> bool {
+    index_of_value(haystack, needle) >= 0
+}
+
+fn slice_index(raw: f64, len: usize, name: &str) -> Result<usize, String> {
+    if !raw.is_finite() || raw.fract() != 0.0 {
+        return Err(format!("{name} expects integer slice indexes"));
+    }
+    let index = raw as i64;
+    let index = if index < 0 {
+        len as i64 + index
+    } else {
+        index
+    };
+    Ok(index.clamp(0, len as i64) as usize)
+}
+
 /// The global builtin table. Seeded into every new root environment.
 pub fn globals() -> HashMap<String, Value> {
     let mut g = HashMap::new();
@@ -549,6 +589,57 @@ pub fn globals() -> HashMap<String, Value> {
                 arg(args, 0),
                 Value::Function(_) | Value::Compiled(_) | Value::Native(_)
             )))
+        }),
+    );
+
+    g.insert(
+        "parseInt".to_string(),
+        native("parseInt", |args| {
+            at_least_args(args, 1, "parseInt")?;
+            no_extra(args, 2, "parseInt")?;
+            let src = expect_str(args, 0, "for parseInt")?;
+            let radix = if args.len() == 2 {
+                expect_num(args, 1, "as the radix for parseInt")?
+            } else {
+                10.0
+            };
+            if !radix.is_finite() || radix.fract() != 0.0 || !(2.0..=36.0).contains(&radix) {
+                return Err("parseInt radix must be an integer between 2 and 36".to_string());
+            }
+            let text = src.trim();
+            let (negative, digits) = match text.strip_prefix('-') {
+                Some(rest) => (true, rest),
+                None => (false, text.strip_prefix('+').unwrap_or(text)),
+            };
+            if digits.is_empty() {
+                return Err(format!("parseInt could not parse \"{src}\""));
+            }
+            let mut result = 0i128;
+            for c in digits.chars() {
+                let digit = c.to_digit(radix as u32).ok_or_else(|| {
+                    format!("parseInt could not parse \"{src}\" as base {}", radix as u32)
+                })?;
+                result = result
+                    .checked_mul(radix as i128)
+                    .and_then(|v| v.checked_add(digit as i128))
+                    .ok_or_else(|| format!("parseInt number is too large: \"{src}\""))?;
+            }
+            if negative {
+                result = -result;
+            }
+            Ok(Value::Number(result as f64))
+        }),
+    );
+
+    g.insert(
+        "parseFloat".to_string(),
+        native("parseFloat", |args| {
+            exact_args(args, 1, "parseFloat")?;
+            let src = expect_str(args, 0, "for parseFloat")?;
+            src.trim()
+                .parse::<f64>()
+                .map(Value::Number)
+                .map_err(|_| format!("parseFloat could not parse \"{src}\""))
         }),
     );
 
@@ -778,6 +869,126 @@ pub fn globals() -> HashMap<String, Value> {
         }),
     );
 
+    g.insert(
+        "keys".to_string(),
+        native("keys", |args| {
+            exact_args(args, 1, "keys")?;
+            match arg(args, 0) {
+                Value::Object(o) => Ok(Value::new_array(
+                    o.borrow().keys().map(|k| Value::String(k.clone())).collect(),
+                )),
+                other => Err(format!(
+                    "Type mismatch: keys expects an object, found {}",
+                    other.type_name()
+                )),
+            }
+        }),
+    );
+
+    g.insert(
+        "values".to_string(),
+        native("values", |args| {
+            exact_args(args, 1, "values")?;
+            match arg(args, 0) {
+                Value::Object(o) => Ok(Value::new_array(o.borrow().values().cloned().collect())),
+                other => Err(format!(
+                    "Type mismatch: values expects an object, found {}",
+                    other.type_name()
+                )),
+            }
+        }),
+    );
+
+    g.insert(
+        "first".to_string(),
+        native("first", |args| {
+            exact_args(args, 1, "first")?;
+            match arg(args, 0) {
+                Value::Array(a) => Ok(a.borrow().first().cloned().unwrap_or(Value::Null)),
+                Value::String(s) => Ok(s
+                    .chars()
+                    .next()
+                    .map(|c| Value::String(c.to_string()))
+                    .unwrap_or(Value::Null)),
+                other => Err(format!(
+                    "Type mismatch: first expects an array or string, found {}",
+                    other.type_name()
+                )),
+            }
+        }),
+    );
+
+    g.insert(
+        "last".to_string(),
+        native("last", |args| {
+            exact_args(args, 1, "last")?;
+            match arg(args, 0) {
+                Value::Array(a) => Ok(a.borrow().last().cloned().unwrap_or(Value::Null)),
+                Value::String(s) => Ok(s
+                    .chars()
+                    .next_back()
+                    .map(|c| Value::String(c.to_string()))
+                    .unwrap_or(Value::Null)),
+                other => Err(format!(
+                    "Type mismatch: last expects an array or string, found {}",
+                    other.type_name()
+                )),
+            }
+        }),
+    );
+
+    g.insert(
+        "indexOf".to_string(),
+        native("indexOf", |args| {
+            exact_args(args, 2, "indexOf")?;
+            Ok(Value::Number(index_of_value(arg(args, 0), arg(args, 1)) as f64))
+        }),
+    );
+
+    g.insert(
+        "contains".to_string(),
+        native("contains", |args| {
+            exact_args(args, 2, "contains")?;
+            Ok(Value::Bool(contains_value(arg(args, 0), arg(args, 1))))
+        }),
+    );
+
+    g.insert(
+        "slice".to_string(),
+        native("slice", |args| {
+            at_least_args(args, 2, "slice")?;
+            no_extra(args, 3, "slice")?;
+            let source = arg(args, 0).clone();
+            let len = match &source {
+                Value::Array(a) => a.borrow().len(),
+                Value::String(s) => s.chars().count(),
+                other => {
+                    return Err(format!(
+                        "Type mismatch: slice expects an array or string, found {}",
+                        other.type_name()
+                    ))
+                }
+            };
+            let start = slice_index(expect_num(args, 1, "as the start for slice")?, len, "slice")?;
+            let end = match args.get(2) {
+                Some(v) => slice_index(expect_num_value(v, "as the end for slice")?, len, "slice")?,
+                None => len,
+            };
+            if end < start {
+                return Err("slice expects end >= start".to_string());
+            }
+            match source {
+                Value::Array(a) => Ok(Value::new_array(
+                    a.borrow()[start..end].to_vec(),
+                )),
+                Value::String(s) => Ok(Value::String(
+                    s.chars().skip(start).take(end - start).collect(),
+                )),
+                _ => unreachable!(),
+            }
+        }),
+    );
+
     // --- Math ---
     g.insert(
         "pow".to_string(),
@@ -864,8 +1075,9 @@ pub fn globals() -> HashMap<String, Value> {
             if min_i > max_i {
                 return Err("randomInt expects min <= max".to_string());
             }
-            let span = (max_i - min_i) as u64 + 1;
-            let v = min_i + (next_rand_u64() % span) as i64;
+            // Use i128 so the full i64 range (including MIN..MAX) is safe.
+            let span = (max_i as i128 - min_i as i128 + 1) as u128;
+            let v = min_i as i128 + (next_rand_u64() as u128 % span) as i128;
             Ok(Value::Number(v as f64))
         }),
     );
@@ -885,6 +1097,32 @@ pub fn globals() -> HashMap<String, Value> {
                 *guard = 0x9E3779B97F4A7C15;
             }
             Ok(Value::Null)
+        }),
+    );
+
+    g.insert(
+        "randomChoice".to_string(),
+        native("randomChoice", |args| {
+            exact_args(args, 1, "randomChoice")?;
+            let items = expect_array(args, 0, "for randomChoice")?;
+            if items.is_empty() {
+                return Err("randomChoice expects a non-empty array".to_string());
+            }
+            let index = (next_rand_u64() % items.len() as u64) as usize;
+            Ok(items[index].clone())
+        }),
+    );
+
+    g.insert(
+        "shuffle".to_string(),
+        native("shuffle", |args| {
+            exact_args(args, 1, "shuffle")?;
+            let mut items = expect_array(args, 0, "for shuffle")?;
+            for i in (1..items.len()).rev() {
+                let j = (next_rand_u64() % (i as u64 + 1)) as usize;
+                items.swap(i, j);
+            }
+            Ok(Value::new_array(items))
         }),
     );
 
@@ -954,6 +1192,86 @@ pub fn globals() -> HashMap<String, Value> {
             exact_args(args, 1, "lower")?;
             let s = expect_str(args, 0, "for lower")?;
             Ok(Value::String(s.to_lowercase()))
+        }),
+    );
+
+    g.insert(
+        "split".to_string(),
+        native("split", |args| {
+            exact_args(args, 2, "split")?;
+            let s = expect_str(args, 0, "for split")?;
+            let separator = expect_str(args, 1, "as the separator for split")?;
+            let parts: Vec<Value> = if separator.is_empty() {
+                s.chars().map(|c| Value::String(c.to_string())).collect()
+            } else {
+                s.split(separator.as_str())
+                    .map(|part| Value::String(part.to_string()))
+                    .collect()
+            };
+            Ok(Value::new_array(parts))
+        }),
+    );
+
+    g.insert(
+        "join".to_string(),
+        native("join", |args| {
+            at_least_args(args, 1, "join")?;
+            no_extra(args, 2, "join")?;
+            let items = expect_array(args, 0, "for join")?;
+            let separator = if args.len() == 2 {
+                expect_str(args, 1, "as the separator for join")?
+            } else {
+                String::new()
+            };
+            let parts: Vec<String> = items.iter().map(|v| v.display()).collect();
+            Ok(Value::String(parts.join(&separator)))
+        }),
+    );
+
+    g.insert(
+        "replace".to_string(),
+        native("replace", |args| {
+            exact_args(args, 3, "replace")?;
+            let s = expect_str(args, 0, "for replace")?;
+            let from = expect_str(args, 1, "as the text to replace for replace")?;
+            let to = expect_str(args, 2, "as the replacement for replace")?;
+            if from.is_empty() {
+                return Ok(Value::String(s));
+            }
+            Ok(Value::String(s.replace(&from, &to)))
+        }),
+    );
+
+    g.insert(
+        "startsWith".to_string(),
+        native("startsWith", |args| {
+            exact_args(args, 2, "startsWith")?;
+            let s = expect_str(args, 0, "for startsWith")?;
+            let prefix = expect_str(args, 1, "as the prefix for startsWith")?;
+            Ok(Value::Bool(s.starts_with(&prefix)))
+        }),
+    );
+
+    g.insert(
+        "endsWith".to_string(),
+        native("endsWith", |args| {
+            exact_args(args, 2, "endsWith")?;
+            let s = expect_str(args, 0, "for endsWith")?;
+            let suffix = expect_str(args, 1, "as the suffix for endsWith")?;
+            Ok(Value::Bool(s.ends_with(&suffix)))
+        }),
+    );
+
+    g.insert(
+        "repeat".to_string(),
+        native("repeat", |args| {
+            exact_args(args, 2, "repeat")?;
+            let s = expect_str(args, 0, "for repeat")?;
+            let count = expect_num(args, 1, "as the count for repeat")?;
+            if !count.is_finite() || count.fract() != 0.0 || count < 0.0 {
+                return Err("repeat expects a non-negative integer count".to_string());
+            }
+            Ok(Value::String(s.repeat(count as usize)))
         }),
     );
 
@@ -1228,4 +1546,417 @@ fn format_string(template: &str, args: &[Value]) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::compile;
+    use crate::interpreter::Interpreter;
+    use crate::lexer::tokenize;
+    use crate::parser::parse;
+    use crate::vm::Vm;
+    use std::rc::Rc;
+
+    const EXPECTED_BUILTINS: &[&str] = &[
+        "len",
+        "type",
+        "toNumber",
+        "toString",
+        "toBool",
+        "isNumber",
+        "isString",
+        "isArray",
+        "isObject",
+        "isBool",
+        "isNull",
+        "isFunction",
+        "parseInt",
+        "parseFloat",
+        "range",
+        "sum",
+        "average",
+        "min",
+        "max",
+        "abs",
+        "clamp",
+        "sorted",
+        "reversed",
+        "zip",
+        "keys",
+        "values",
+        "first",
+        "last",
+        "indexOf",
+        "contains",
+        "slice",
+        "pow",
+        "sqrt",
+        "floor",
+        "ceil",
+        "round",
+        "sign",
+        "random",
+        "randomInt",
+        "seed",
+        "randomChoice",
+        "shuffle",
+        "input",
+        "print",
+        "format",
+        "trim",
+        "upper",
+        "lower",
+        "split",
+        "join",
+        "replace",
+        "startsWith",
+        "endsWith",
+        "repeat",
+        "readFile",
+        "writeFile",
+        "appendFile",
+        "fileExists",
+        "deleteFile",
+        "listFiles",
+        "makeDir",
+        "clock",
+        "timestamp",
+        "env",
+        "args",
+        "sleep",
+        "assert",
+        "jsonEncode",
+        "jsonDecode",
+    ];
+
+    fn call(name: &str, args: &[Value]) -> Result<Value, String> {
+        let table = globals();
+        match table.get(name) {
+            Some(Value::Native(f)) => (f.func)(args),
+            Some(other) => panic!("{name} is not a native function: {}", other.display()),
+            None => panic!("missing builtin: {name}"),
+        }
+    }
+
+    fn ok(name: &str, args: &[Value]) -> Value {
+        call(name, args).unwrap_or_else(|e| panic!("{name} failed unexpectedly: {e}"))
+    }
+
+    fn err(name: &str, args: &[Value]) -> String {
+        call(name, args).expect_err("expected a builtin error")
+    }
+
+    fn number(value: Value) -> f64 {
+        match value {
+            Value::Number(n) => n,
+            other => panic!("expected a number, found {}", other.display()),
+        }
+    }
+
+    fn text(value: Value) -> String {
+        match value {
+            Value::String(s) => s,
+            other => panic!("expected a string, found {}", other.display()),
+        }
+    }
+
+    fn boolean(value: Value) -> bool {
+        match value {
+            Value::Bool(b) => b,
+            other => panic!("expected a boolean, found {}", other.display()),
+        }
+    }
+
+    fn items(value: Value) -> Vec<Value> {
+        match value {
+            Value::Array(a) => a.borrow().clone(),
+            other => panic!("expected an array, found {}", other.display()),
+        }
+    }
+
+    fn strings(values: &[&str]) -> Vec<Value> {
+        values.iter().map(|s| Value::String((*s).to_string())).collect()
+    }
+
+    fn numbers(values: &[f64]) -> Vec<Value> {
+        values.iter().map(|n| Value::Number(*n)).collect()
+    }
+
+    fn object(fields: &[(&str, Value)]) -> Value {
+        Value::new_object(
+            fields
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn registry_exposes_all_builtins_as_native_functions() {
+        let table = globals();
+        assert!(table.len() >= 35, "only {} builtins", table.len());
+        for name in EXPECTED_BUILTINS {
+            assert!(matches!(table.get(*name), Some(Value::Native(_))), "missing {name}");
+        }
+    }
+
+    #[test]
+    fn conversions_and_type_checks() {
+        assert_eq!(text(ok("type", &[Value::Null])), "null");
+        assert_eq!(text(ok("type", &[Value::new_array(vec![])])), "array");
+        assert_eq!(number(ok("toNumber", &[Value::String(" 3.5 ".into())])), 3.5);
+        assert_eq!(number(ok("toNumber", &[Value::Bool(true)])), 1.0);
+        assert_eq!(number(ok("toNumber", &[Value::Null])), 0.0);
+        assert_eq!(text(ok("toString", &[Value::Number(12.0)])), "12");
+        assert!(boolean(ok("toBool", &[Value::String("x".into())])));
+        assert!(!boolean(ok("toBool", &[Value::Number(0.0)])));
+        assert_eq!(number(ok("parseInt", &[Value::String("ff".into()), Value::Number(16.0)])), 255.0);
+        assert_eq!(number(ok("parseInt", &[Value::String("-101".into()), Value::Number(2.0)])), -5.0);
+        assert_eq!(number(ok("parseFloat", &[Value::String("-2.25e2".into())])), -225.0);
+        assert!(boolean(ok("isNumber", &[Value::Number(1.0)])));
+        assert!(boolean(ok("isString", &[Value::String("".into())])));
+        assert!(boolean(ok("isArray", &[Value::new_array(vec![])])));
+        assert!(boolean(ok("isObject", &[object(&[])])));
+        assert!(boolean(ok("isBool", &[Value::Bool(false)])));
+        assert!(boolean(ok("isNull", &[Value::Null])));
+        assert!(boolean(ok("isFunction", &[Value::Native(Rc::new(crate::value::NativeFunction {
+            name: "x".to_string(),
+            func: Box::new(|_| Ok(Value::Null)),
+        }))])));
+        assert!(err("parseInt", &[Value::String("12".into()), Value::Number(1.0)]).contains("2 and 36"));
+    }
+
+    #[test]
+    fn string_builtins() {
+        assert_eq!(text(ok("trim", &[Value::String("  hi  ".into())])), "hi");
+        assert_eq!(text(ok("upper", &[Value::String("héllo".into())])), "HÉLLO");
+        assert_eq!(text(ok("lower", &[Value::String("HÉLLO".into())])), "héllo");
+        assert_eq!(text(ok("reversed", &[Value::String("abc".into())])), "cba");
+        let split = items(ok("split", &[Value::String("a,b,c".into()), Value::String(",".into())]));
+        assert_eq!(split.iter().map(|v| text(v.clone())).collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(items(ok("split", &[Value::String("ab".into()), Value::String("".into())])).len(), 2);
+        assert_eq!(text(ok("join", &[Value::new_array(strings(&["a", "b"])), Value::String("-".into())])), "a-b");
+        assert_eq!(text(ok("join", &[Value::new_array(strings(&["a", "b"]))])), "ab");
+        assert_eq!(text(ok("replace", &[Value::String("a-b-a".into()), Value::String("a".into()), Value::String("c".into())])), "c-b-c");
+        assert!(boolean(ok("startsWith", &[Value::String("hello".into()), Value::String("he".into())])));
+        assert!(boolean(ok("endsWith", &[Value::String("hello".into()), Value::String("lo".into())])));
+        assert_eq!(text(ok("repeat", &[Value::String("ab".into()), Value::Number(3.0)])), "ababab");
+        assert_eq!(text(ok("slice", &[Value::String("hello".into()), Value::Number(-3.0)])), "llo");
+        assert_eq!(number(ok("indexOf", &[Value::String("hello".into()), Value::String("ll".into())])), 2.0);
+        assert!(boolean(ok("contains", &[Value::String("hello".into()), Value::String("ell".into())])));
+        assert_eq!(text(ok("first", &[Value::String("abc".into())])), "a");
+        assert_eq!(text(ok("last", &[Value::String("abc".into())])), "c");
+        assert_eq!(text(ok("format", &[Value::String("{1}-{0} {{ok}}".into()), Value::String("a".into()), Value::String("b".into())])), "b-a {ok}");
+        assert!(err("format", &[Value::String("{".into())]).contains("unmatched"));
+    }
+
+    #[test]
+    fn collection_builtins() {
+        let one_to_four = items(ok("range", &[Value::Number(1.0), Value::Number(5.0)]));
+        assert_eq!(one_to_four.iter().map(|v| number(v.clone())).collect::<Vec<_>>(), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(items(ok("range", &[Value::Number(0.0), Value::Number(10.0), Value::Number(3.0)])).len(), 4);
+        assert_eq!(number(ok("sum", &[Value::new_array(numbers(&[1.0, 2.0, 3.0]))])), 6.0);
+        assert_eq!(number(ok("average", &[Value::new_array(numbers(&[2.0, 4.0]))])), 3.0);
+        assert_eq!(number(ok("min", &[Value::new_array(numbers(&[3.0, -1.0, 2.0]))])), -1.0);
+        assert_eq!(number(ok("max", &[Value::Number(4.0), Value::Number(9.0), Value::Number(2.0)])), 9.0);
+        assert_eq!(items(ok("sorted", &[Value::new_array(numbers(&[3.0, 1.0, 2.0]))])).len(), 3);
+        let sorted_strings = items(ok("sorted", &[Value::new_array(strings(&["b", "a"]))]));
+        assert_eq!(
+            sorted_strings.iter().map(|v| text(v.clone())).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        let reversed = items(ok("reversed", &[Value::new_array(numbers(&[1.0, 2.0]))]));
+        assert_eq!(reversed.iter().map(|v| number(v.clone())).collect::<Vec<_>>(), [2.0, 1.0]);
+        let pairs = items(ok("zip", &[Value::new_array(numbers(&[1.0, 2.0])), Value::new_array(strings(&["a"]))]));
+        assert_eq!(pairs.len(), 1);
+        let pair = items(pairs[0].clone());
+        assert_eq!(number(pair[0].clone()), 1.0);
+        assert_eq!(text(pair[1].clone()), "a");
+        let object = object(&[("b", Value::Number(2.0)), ("a", Value::Number(1.0))]);
+        let keys = items(ok("keys", &[object.clone()]));
+        assert_eq!(keys.iter().map(|v| text(v.clone())).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(items(ok("values", &[object.clone()])).iter().map(|v| number(v.clone())).collect::<Vec<_>>(), [1.0, 2.0]);
+        assert!(boolean(ok("contains", &[object.clone(), Value::String("a".into())])));
+        assert_eq!(number(ok("indexOf", &[object, Value::String("b".into())])), 1.0);
+        let array = Value::new_array(numbers(&[1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(number(ok("first", &[array.clone()])), 1.0);
+        assert_eq!(number(ok("last", &[array.clone()])), 4.0);
+        assert_eq!(items(ok("slice", &[array, Value::Number(1.0), Value::Number(3.0)])).iter().map(|v| number(v.clone())).collect::<Vec<_>>(), [2.0, 3.0]);
+        assert!(err("range", &[Value::Number(1.0), Value::Number(2.0), Value::Number(0.0)]).contains("non-zero"));
+        assert!(err("average", &[Value::new_array(vec![])]).contains("empty"));
+    }
+
+    #[test]
+    fn math_builtins() {
+        assert_eq!(number(ok("abs", &[Value::Number(-3.0)])), 3.0);
+        assert_eq!(number(ok("pow", &[Value::Number(2.0), Value::Number(10.0)])), 1024.0);
+        assert_eq!(number(ok("sqrt", &[Value::Number(9.0)])), 3.0);
+        assert_eq!(number(ok("floor", &[Value::Number(1.9)])), 1.0);
+        assert_eq!(number(ok("ceil", &[Value::Number(1.1)])), 2.0);
+        assert_eq!(number(ok("round", &[Value::Number(1.5)])), 2.0);
+        assert_eq!(number(ok("sign", &[Value::Number(-8.0)])), -1.0);
+        assert_eq!(number(ok("clamp", &[Value::Number(12.0), Value::Number(0.0), Value::Number(10.0)])), 10.0);
+        assert!(err("sqrt", &[Value::Number(-1.0)]).contains("negative"));
+        assert!(err("clamp", &[Value::Number(1.0), Value::Number(5.0), Value::Number(0.0)]).contains("min <= max"));
+    }
+
+    #[test]
+    fn random_builtins_respect_seed_and_bounds() {
+        ok("seed", &[Value::Number(42.0)]);
+        let first = number(ok("random", &[]));
+        ok("seed", &[Value::Number(42.0)]);
+        assert_eq!(number(ok("random", &[])), first);
+        assert!((0.0..1.0).contains(&first));
+
+        for _ in 0..50 {
+            let value = number(ok("randomInt", &[Value::Number(-5.0), Value::Number(5.0)]));
+            assert!((-5.0..=5.0).contains(&value) && value.fract() == 0.0);
+        }
+        let values = Value::new_array(numbers(&[1.0, 2.0, 3.0]));
+        for _ in 0..20 {
+            let chosen = number(ok("randomChoice", &[values.clone()]));
+            assert!((1.0..=3.0).contains(&chosen));
+            let mut shuffled = items(ok("shuffle", &[values.clone()]))
+                .iter()
+                .map(|v| number(v.clone()))
+                .collect::<Vec<_>>();
+            shuffled.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert_eq!(shuffled, [1.0, 2.0, 3.0]);
+        }
+        assert!(err("randomInt", &[Value::Number(5.0), Value::Number(1.0)]).contains("min <= max"));
+        assert!(err("randomChoice", &[Value::new_array(vec![])]).contains("non-empty"));
+        assert!(err("random", &[Value::Number(1.0)]).contains("expects 0 arguments"));
+    }
+
+    #[test]
+    fn json_round_trip_and_validation() {
+        let nested = object(&[
+            ("name", Value::String("Ada\n\"the \"\"great\"\"\"".into())),
+            ("scores", Value::new_array(vec![Value::Number(1.0), Value::Bool(true), Value::Null])),
+        ]);
+        let encoded = text(ok("jsonEncode", &[nested]));
+        assert_eq!(
+            encoded,
+            r#"{"name":"Ada\n\"the \"\"great\"\"\"","scores":[1,true,null]}"#
+        );
+        let decoded = ok("jsonDecode", &[Value::String(encoded)]);
+        let Value::Object(fields) = decoded else {
+            panic!("expected an object");
+        };
+        assert_eq!(fields.borrow().get("name").unwrap().display(), "Ada\n\"the \"\"great\"\"\"");
+        assert_eq!(text(ok("jsonEncode", &[ok("jsonDecode", &[Value::String("[1, 2, {\"a\": false}]".into())])])), r#"[1,2,{"a":false}]"#);
+        assert!(err("jsonDecode", &[Value::String("{\"a\":}".into())]).contains("jsonDecode"));
+        assert!(err("jsonDecode", &[Value::String("null extra".into())]).contains("trailing"));
+        assert!(err("jsonEncode", &[Value::Number(f64::NAN)]).contains("non-finite"));
+        assert!(err("jsonEncode", &[Value::Null, Value::Null]).contains("expects 1 argument"));
+    }
+
+    #[test]
+    fn filesystem_builtins() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("em-builtins-{}-{nanos}", std::process::id()));
+        let dir_name = dir.to_string_lossy().to_string();
+        let file = dir.join("note.txt");
+        let file_name = file.to_string_lossy().to_string();
+
+        ok("makeDir", &[Value::String(dir_name.clone())]);
+        assert!(matches!(
+            ok("fileExists", &[Value::String(file_name.clone())]),
+            Value::Bool(false)
+        ));
+        ok("writeFile", &[Value::String(file_name.clone()), Value::String("one".into())]);
+        ok("appendFile", &[Value::String(file_name.clone()), Value::String("two".into())]);
+        assert_eq!(text(ok("readFile", &[Value::String(file_name.clone())])), "onetwo");
+        assert!(matches!(
+            ok("fileExists", &[Value::String(file_name.clone())]),
+            Value::Bool(true)
+        ));
+        let listed = items(ok("listFiles", &[Value::String(dir_name.clone())]));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(text(listed[0].clone()), "note.txt");
+        ok("deleteFile", &[Value::String(file_name.clone())]);
+        assert!(matches!(
+            ok("fileExists", &[Value::String(file_name)]),
+            Value::Bool(false)
+        ));
+        ok("deleteFile", &[Value::String(dir_name)]);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn system_and_assertion_builtins() {
+        assert!(number(ok("clock", &[])) > 1_000_000_000.0);
+        assert!(number(ok("timestamp", &[])) > 1_000_000_000_000.0);
+        assert!(!items(ok("args", &[])).is_empty());
+        assert!(matches!(
+            ok("env", &[Value::String("__EM_BUILTINS_TEST_UNSET__".into())]),
+            Value::Null
+        ));
+        assert!(matches!(ok("assert", &[Value::Bool(true)]), Value::Null));
+        assert!(err(
+            "assert",
+            &[Value::Bool(false), Value::String("broken".into())]
+        )
+        .contains("broken"));
+        ok("sleep", &[Value::Number(0.0)]);
+        assert!(err("sleep", &[Value::Number(-1.0)]).contains("non-negative"));
+    }
+
+    #[test]
+    fn argument_validation_is_consistent() {
+        assert!(err("len", &[]).contains("expects 1 argument"));
+        assert!(err(
+            "range",
+            &[
+                Value::Number(1.0),
+                Value::Number(2.0),
+                Value::Number(1.0),
+                Value::Number(1.0)
+            ]
+        )
+        .contains("at most 3 arguments"));
+        assert!(err("sqrt", &[Value::String("4".into())]).contains("expected a number"));
+        assert!(err(
+            "sorted",
+            &[Value::new_array(vec![Value::Number(1.0), Value::String("a".into())])]
+        )
+        .contains("all numbers or all strings"));
+        assert!(err("toNumber", &[Value::String("oops".into())]).contains("could not convert"));
+        assert!(err("jsonDecode", &[Value::Number(1.0)]).contains("expected a string"));
+    }
+
+    #[test]
+    fn builtins_are_reachable_from_both_backends() {
+        let src = concat!(
+            "a = len(range(1, 5))\n",
+            "b = upper(\"hi\")\n",
+            "c = jsonEncode({ name: \"Ada\", scores: [1, 2] })\n",
+            "d = sum([1, 2, 3])\n",
+            "parts = split(\"a,b,c\", \",\")\n",
+            "e = parts[1]\n"
+        );
+        let program = parse(tokenize(src).unwrap()).unwrap();
+
+        let mut interpreter = Interpreter::new();
+        interpreter.run(&program).unwrap();
+        let mut vm = Vm::new();
+        vm.run(compile(&program).unwrap()).unwrap();
+
+        for (name, expected) in [
+            ("a", "4"),
+            ("b", "HI"),
+            ("c", r#"{"name":"Ada","scores":[1,2]}"#),
+            ("d", "6"),
+            ("e", "b"),
+        ] {
+            let interpreted = interpreter.globals.get(name).unwrap().display();
+            let compiled = vm.globals.get(name).unwrap().display();
+            assert_eq!(interpreted, expected, "{name} in interpreter");
+            assert_eq!(compiled, expected, "{name} in VM");
+        }
+    }
 }
