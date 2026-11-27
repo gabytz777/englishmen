@@ -147,9 +147,10 @@ fn prompt_for(buffer: &str) -> &'static str {
 
 /// Split a meta command into its name and argument, if any.
 fn split_command(body: &str) -> (&str, &str) {
+    let body = body.trim();
     match body.find(char::is_whitespace) {
         Some(index) => (body[..index].trim(), body[index..].trim()),
-        None => (body.trim(), ""),
+        None => (body, ""),
     }
 }
 
@@ -181,9 +182,15 @@ fn with_argument(
     name: &str,
     argument: &str,
     what: &str,
+    unquote: bool,
     build: fn(String) -> Command,
 ) -> Command {
-    let value = unquote_argument(argument);
+    let argument = argument.trim();
+    let value = if unquote {
+        unquote_argument(argument)
+    } else {
+        argument
+    };
     if value.is_empty() {
         Command::Invalid(format!(
             "':{}' needs {what}",
@@ -214,9 +221,11 @@ fn classify_input(line: &str, continuing: bool) -> Input {
             "history" => no_argument(name, argument, Command::History),
             "quit" | "exit" => no_argument(name, argument, Command::Quit),
             "about" => no_argument(name, argument, Command::About),
-            "load" => with_argument(name, argument, "a file name", Command::Load),
-            "save" => with_argument(name, argument, "a file name", Command::Save),
-            "time" => with_argument(name, argument, "an expression", Command::Time),
+            "load" => with_argument(name, argument, "a file name", true, Command::Load),
+            "save" => with_argument(name, argument, "a file name", true, Command::Save),
+            // Expressions keep their quotes: `:time "hi"` must pass a string
+            // literal through to the compiler, not strip it like a file path.
+            "time" => with_argument(name, argument, "an expression", false, Command::Time),
             other => Command::Invalid(format!(
                 "Unknown command ':{other}'. Type ':help' for the command list."
             )),
@@ -465,8 +474,11 @@ mod tests {
     #[test]
     fn commands_ignore_case_and_extra_spaces() {
         assert_eq!(command("  :HELP   "), Command::Help);
+        assert_eq!(command(":  help  "), Command::Help);
+        assert_eq!(command(":\tvars"), Command::Vars);
         assert_eq!(command(":Load   \"my program.enm\"  "), Command::Load("my program.enm".to_string()));
-        assert_eq!(command(":time   'x * 2'"), Command::Time("x * 2".to_string()));
+        assert_eq!(command(":time   'x * 2'"), Command::Time("'x * 2'".to_string()));
+        assert_eq!(command(":time \"hello\""), Command::Time("\"hello\"".to_string()));
     }
 
     #[test]
@@ -634,6 +646,18 @@ mod tests {
         repl.run_command(Command::Invalid("oops".to_string()));
         assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 7.0));
         assert_eq!(repl.session_source, "x = 7\n");
+    }
+
+    #[test]
+    fn quoted_time_expression_keeps_string_literals() {
+        let mut repl = Repl::new();
+        let Command::Time(expression) = command(":time \"hello\"") else {
+            panic!("expected :time command");
+        };
+        assert_eq!(expression, "\"hello\"");
+        let source = source_for_time(&expression);
+        assert_eq!(source, "say(\"hello\")\n");
+        assert!(run_snippet(&mut repl.vm, &source, REPL_NAME));
     }
 
     #[test]
