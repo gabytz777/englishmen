@@ -12,10 +12,13 @@ use std::rc::Rc;
 pub const EMB_MAGIC: &[u8; 4] = b"EMBC";
 /// Bytecode format version. Bumped whenever the encoding changes
 /// incompatibly; the VM refuses files it does not recognise.
-pub const EMB_VERSION: u16 = 1;
+pub const EMB_VERSION: u16 = 2;
 /// Deepest function nesting a `.emb` image may declare. Loading recurses once
 /// per level, so without a cap a small file can overflow the host stack.
 const MAX_CHUNK_DEPTH: usize = 32;
+/// Largest stack rotation (`Rotate(n)` touches `n + 1` values) accepted from a
+/// `.emb` file. Compound assignment/property updates only need `n <= 3`.
+const MAX_ROTATE: u32 = 16;
 
 /// A compile-time constant. Only scalars are constants — arrays, objects and
 /// closures are built at runtime by dedicated instructions.
@@ -91,6 +94,17 @@ pub enum Op {
     Not,
     /// Replace the top of the stack with its truthiness as a boolean.
     ToBool,
+    /// Duplicate the top of the stack (used by postfix `++`/`--`).
+    Dup,
+    /// Rotate the top `n + 1` stack values right by one, so the former top
+    /// ends up at the bottom of that group. Used to reorder a computed value
+    /// in front of a property/index target before storing it.
+    Rotate(u32),
+
+    /// Like `GetProp`, but keeps the base on the stack below the value.
+    GetPropKeep(u32),
+    /// Like `GetIndex`, but keeps `base` and `index` below the value.
+    GetIndexKeep,
 
     /// Unconditional jump to an absolute address.
     Jump(u32),
@@ -100,6 +114,8 @@ pub enum Op {
     JumpIfFalsePeek(u32),
     /// Jump if the top of the stack is truthy, leaving it in place.
     JumpIfTruePeek(u32),
+    /// Jump if the top of the stack is `null`, leaving it in place.
+    JumpIfNullPeek(u32),
 
     /// Pop a repeat count, validate it and push a loop counter.
     RepeatSetup,
@@ -163,6 +179,7 @@ impl Chunk {
             Op::JumpIfFalse(_) => Op::JumpIfFalse(target),
             Op::JumpIfFalsePeek(_) => Op::JumpIfFalsePeek(target),
             Op::JumpIfTruePeek(_) => Op::JumpIfTruePeek(target),
+            Op::JumpIfNullPeek(_) => Op::JumpIfNullPeek(target),
             Op::RepeatNext(_) => Op::RepeatNext(target),
             Op::IterNext(name, _) => Op::IterNext(name, target),
             other => panic!("patch_jump on non-jump instruction {other:?}"),
@@ -347,6 +364,7 @@ fn validate(chunk: &Chunk) -> Result<(), EmError> {
             | Op::SetProp(a)
             | Op::GetVarOrObject(a)
             | Op::GetPropOrObject(a)
+            | Op::GetPropKeep(a)
             | Op::Import(a)
             | Op::MethodCall(a, _)
             | Op::IterNext(a, _)
@@ -365,6 +383,7 @@ fn validate(chunk: &Chunk) -> Result<(), EmError> {
             | Op::JumpIfFalse(a)
             | Op::JumpIfFalsePeek(a)
             | Op::JumpIfTruePeek(a)
+            | Op::JumpIfNullPeek(a)
             | Op::RepeatNext(a)
             | Op::IterNext(_, a) => Some(a),
             _ => None,
@@ -378,6 +397,7 @@ fn validate(chunk: &Chunk) -> Result<(), EmError> {
         match *op {
             Op::LoadConst(a) if a >= consts => return bad("constant index out of range"),
             Op::MakeClosure(a) if a >= funcs => return bad("function index out of range"),
+            Op::Rotate(n) if n > MAX_ROTATE => return bad("rotate count out of range"),
             _ => {}
         }
     }
