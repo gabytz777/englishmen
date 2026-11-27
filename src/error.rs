@@ -29,7 +29,7 @@ impl Span {
     /// Mark the span as covering `len` characters starting at `col`.
     pub fn with_len(mut self, len: usize) -> Self {
         if len > 1 {
-            self.end_col = Some(self.col + len - 1);
+            self.end_col = Some(self.col.saturating_add(len - 1));
         }
         self
     }
@@ -44,7 +44,7 @@ impl Span {
         if end.line.is_some_and(|line| line != self.line) {
             return self;
         }
-        if end.col >= self.col {
+        if end.col > self.col {
             self.end_col = Some(end.col);
         }
         self
@@ -61,14 +61,14 @@ impl Span {
     }
 
     /// The inclusive column where this span ends (the start column when the
-    /// span covers a single character).
+    /// span covers a single character or has a backwards public `end_col`).
     pub fn end(&self) -> usize {
-        self.end_col.unwrap_or(self.col)
+        self.end_col.unwrap_or(self.col).max(self.col)
     }
 
     /// Number of characters covered by the span (always at least one).
     pub fn len(&self) -> usize {
-        self.end() - self.col + 1
+        self.end().saturating_sub(self.col).saturating_add(1)
     }
 
     /// True when `line` and `col` fall inside this span, inclusive.
@@ -1077,6 +1077,10 @@ mod tests {
         assert!(json.contains("\"code\":\"E002\""));
         assert!(json.contains("\"span\":{\"line\":2,\"col\":5,\"end_col\":8}"));
         assert!(json.contains("\"hint\":\"Did you mean 'age'?\""));
+        assert_eq!(
+            json,
+            "{\"message\":\"Unknown variable 'agee'\",\"code\":\"E002\",\"span\":{\"line\":2,\"col\":5,\"end_col\":8},\"hint\":\"Did you mean 'age'?\"}"
+        );
     }
 
     #[test]
@@ -1159,6 +1163,23 @@ mod tests {
         assert_eq!(single.end(), 2);
         assert_eq!(single.len(), 1);
         assert!(single.contains(1, 2));
+    }
+
+    #[test]
+    fn backwards_public_end_does_not_panic() {
+        // `end_col` is public, so callers can construct a malformed span.
+        // Diagnostics must degrade to a one-character span, not panic.
+        let span = Span {
+            line: 3,
+            col: 7,
+            end_col: Some(2),
+        };
+        assert_eq!(span.end(), 7);
+        assert_eq!(span.len(), 1);
+        assert!(span.contains(3, 7));
+        assert!(!span.contains(3, 2));
+        assert!(!span.overlaps(Span::range(3, 1, 6)));
+        assert!(span.overlaps(Span::range(3, 7, 9)));
     }
 
     #[test]
