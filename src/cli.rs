@@ -885,8 +885,9 @@ struct FormatLine {
 }
 
 /// Replace comments with spaces, preserving every position and newline so
-/// lexer spans still refer to the original source. Strings are left alone:
-/// `$-` inside a literal is text, not a comment.
+/// lexer spans still refer to the original source. `$- ... -$` inside a plain
+/// string literal is text, not a comment; inside an interpolation expression it
+/// is a real comment and must be captured so formatting can put it back.
 fn strip_comments(source: &str) -> (String, Vec<FormatComment>) {
     let chars: Vec<char> = source.chars().collect();
     let mut clean = String::with_capacity(source.len());
@@ -895,10 +896,128 @@ fn strip_comments(source: &str) -> (String, Vec<FormatComment>) {
     let mut line = 1;
     let mut col = 1;
     let mut in_string = false;
+    let mut interp_depth: usize = 0;
+    let mut in_interp_string = false;
 
     while i < chars.len() {
         let c = chars[i];
+
         if in_string {
+            // Inside a nested string that lives in an interpolation expression.
+            if in_interp_string {
+                clean.push(c);
+                if c == '\\' && i + 1 < chars.len() {
+                    i += 1;
+                    let escaped = chars[i];
+                    clean.push(escaped);
+                    if escaped == '\n' {
+                        line += 1;
+                        col = 1;
+                    } else {
+                        col += 1;
+                    }
+                    i += 1;
+                    col += 1;
+                    continue;
+                }
+                if c == '"' {
+                    in_interp_string = false;
+                }
+                if c == '\n' {
+                    line += 1;
+                    col = 1;
+                } else {
+                    col += 1;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Inside interpolation expression text: comments are real comments,
+            // nested strings and braces behave like normal source.
+            if interp_depth > 0 {
+                if c == '$' && chars.get(i + 1) == Some(&'-') {
+                    let start_line = line;
+                    let start_col = col;
+                    let mut text = String::from("$-");
+                    clean.push(' ');
+                    clean.push(' ');
+                    i += 2;
+                    col += 2;
+                    while i < chars.len() {
+                        let ch = chars[i];
+                        text.push(ch);
+                        clean.push(if ch == '\n' { '\n' } else { ' ' });
+                        if ch == '-' && chars.get(i + 1) == Some(&'$') {
+                            text.push('$');
+                            clean.push(' ');
+                            i += 2;
+                            col += 2;
+                            break;
+                        }
+                        if ch == '\n' {
+                            line += 1;
+                            col = 1;
+                        } else {
+                            col += 1;
+                        }
+                        i += 1;
+                    }
+                    comments.push(FormatComment {
+                        line: start_line,
+                        col: start_col,
+                        text,
+                    });
+                    continue;
+                }
+                if c == '"' {
+                    in_interp_string = true;
+                    clean.push(c);
+                    i += 1;
+                    col += 1;
+                    continue;
+                }
+                if c == '{' {
+                    interp_depth += 1;
+                    clean.push(c);
+                    i += 1;
+                    col += 1;
+                    continue;
+                }
+                if c == '}' {
+                    interp_depth = interp_depth.saturating_sub(1);
+                    clean.push(c);
+                    i += 1;
+                    col += 1;
+                    continue;
+                }
+                if c == '\\' && i + 1 < chars.len() {
+                    clean.push(c);
+                    i += 1;
+                    let escaped = chars[i];
+                    clean.push(escaped);
+                    if escaped == '\n' {
+                        line += 1;
+                        col = 1;
+                    } else {
+                        col += 1;
+                    }
+                    i += 1;
+                    col += 1;
+                    continue;
+                }
+                if c == '\n' {
+                    line += 1;
+                    col = 1;
+                } else {
+                    col += 1;
+                }
+                clean.push(c);
+                i += 1;
+                continue;
+            }
+
+            // Plain string literal content.
             clean.push(c);
             if c == '\\' && i + 1 < chars.len() {
                 i += 1;
@@ -916,6 +1035,34 @@ fn strip_comments(source: &str) -> (String, Vec<FormatComment>) {
             }
             if c == '"' {
                 in_string = false;
+            } else if c == '{' {
+                if chars.get(i + 1) == Some(&'{') {
+                    // `{{` is a literal brace in strings.
+                    i += 1;
+                    clean.push('{');
+                    if chars[i] == '\n' {
+                        line += 1;
+                        col = 1;
+                    } else {
+                        col += 1;
+                    }
+                    i += 1;
+                    col += 1;
+                    continue;
+                }
+                interp_depth = 1;
+            } else if c == '}' && chars.get(i + 1) == Some(&'}') {
+                i += 1;
+                clean.push('}');
+                if chars[i] == '\n' {
+                    line += 1;
+                    col = 1;
+                } else {
+                    col += 1;
+                }
+                i += 1;
+                col += 1;
+                continue;
             }
             if c == '\n' {
                 line += 1;
@@ -926,8 +1073,11 @@ fn strip_comments(source: &str) -> (String, Vec<FormatComment>) {
             i += 1;
             continue;
         }
+
         if c == '"' {
             in_string = true;
+            interp_depth = 0;
+            in_interp_string = false;
             clean.push(c);
             i += 1;
             col += 1;
