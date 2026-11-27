@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn rng_state() -> &'static Mutex<u64> {
@@ -25,8 +25,15 @@ fn rng_state() -> &'static Mutex<u64> {
     })
 }
 
+/// Recover a poisoned mutex instead of panicking in a user-callable builtin.
+fn lock_rng() -> MutexGuard<'static, u64> {
+    rng_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn next_rand() -> f64 {
-    let mut guard = rng_state().lock().expect("rng lock poisoned");
+    let mut guard = lock_rng();
     // xorshift64*
     let mut x = *guard;
     if x == 0 {
@@ -430,9 +437,12 @@ fn json_decode(src: &str) -> Result<Value, String> {
 /// is not present. Strings search by substring; arrays use value equality.
 fn index_of_value(haystack: &Value, needle: &Value) -> i64 {
     match (haystack, needle) {
-        (Value::String(s), Value::String(part)) => {
-            s.find(part.as_str()).map(|i| i as i64).unwrap_or(-1)
-        }
+        (Value::String(s), Value::String(part)) => s
+            .find(part.as_str())
+            // Match the runtime string methods: indices count characters,
+            // not UTF-8 bytes.
+            .map(|byte| s[..byte].chars().count() as i64)
+            .unwrap_or(-1),
         (Value::Array(items), _) => items
             .borrow()
             .iter()
@@ -505,9 +515,13 @@ pub fn globals() -> HashMap<String, Value> {
                 Value::Null => Ok(Value::Number(0.0)),
                 Value::String(s) => {
                     let t = s.trim();
-                    t.parse::<f64>().map(Value::Number).map_err(|_| {
-                        format!("toNumber could not convert string \"{}\" to a number", s)
-                    })
+                    match t.parse::<f64>() {
+                        Ok(number) if number.is_finite() => Ok(Value::Number(number)),
+                        _ => Err(format!(
+                            "toNumber could not convert string \"{}\" to a number",
+                            s
+                        )),
+                    }
                 }
                 other => Err(format!(
                     "Type mismatch: toNumber expects a number, string, boolean, or null, found {}",
@@ -1090,7 +1104,7 @@ pub fn globals() -> HashMap<String, Value> {
             if !n.is_finite() {
                 return Err("seed expects a finite number".to_string());
             }
-            let mut guard = rng_state().lock().expect("rng lock poisoned");
+            let mut guard = lock_rng();
             let bits = n.to_bits();
             *guard = bits ^ 0xA0761D6478BD642F;
             if *guard == 0 {
@@ -1271,7 +1285,18 @@ pub fn globals() -> HashMap<String, Value> {
             if !count.is_finite() || count.fract() != 0.0 || count < 0.0 {
                 return Err("repeat expects a non-negative integer count".to_string());
             }
-            Ok(Value::String(s.repeat(count as usize)))
+            if count > usize::MAX as f64 {
+                return Err("repeat count is too large".to_string());
+            }
+            let times = count as usize;
+            let size = s
+                .len()
+                .checked_mul(times)
+                .ok_or_else(|| "repeat output is too large".to_string())?;
+            if size > 1_000_000 {
+                return Err("repeat output would exceed 1000000 bytes".to_string());
+            }
+            Ok(Value::String(s.repeat(times)))
         }),
     );
 
@@ -1484,7 +1509,7 @@ fn expect_num_value(value: &Value, ctx: &str) -> Result<f64, String> {
 }
 
 fn next_rand_u64() -> u64 {
-    let mut guard = rng_state().lock().expect("rng lock poisoned");
+    let mut guard = lock_rng();
     let mut x = *guard;
     if x == 0 {
         x = 0x9E3779B97F4A7C15;
@@ -1708,6 +1733,8 @@ mod tests {
         assert_eq!(number(ok("toNumber", &[Value::String(" 3.5 ".into())])), 3.5);
         assert_eq!(number(ok("toNumber", &[Value::Bool(true)])), 1.0);
         assert_eq!(number(ok("toNumber", &[Value::Null])), 0.0);
+        assert!(err("toNumber", &[Value::String("NaN".into())]).contains("could not convert"));
+        assert!(err("toNumber", &[Value::String("inf".into())]).contains("could not convert"));
         assert_eq!(text(ok("toString", &[Value::Number(12.0)])), "12");
         assert!(boolean(ok("toBool", &[Value::String("x".into())])));
         assert!(!boolean(ok("toBool", &[Value::Number(0.0)])));
@@ -1742,8 +1769,12 @@ mod tests {
         assert!(boolean(ok("startsWith", &[Value::String("hello".into()), Value::String("he".into())])));
         assert!(boolean(ok("endsWith", &[Value::String("hello".into()), Value::String("lo".into())])));
         assert_eq!(text(ok("repeat", &[Value::String("ab".into()), Value::Number(3.0)])), "ababab");
+        assert!(err("repeat", &[Value::String("x".into()), Value::Number(1e9)])
+            .contains("exceed 1000000"));
         assert_eq!(text(ok("slice", &[Value::String("hello".into()), Value::Number(-3.0)])), "llo");
         assert_eq!(number(ok("indexOf", &[Value::String("hello".into()), Value::String("ll".into())])), 2.0);
+        assert_eq!(number(ok("indexOf", &[Value::String("héllo".into()), Value::String("llo".into())])), 2.0);
+        assert_eq!(number(ok("indexOf", &[Value::String("héllo".into()), Value::String("é".into())])), 1.0);
         assert!(boolean(ok("contains", &[Value::String("hello".into()), Value::String("ell".into())])));
         assert_eq!(text(ok("first", &[Value::String("abc".into())])), "a");
         assert_eq!(text(ok("last", &[Value::String("abc".into())])), "c");
