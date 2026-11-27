@@ -545,9 +545,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_variable_listing_has_a_message() {
+    fn builtin_globals_are_listed() {
         let lines = var_lines(&Environment::new());
-        assert_eq!(lines, vec!["No globals defined yet.".to_string()]);
+        assert_eq!(lines.first().map(String::as_str), Some("Globals:"));
+        assert!(
+            lines.iter().any(|line| line.starts_with("  print = ")),
+            "the global print builtin must appear in :vars"
+        );
+        assert!(lines.iter().skip(1).all(|line| line.contains("(function)")));
     }
 
     #[test]
