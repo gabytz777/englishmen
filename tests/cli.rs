@@ -95,6 +95,13 @@ fn help_flag_lists_usage() {
     assert!(stdout.contains("em uninstall"));
     assert!(stdout.contains("em update"));
     assert!(stdout.contains("em build"));
+    assert!(stdout.contains("em check"));
+    assert!(stdout.contains("em fmt"));
+    assert!(stdout.contains("em eval"));
+    assert!(stdout.contains("em doc"));
+    assert!(stdout.contains("--emit ast"));
+    assert!(stdout.contains("--stats"));
+    assert!(stdout.contains("--time"));
     assert!(stdout.contains("--optional"));
     assert!(stdout.contains("appimagetool"));
 }
@@ -1212,6 +1219,251 @@ fn building_an_old_em_file_only_warns() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("switched from '.em' to '.enm'"), "{stderr}");
     assert!(!dir.join("old.emb").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- em check --------------------------------------------------------------
+
+#[test]
+fn check_reports_ok_for_a_valid_file() {
+    let dir = scratch("check_ok");
+    let file = dir.join("ok.enm");
+    std::fs::write(&file, "x = 1 + 2\nsay(x)\n").unwrap();
+
+    let output = run(&["check", file.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Checked ok.enm: OK"), "{stdout}");
+    assert!(stdout.contains("statements"), "{stdout}");
+    assert!(stdout.contains("instructions"), "{stdout}");
+    assert!(!dir.join("ok.emb").exists(), "check must not write bytecode");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_errors_without_writing_files() {
+    let dir = scratch("check_err");
+    let file = dir.join("bad.enm");
+    std::fs::write(&file, "if true\n    say(1)\n").unwrap();
+
+    let output = run(&["check", file.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("end"), "{stderr}");
+    assert!(!dir.join("bad.emb").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_help_and_missing_file_are_clear() {
+    let help = run(&["check", "--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("em check <file.enm>"));
+
+    let missing = run(&["check"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("needs a file to check"));
+}
+
+// --- em fmt ----------------------------------------------------------------
+
+#[test]
+fn fmt_formats_a_file_in_place() {
+    let dir = scratch("fmt_write");
+    let file = dir.join("messy.enm");
+    std::fs::write(&file, "if  true\nsay(  1+2  )\nend\n").unwrap();
+
+    let output = run(&["fmt", file.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Formatted messy.enm"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "if true\n    say(1 + 2)\nend\n"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fmt_check_reports_whether_a_file_is_formatted() {
+    let dir = scratch("fmt_check");
+    let file = dir.join("style.enm");
+    std::fs::write(&file, "x=1\n").unwrap();
+
+    let needs = run(&["fmt", file.to_str().unwrap(), "--check"]);
+    assert!(!needs.status.success());
+    assert!(String::from_utf8_lossy(&needs.stdout).contains("is not formatted"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "x=1\n");
+
+    std::fs::write(&file, "x = 1\n").unwrap();
+    let ok = run(&["fmt", file.to_str().unwrap(), "--check"]);
+    assert!(ok.status.success());
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("already formatted"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fmt_refuses_to_rewrite_broken_source() {
+    let dir = scratch("fmt_broken");
+    let file = dir.join("broken.enm");
+    let broken = "if true\nsay(1)\n";
+    std::fs::write(&file, broken).unwrap();
+
+    let output = run(&["fmt", file.to_str().unwrap()]);
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), broken);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fmt_help_and_missing_file_are_clear() {
+    let help = run(&["fmt", "--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("em fmt <file.enm>"));
+
+    let missing = run(&["fmt"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("needs a file to format"));
+}
+
+// --- em eval ---------------------------------------------------------------
+
+#[test]
+fn eval_runs_source_from_the_command_line() {
+    let output = run(&["eval", "say(40 + 2)"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+}
+
+#[test]
+fn eval_joins_extra_arguments_and_reports_errors() {
+    let joined = run(&["eval", "say(1", "+", "2)"]);
+    assert!(joined.status.success());
+    assert_eq!(String::from_utf8_lossy(&joined.stdout).trim(), "3");
+
+    let err = run(&["eval", "say(missing)"]);
+    assert!(!err.status.success());
+    let stderr = String::from_utf8_lossy(&err.stderr);
+    assert!(stderr.contains("Unknown variable"), "{stderr}");
+    assert!(stderr.contains("<eval>"), "{stderr}");
+}
+
+#[test]
+fn eval_help_and_missing_source_are_clear() {
+    let help = run(&["eval", "--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("em eval"));
+
+    let missing = run(&["eval"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("needs source to run"));
+}
+
+// --- em doc ----------------------------------------------------------------
+
+#[test]
+fn doc_prints_the_language_reference() {
+    let output = run(&["doc"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Englishmen quick reference"), "{stdout}");
+    assert!(stdout.contains("if / else / end"), "{stdout}");
+    assert!(stdout.contains("say(value, ...)"), "{stdout}");
+}
+
+#[test]
+fn doc_help_and_unknown_option_are_clear() {
+    let help = run(&["doc", "--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("em doc"));
+
+    let bad = run(&["doc", "--bogus"]);
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("Unknown doc option"));
+}
+
+// --- --emit ast / --stats / --time -----------------------------------------
+
+#[test]
+fn build_emit_ast_prints_the_parsed_ast_without_writing_a_file() {
+    let dir = scratch("build_ast");
+    let source = dir.join("prog.enm");
+    std::fs::write(&source, "say(1 + 2)\n").unwrap();
+
+    let output = run(&["build", source.to_str().unwrap(), "--emit", "ast"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ExprStmt"), "{stdout}");
+    assert!(stdout.contains("Binary"), "{stdout}");
+    assert!(!dir.join("prog.emb").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_stats_prints_code_statistics_without_writing_a_file() {
+    let dir = scratch("build_stats");
+    let source = dir.join("prog.enm");
+    std::fs::write(
+        &source,
+        "function double(n)\n    return n * 2\nend\nsay(double(3))\n",
+    )
+    .unwrap();
+
+    let output = run(&["build", source.to_str().unwrap(), "--stats"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Statistics for prog.enm"), "{stdout}");
+    assert!(stdout.contains("constants:"), "{stdout}");
+    assert!(stdout.contains("instructions:"), "{stdout}");
+    assert!(stdout.contains("functions: 1"), "{stdout}");
+    assert!(!dir.join("prog.emb").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_time_reports_elapsed_wall_clock_time() {
+    let dir = scratch("run_time");
+    let source = dir.join("timed.enm");
+    std::fs::write(&source, "say(\"ok\")\n").unwrap();
+
+    let output = run(&[source.to_str().unwrap(), "--time"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Elapsed time:"), "{stderr}");
+    assert!(stderr.contains("ms (wall clock)"), "{stderr}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

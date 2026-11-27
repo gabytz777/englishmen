@@ -1239,24 +1239,26 @@ fn render_format(tokens: &[SpannedToken], comments: &[FormatComment]) -> String 
         let plain_else = matches!(first_token, Token::Else) && !is_else_if;
         let continuation_if = pending_else && matches!(first_token, Token::If);
         let mut level = indent;
-        if ends_block || plain_else {
+        if ends_block || plain_else || is_else_if {
             level = level.saturating_sub(1);
         }
         if level > 0 {
             out.push_str(&"    ".repeat(level));
         }
         out.push_str(&render_tokens(&line.tokens));
-        out.push('\n');
 
+        let mut had_trailing = false;
         while let Some(comment) = comments.get(comment_index) {
             if !comment_trailing(comment, line) {
                 break;
             }
             out.push(' ');
             out.push_str(&comment.text);
-            out.push('\n');
+            had_trailing = true;
             comment_index += 1;
         }
+        out.push('\n');
+        let _ = had_trailing;
 
         if ends_block {
             indent = indent.saturating_sub(1);
