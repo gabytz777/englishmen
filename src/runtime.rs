@@ -285,10 +285,9 @@ pub fn call_array_method(
         }
         "insert" => {
             let index = number_arg(args, 0, "insert", "as an index", span)?;
-            let value = match args.get(1) {
-                Some(value) => value.clone(),
-                None => Value::Null,
-            };
+            let value = args.get(1).cloned().ok_or_else(|| {
+                EmError::new("insert() needs a value to insert").with_span(span)
+            })?;
             let mut arr = array.borrow_mut();
             let pos = clamp_index(arr.len(), index);
             arr.insert(pos, value);
@@ -591,8 +590,10 @@ pub fn call_string_method(
         "toNumber" => {
             let trimmed = s.trim();
             Ok(match trimmed.parse::<f64>() {
-                Ok(number) => Value::Number(number),
-                Err(_) => Value::Null,
+                // Rust accepts `NaN`, `inf` and `infinity`; the language only
+                // wants finite numeric text, so reject those spellings.
+                Ok(number) if number.is_finite() => Value::Number(number),
+                _ => Value::Null,
             })
         }
         "capitalize" => {
@@ -710,14 +711,26 @@ pub fn call_number_method(
         "clamp" => {
             let min = number_arg(args, 0, "clamp", "as a minimum", span)?;
             let max = number_arg(args, 1, "clamp", "as a maximum", span)?;
+            if !n.is_finite() || !min.is_finite() || !max.is_finite() {
+                return Err(EmError::new("clamp() needs finite numbers").with_span(span));
+            }
             if min > max {
                 return Err(EmError::new("clamp() expects minimum <= maximum").with_span(span));
             }
             Ok(Value::Number(n.max(min).min(max)))
         }
         "toHex" | "toBinary" => {
+            let magnitude = n.trunc().abs();
+            // `as i64` saturates for out-of-range or non-finite values, which
+            // would silently produce a plausible but wrong string.
+            if !n.is_finite() || magnitude >= 9_223_372_036_854_775_808.0 {
+                return Err(
+                    EmError::new("toHex/toBinary need a finite integer within range")
+                        .with_span(span),
+                );
+            }
             let negative = n < 0.0;
-            let magnitude = (if negative { -n } else { n }).trunc() as i64;
+            let magnitude = magnitude as i64;
             let digits = if method == "toHex" {
                 format!("{magnitude:x}")
             } else {
@@ -957,6 +970,8 @@ mod tests {
         assert_eq!(err.kind, ErrorKind::Type);
         let err = call_array_method(&a, "swap", &[num(0.0)], Span::default()).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Arity);
+        let err = call_array_method(&a, "insert", &[num(0.0)], Span::default()).unwrap_err();
+        assert!(err.message.contains("insert needs a value") || err.message.contains("needs a value"));
     }
 
     #[test]
@@ -1073,6 +1088,15 @@ mod tests {
                 .display(),
             "null"
         );
+        for spelling in ["NaN", "inf", "+inf", "-inf", "infinity"] {
+            assert_eq!(
+                call_string_method(spelling, "toNumber", &[], Span::default())
+                    .unwrap()
+                    .display(),
+                "null",
+                "{spelling} must not become a number"
+            );
+        }
         assert_eq!(
             call_string_method("123", "isDigit", &[], Span::default())
                 .unwrap()
@@ -1352,6 +1376,24 @@ mod tests {
         let err = call_number_method(1.0, "clamp", &[text("0"), num(1.0)], Span::default())
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Type);
+
+        for method in ["toHex", "toBinary"] {
+            for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e30] {
+                let err = call_number_method(value, method, &[], Span::default()).unwrap_err();
+                assert!(
+                    err.message.contains("finite"),
+                    "{method}({value}) must be rejected"
+                );
+            }
+        }
+        let err = call_number_method(
+            f64::NAN,
+            "clamp",
+            &[num(0.0), num(10.0)],
+            Span::default(),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("finite"));
     }
 
     #[test]
