@@ -163,6 +163,43 @@ impl ErrorKind {
             ErrorKind::Runtime | ErrorKind::User => "E008",
         }
     }
+
+    /// All distinct stable codes.
+    pub const ALL_CODES: &'static [&'static str] = &[
+        "E001", "E002", "E003", "E004", "E005", "E006", "E007", "E008",
+    ];
+
+    /// Every category, in stable-code order.
+    pub const fn all() -> &'static [ErrorKind] {
+        &[
+            ErrorKind::Syntax,
+            ErrorKind::Name,
+            ErrorKind::Type,
+            ErrorKind::Index,
+            ErrorKind::Import,
+            ErrorKind::Io,
+            ErrorKind::Arity,
+            ErrorKind::Runtime,
+            ErrorKind::User,
+        ]
+    }
+
+    /// Look up a category from one of the stable codes.
+    ///
+    /// `E008` maps to `Runtime`, its default category.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Some(match code {
+            "E001" => ErrorKind::Syntax,
+            "E002" => ErrorKind::Name,
+            "E003" => ErrorKind::Type,
+            "E004" => ErrorKind::Index,
+            "E005" => ErrorKind::Import,
+            "E006" => ErrorKind::Io,
+            "E007" => ErrorKind::Arity,
+            "E008" => ErrorKind::Runtime,
+            _ => return None,
+        })
+    }
 }
 
 /// How seriously a diagnostic should be presented.
@@ -234,6 +271,8 @@ pub struct EmError {
     pub message: String,
     pub span: Option<Span>,
     pub hint: Option<String>,
+    /// A short label shown beside the primary caret, e.g. "unexpected here".
+    pub primary_label: Option<String>,
     pub kind: ErrorKind,
     /// The file this error belongs to. Set when a diagnostic comes from an
     /// imported module rather than the file currently being rendered.
@@ -257,6 +296,7 @@ impl EmError {
             message: message.into(),
             span: None,
             hint: None,
+            primary_label: None,
             kind: ErrorKind::Runtime,
             file: None,
             notes: Vec::new(),
@@ -312,6 +352,22 @@ impl EmError {
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
+    }
+
+    /// Label the primary caret, for example "unexpected token here".
+    pub fn with_primary_label(mut self, label: impl Into<String>) -> Self {
+        self.primary_label = Some(label.into());
+        self
+    }
+
+    /// Alias for [`EmError::with_primary_label`].
+    pub fn with_span_label(self, label: impl Into<String>) -> Self {
+        self.with_primary_label(label)
+    }
+
+    /// The label attached to the primary span, if any.
+    pub fn primary_label(&self) -> Option<&str> {
+        self.primary_label.as_deref()
     }
 
     pub fn with_file(mut self, file: impl Into<String>) -> Self {
@@ -394,6 +450,11 @@ impl EmError {
         self.kind == ErrorKind::Runtime
     }
 
+    /// True when this diagnostic is presented as a warning.
+    pub fn is_warning(&self) -> bool {
+        self.severity().is_warning()
+    }
+
     /// The presentation severity, defaulting to `Error`.
     pub fn severity(&self) -> Severity {
         self.severity.unwrap_or(Severity::Error)
@@ -403,6 +464,11 @@ impl EmError {
     pub fn with_severity(mut self, severity: Severity) -> Self {
         self.severity = Some(severity);
         self
+    }
+
+    /// Build a diagnostic presented as a warning instead of an error.
+    pub fn warning(message: impl Into<String>) -> Self {
+        Self::new(message).with_severity(Severity::Warning)
     }
 
     /// Serialize the essential fields as a compact JSON object.
@@ -433,6 +499,60 @@ impl EmError {
         }
         out.push('}');
         out
+    }
+
+    /// Serialize every diagnostic field as a JSON object.
+    ///
+    /// Unlike [`EmError::format_json`], this includes the category, severity,
+    /// file, notes and all source labels, which makes it suitable for tooling
+    /// that consumes machine-readable diagnostics.
+    pub fn to_json(&self) -> String {
+        let mut out = String::from("{");
+        push_json_kv(&mut out, "message", &self.message, false);
+        push_json_kv(&mut out, "code", &self.resolved_code(), true);
+        push_json_kv(&mut out, "kind", self.kind.as_str(), true);
+        push_json_kv(&mut out, "severity", self.severity().as_str(), true);
+        out.push_str(",\"span\":");
+        match self.span {
+            Some(span) => push_json_span(&mut out, span),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"primary_label\":");
+        match self.primary_label() {
+            Some(label) => push_json_string(&mut out, label),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"file\":");
+        match &self.file {
+            Some(file) => push_json_string(&mut out, file),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"hint\":");
+        match &self.hint {
+            Some(hint) => push_json_string(&mut out, hint),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"notes\":[");
+        for (index, note) in self.notes.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            push_json_string(&mut out, note);
+        }
+        out.push_str("],\"labels\":[");
+        for (index, (span, label)) in self.all_secondary_labels().into_iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            push_json_label(&mut out, span, label);
+        }
+        out.push_str("]}");
+        out
+    }
+
+    /// Alias for [`EmError::to_json`].
+    pub fn format_json_full(&self) -> String {
+        self.to_json()
     }
 
     /// Render a nicely formatted, source-aware error message.
@@ -499,7 +619,7 @@ impl EmError {
     }
 
     fn span_label(&self) -> Option<&str> {
-        None
+        self.primary_label()
     }
 
     fn render_excerpt(
@@ -613,6 +733,22 @@ impl Diagnostics {
         self.errors
     }
 
+    /// Add a warning without constructing an `EmError` by hand.
+    pub fn warn(&mut self, message: impl Into<String>) -> &mut Self {
+        self.push(EmError::warning(message))
+    }
+
+    /// Remove every collected diagnostic.
+    pub fn clear(&mut self) -> &mut Self {
+        self.errors.clear();
+        self
+    }
+
+    /// The collected diagnostics that are presented as warnings.
+    pub fn warnings(&self) -> impl Iterator<Item = &EmError> {
+        self.errors.iter().filter(|error| error.is_warning())
+    }
+
     /// Render every collected error with the same source context.
     pub fn render_all(&self, filename: &str, source: &str) -> String {
         let mut out = String::new();
@@ -620,6 +756,33 @@ impl Diagnostics {
             out.push_str(&error.render(filename, source));
         }
         out
+    }
+
+    /// Like [`Diagnostics::render_all`], but with ANSI colours.
+    pub fn render_all_colored(&self, filename: &str, source: &str) -> String {
+        let mut out = String::new();
+        for error in &self.errors {
+            out.push_str(&error.render_colored(filename, source));
+        }
+        out
+    }
+
+    /// Serialize all collected diagnostics as a JSON array.
+    pub fn to_json(&self) -> String {
+        let mut out = String::from("[");
+        for (index, error) in self.errors.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(&error.to_json());
+        }
+        out.push(']');
+        out
+    }
+
+    /// Alias for [`Diagnostics::to_json`].
+    pub fn format_json(&self) -> String {
+        self.to_json()
     }
 }
 
@@ -702,6 +865,38 @@ fn is_wide_char(c: char) -> bool {
             | 0x1F900..=0x1F9FF
             | 0x20000..=0x3FFFD
     )
+}
+
+/// Append a JSON object key and its string value.
+fn push_json_kv(out: &mut String, key: &str, value: &str, comma: bool) {
+    if comma {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push(':');
+    push_json_string(out, value);
+}
+
+/// Append a span as a JSON object.
+fn push_json_span(out: &mut String, span: Span) {
+    out.push_str(&format!(
+        "{{\"line\":{},\"col\":{},\"end_col\":",
+        span.line, span.col
+    ));
+    match span.end_col {
+        Some(end) => out.push_str(&end.to_string()),
+        None => out.push_str("null"),
+    }
+    out.push('}');
+}
+
+/// Append one labelled source location as a JSON object.
+fn push_json_label(out: &mut String, span: Span, label: &str) {
+    out.push_str("{\"span\":");
+    push_json_span(out, span);
+    out.push_str(",\"label\":");
+    push_json_string(out, label);
+    out.push('}');
 }
 
 /// Append a JSON string literal, escaping everything JSON requires.
@@ -1061,5 +1256,79 @@ mod tests {
             0,
             "empty builders iterate zero times"
         );
+    }
+
+    #[test]
+    fn error_kind_codes_round_trip() {
+        assert_eq!(ErrorKind::ALL_CODES.len(), 8);
+        for kind in ErrorKind::all() {
+            assert!(ErrorKind::ALL_CODES.contains(&kind.code()));
+            let parsed = ErrorKind::from_code(kind.code()).unwrap();
+            assert_eq!(parsed.code(), kind.code());
+        }
+        assert_eq!(ErrorKind::from_code("E999"), None);
+        assert_eq!(ErrorKind::from_code("e001"), None);
+    }
+
+    #[test]
+    fn primary_label_is_rendered_with_the_caret() {
+        let err = EmError::syntax("bad token")
+            .with_span(Span::new(1, 2).with_len(3))
+            .with_primary_label("here");
+        assert_eq!(err.primary_label(), Some("here"));
+        assert_eq!(err.span_label().as_deref(), Some("here"));
+        let rendered = err.render("x.enm", "foo\n");
+        assert!(rendered.contains("  |  ^^^ here\n"));
+        assert!(!rendered.contains('\x1b'));
+        assert!(err
+            .render_colored("x.enm", "foo\n")
+            .contains("\x1b[35mhere\x1b[0m"));
+    }
+
+    #[test]
+    fn to_json_includes_all_fields_and_labels() {
+        let err = EmError::name("oops")
+            .with_span(Span::range(2, 3, 5))
+            .with_primary_label("primary")
+            .with_secondary(Span::new(1, 1), "first")
+            .with_note("note one")
+            .with_file("mod.enm")
+            .with_code("E123")
+            .with_severity(Severity::Warning);
+        let json = err.to_json();
+        assert!(json.contains("\"code\":\"E123\""));
+        assert!(json.contains("\"kind\":\"name\""));
+        assert!(json.contains("\"severity\":\"warning\""));
+        assert!(json.contains("\"file\":\"mod.enm\""));
+        assert!(json.contains("\"span\":{\"line\":2,\"col\":3,\"end_col\":5}"));
+        assert!(json.contains("\"primary_label\":\"primary\""));
+        assert!(json.contains("\"notes\":[\"note one\"]"));
+        assert!(json.contains("\"label\":\"first\""));
+        assert_eq!(err.format_json_full(), json);
+        assert!(err
+            .format_json()
+            .starts_with("{\"message\":\"oops\",\"code\":\"E123\""));
+    }
+
+    #[test]
+    fn diagnostics_collect_warnings_and_render_json() {
+        let mut diagnostics = Diagnostics::new();
+        diagnostics
+            .error("bad")
+            .warn("careful")
+            .push(EmError::syntax("nope").with_span(Span::new(1, 1)));
+        assert_eq!(diagnostics.warnings().count(), 1);
+        assert!(diagnostics
+            .render_all_colored("x.enm", "x\n")
+            .contains("\x1b[1;31mError:"));
+        let json = diagnostics.to_json();
+        assert!(json.starts_with('['));
+        assert!(json.ends_with(']'));
+        assert_eq!(json.matches("\"severity\":\"error\"").count(), 2);
+        assert_eq!(json.matches("\"severity\":\"warning\"").count(), 1);
+        assert_eq!(diagnostics.format_json(), json);
+        diagnostics.clear();
+        assert!(diagnostics.is_empty());
+        assert_eq!(diagnostics.to_json(), "[]");
     }
 }
