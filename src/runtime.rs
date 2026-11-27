@@ -7,6 +7,10 @@ use std::rc::Rc;
 pub enum Signal {
     Normal,
     Return(Value),
+    /// Unwind to the innermost loop and leave it.
+    Break,
+    /// Unwind to the innermost loop and start the next iteration.
+    Continue,
 }
 
 pub fn native(name: &str, func: impl Fn(&[Value]) -> Result<Value, String> + 'static) -> Value {
@@ -156,6 +160,29 @@ pub fn call_string_method(
             span,
         )),
     }
+}
+
+/// Call a method on a number. More methods are registered in this function as
+/// the standard library grows; unknown names get the usual helpful error.
+pub fn call_number_method(
+    n: f64,
+    method: &str,
+    _args: &[Value],
+    span: Span,
+) -> Result<Value, EmError> {
+    let _ = n;
+    Err(method_error("Number", method, &[], span))
+}
+
+/// Call a method on a boolean value.
+pub fn call_bool_method(
+    b: bool,
+    method: &str,
+    _args: &[Value],
+    span: Span,
+) -> Result<Value, EmError> {
+    let _ = b;
+    Err(method_error("Boolean", method, &[], span))
 }
 
 fn method_error(kind: &str, method: &str, available: &[&str], span: Span) -> EmError {

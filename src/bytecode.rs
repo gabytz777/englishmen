@@ -15,7 +15,7 @@ pub const EMB_MAGIC: &[u8; 4] = b"EMBC";
 pub const EMB_VERSION: u16 = 1;
 /// Deepest function nesting a `.emb` image may declare. Loading recurses once
 /// per level, so without a cap a small file can overflow the host stack.
-const MAX_CHUNK_DEPTH: usize = 128;
+const MAX_CHUNK_DEPTH: usize = 32;
 
 /// A compile-time constant. Only scalars are constants — arrays, objects and
 /// closures are built at runtime by dedicated instructions.

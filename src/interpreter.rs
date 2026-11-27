@@ -23,8 +23,10 @@ impl Interpreter {
     pub fn run(&mut self, program: &[Stmt]) -> Result<(), EmError> {
         let env = Rc::clone(&self.globals);
         match self.exec_block(program, &env)? {
-            Signal::Normal => Ok(()),
-            Signal::Return(_) => Ok(()),
+            Signal::Normal
+            | Signal::Return(_)
+            | Signal::Break
+            | Signal::Continue => Ok(()),
         }
     }
 
@@ -339,6 +341,8 @@ impl Interpreter {
                         runtime::call_object_method(obj, method, &arg_values, span)
                     }
                     Value::String(s) => runtime::call_string_method(s, method, &arg_values, span),
+                    Value::Number(n) => runtime::call_number_method(*n, method, &arg_values, span),
+                    Value::Bool(b) => runtime::call_bool_method(*b, method, &arg_values, span),
                     other => Err(EmError::new(format!(
                         "Cannot call method '{method}' on a {}",
                         other.type_name()
@@ -409,7 +413,7 @@ impl Interpreter {
         }
         match self.exec_block(&func.body, &call_env)? {
             Signal::Return(v) => Ok(v),
-            Signal::Normal => Ok(Value::Null),
+            Signal::Normal | Signal::Break | Signal::Continue => Ok(Value::Null),
         }
     }
 

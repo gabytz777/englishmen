@@ -481,6 +481,16 @@ impl Vm {
                 self.stack.push(value);
                 Ok(false)
             }
+            Value::Number(n) => {
+                let value = runtime::call_number_method(*n, method, &args, span)?;
+                self.stack.push(value);
+                Ok(false)
+            }
+            Value::Bool(b) => {
+                let value = runtime::call_bool_method(*b, method, &args, span)?;
+                self.stack.push(value);
+                Ok(false)
+            }
             other => Err(at(
                 EmError::new(format!(
                     "Cannot call method '{method}' on a {}",

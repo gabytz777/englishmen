@@ -1,3 +1,4 @@
+use crate::builtins;
 use crate::value::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,7 +12,7 @@ pub struct Environment {
 impl Environment {
     pub fn new() -> Rc<Environment> {
         Rc::new(Environment {
-            vars: RefCell::new(HashMap::new()),
+            vars: RefCell::new(builtins::globals()),
             parent: None,
         })
     }
