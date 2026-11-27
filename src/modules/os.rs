@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::modules::support::call_native;
 use crate::runtime::{expect_string, native};
 use crate::value::Value;
@@ -70,6 +71,29 @@ pub fn module() -> Value {
         }),
     );
 
+    fields.insert(
+        "homeDir".to_string(),
+        native("os.homeDir", |_args| {
+            Ok(dirs::home_dir()
+                .map(|path| Value::String(path.display().to_string()))
+                .unwrap_or(Value::Null))
+        }),
+    );
+
+    fields.insert(
+        "pid".to_string(),
+        native("os.pid", |_args| {
+            Ok(Value::Number(std::process::id() as f64))
+        }),
+    );
+
+    fields.insert(
+        "version".to_string(),
+        native("os.version", |_args| {
+            Ok(Value::String(env!("CARGO_PKG_VERSION").to_string()))
+        }),
+    );
+
     Value::new_object(fields)
 }
 
@@ -124,5 +148,21 @@ mod tests {
     #[test]
     fn args_is_an_array() {
         assert!(matches!(call("args", &[]).unwrap(), Value::Array(_)));
+    }
+
+    #[test]
+    fn home_pid_and_version() {
+        assert_eq!(
+            call("version", &[]).unwrap().display(),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(matches!(
+            call("pid", &[]).unwrap(),
+            Value::Number(n) if n == std::process::id() as f64
+        ));
+        let home = call("homeDir", &[]).unwrap();
+        if let Value::String(path) = home {
+            assert!(!path.is_empty());
+        }
     }
 }

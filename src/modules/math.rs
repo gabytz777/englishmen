@@ -1,6 +1,8 @@
 use crate::runtime::{expect_number, native};
 use crate::value::Value;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use crate::modules::support::call_native;
 
 pub fn module() -> Value {
     let mut fields = BTreeMap::new();
@@ -285,6 +287,70 @@ pub fn module() -> Value {
         }),
     );
 
+    fields.insert(
+        "trunc".to_string(),
+        native("math.trunc", |args| {
+            let n = expect_number(args.get(0).unwrap_or(&Value::Null), "for math.trunc")?;
+            Ok(Value::Number(n.trunc()))
+        }),
+    );
+
+    fields.insert(
+        "roundTo".to_string(),
+        native("math.roundTo", |args| {
+            let value = expect_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.roundTo",
+            )?;
+            let places = whole_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the number of decimal places for math.roundTo",
+            )?;
+            if !(-12..=12).contains(&places) {
+                return Err("math.roundTo expects between -12 and 12 decimal places".to_string());
+            }
+            let factor = 10_f64.powi(places as i32);
+            Ok(Value::Number((value * factor).round() / factor))
+        }),
+    );
+
+    fields.insert(
+        "factorial".to_string(),
+        native("math.factorial", |args| {
+            let n = whole_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.factorial",
+            )?;
+            if n < 0 || n > 170 {
+                return Err("math.factorial expects a whole number between 0 and 170".to_string());
+            }
+            let mut result = 1.0;
+            for i in 2..=n {
+                result *= i as f64;
+            }
+            Ok(Value::Number(result))
+        }),
+    );
+
+    fields.insert(
+        "toHex".to_string(),
+        native("math.toHex", |args| {
+            let n = whole_number(args.get(0).unwrap_or(&Value::Null), "for math.toHex")?;
+            Ok(Value::String(format!("{n:x}")))
+        }),
+    );
+
+    fields.insert(
+        "toBinary".to_string(),
+        native("math.toBinary", |args| {
+            let n = whole_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "for math.toBinary",
+            )?;
+            Ok(Value::String(format!("{n:b}")))
+        }),
+    );
+
     fields.insert("pi".to_string(), Value::Number(std::f64::consts::PI));
     fields.insert("e".to_string(), Value::Number(std::f64::consts::E));
 
@@ -303,16 +369,12 @@ fn whole_number(value: &Value, context: &str) -> Result<i64, String> {
 mod tests {
     use super::*;
 
+    fn try_call(name: &str, args: &[Value]) -> Result<Value, String> {
+        call_native(&module(), name, args)
+    }
+
     fn call(name: &str, args: &[Value]) -> Value {
-        let module = module();
-        let Value::Object(obj) = module else {
-            unreachable!()
-        };
-        let func = obj.borrow().get(name).cloned().unwrap();
-        let Value::Native(native) = func else {
-            unreachable!()
-        };
-        (native.func)(args).unwrap()
+        try_call(name, args).unwrap()
     }
 
     #[test]
@@ -362,8 +424,8 @@ mod tests {
         assert!(matches!(call("log", &[Value::Number(8.0), Value::Number(2.0)]), Value::Number(n) if close(n, 3.0)));
         assert!(matches!(call("ln", &[Value::Number(std::f64::consts::E)]), Value::Number(n) if close(n, 1.0)));
         assert!(matches!(call("exp", &[Value::Number(0.0)]), Value::Number(n) if close(n, 1.0)));
-        assert!(call("log", &[Value::Number(-1.0), Value::Number(2.0)]).is_err());
-        assert!(call("ln", &[Value::Number(0.0)]).is_err());
+        assert!(try_call("log", &[Value::Number(-1.0), Value::Number(2.0)]).is_err());
+        assert!(try_call("ln", &[Value::Number(0.0)]).is_err());
     }
 
     #[test]
@@ -386,8 +448,29 @@ mod tests {
             call("clamp", &[Value::Number(15.0), Value::Number(0.0), Value::Number(10.0)]),
             Value::Number(n) if n == 10.0
         ));
-        assert!(call("clamp", &[Value::Number(1.0), Value::Number(3.0), Value::Number(2.0)]).is_err());
-        assert!(call("gcd", &[Value::Number(1.5), Value::Number(2.0)]).is_err());
+        assert!(try_call("clamp", &[Value::Number(1.0), Value::Number(3.0), Value::Number(2.0)]).is_err());
+        assert!(try_call("gcd", &[Value::Number(1.5), Value::Number(2.0)]).is_err());
+    }
+
+    #[test]
+    fn rounding_bases_and_factorials() {
+        assert!(matches!(call("trunc", &[Value::Number(-2.9)]), Value::Number(n) if n == -2.0));
+        assert!(matches!(
+            call("roundTo", &[Value::Number(1.23456), Value::Number(2.0)]),
+            Value::Number(n) if close(n, 1.23)
+        ));
+        assert!(matches!(
+            call("factorial", &[Value::Number(5.0)]),
+            Value::Number(n) if n == 120.0
+        ));
+        assert!(matches!(
+            call("factorial", &[Value::Number(0.0)]),
+            Value::Number(n) if n == 1.0
+        ));
+        assert_eq!(call("toHex", &[Value::Number(255.0)]).display(), "ff");
+        assert_eq!(call("toBinary", &[Value::Number(10.0)]).display(), "1010");
+        assert!(try_call("factorial", &[Value::Number(-1.0)]).is_err());
+        assert!(try_call("roundTo", &[Value::Number(1.0), Value::Number(20.0)]).is_err());
     }
 
     #[test]
@@ -398,6 +481,6 @@ mod tests {
         for composite in [-3.0, 0.0, 1.0, 4.0, 9.0, 100.0] {
             assert!(matches!(call("isPrime", &[Value::Number(composite)]), Value::Bool(false)));
         }
-        assert!(call("isPrime", &[Value::Number(2.5)]).is_err());
+        assert!(try_call("isPrime", &[Value::Number(2.5)]).is_err());
     }
 }

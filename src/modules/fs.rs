@@ -1,4 +1,6 @@
-use crate::modules::support::{call_native, expect_path};
+use crate::modules::support::expect_path;
+#[cfg(test)]
+use crate::modules::support::call_native;
 use crate::runtime::{expect_string, native};
 use crate::value::Value;
 use std::collections::BTreeMap;
@@ -180,6 +182,64 @@ pub fn module() -> Value {
         }),
     );
 
+    fields.insert(
+        "move".to_string(),
+        native("fs.move", |args| {
+            let source = expect_path(
+                args.get(0).unwrap_or(&Value::Null),
+                "as the source for fs.move",
+            )?;
+            let target = expect_path(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the destination for fs.move",
+            )?;
+            std::fs::rename(&source, &target).map_err(|e| {
+                format!(
+                    "Could not move '{}' to '{}': {e}",
+                    source.display(),
+                    target.display()
+                )
+            })?;
+            Ok(Value::Null)
+        }),
+    );
+
+    fields.insert(
+        "isFile".to_string(),
+        native("fs.isFile", |args| {
+            let path = expect_path(
+                args.get(0).unwrap_or(&Value::Null),
+                "as the path for fs.isFile",
+            )?;
+            Ok(Value::Bool(path.is_file()))
+        }),
+    );
+
+    fields.insert(
+        "isDir".to_string(),
+        native("fs.isDir", |args| {
+            let path = expect_path(
+                args.get(0).unwrap_or(&Value::Null),
+                "as the path for fs.isDir",
+            )?;
+            Ok(Value::Bool(path.is_dir()))
+        }),
+    );
+
+    fields.insert(
+        "size".to_string(),
+        native("fs.size", |args| {
+            let path = expect_path(
+                args.get(0).unwrap_or(&Value::Null),
+                "as the path for fs.size",
+            )?;
+            let size = std::fs::metadata(&path)
+                .map_err(|e| format!("Could not stat '{}': {e}", path.display()))?
+                .len();
+            Ok(Value::Number(size as f64))
+        }),
+    );
+
     Value::new_object(fields)
 }
 
@@ -283,5 +343,50 @@ mod tests {
     fn invalid_paths_report_errors() {
         assert!(call("read", &[Value::Number(1.0)]).is_err());
         assert!(call("read", &[Value::String(temp_path("missing").display().to_string())]).is_err());
+    }
+
+    #[test]
+    fn move_classify_and_size() {
+        let source = temp_path("move-source.txt");
+        let target = temp_path("move-target.txt");
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&target);
+        call(
+            "write",
+            &[
+                Value::String(source.display().to_string()),
+                Value::String("abcd".to_string()),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            call("isFile", &[Value::String(source.display().to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("isDir", &[Value::String(source.display().to_string())]).unwrap(),
+            Value::Bool(false)
+        ));
+        assert!(matches!(
+            call("size", &[Value::String(source.display().to_string())]).unwrap(),
+            Value::Number(n) if n == 4.0
+        ));
+        call(
+            "move",
+            &[
+                Value::String(source.display().to_string()),
+                Value::String(target.display().to_string()),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            call("exists", &[Value::String(target.display().to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("exists", &[Value::String(source.display().to_string())]).unwrap(),
+            Value::Bool(false)
+        ));
+        let _ = std::fs::remove_file(&target);
     }
 }

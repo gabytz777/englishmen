@@ -4,6 +4,7 @@
 //! booleans, null, arrays and objects) and is enough for configuration files
 //! and simple APIs. Functions and compiled closures cannot be encoded.
 
+#[cfg(test)]
 use crate::modules::support::call_native;
 use crate::runtime::{expect_string, native};
 use crate::value::{format_number, Value};
@@ -28,6 +29,16 @@ pub fn module() -> Value {
                 "for json.decode",
             )?;
             decode(&text)
+        }),
+    );
+
+    fields.insert(
+        "pretty".to_string(),
+        native("json.pretty", |args| {
+            let value = args.get(0).unwrap_or(&Value::Null);
+            let mut out = String::new();
+            write_pretty(value, 0, &mut out)?;
+            Ok(Value::String(out))
         }),
     );
 
@@ -138,6 +149,59 @@ fn write_string(text: &str, out: &mut String) {
         }
     }
     out.push('"');
+}
+
+/// Serialize with two-space indentation for human-readable output.
+fn write_pretty(value: &Value, level: usize, out: &mut String) -> Result<(), String> {
+    match value {
+        Value::Array(items) => {
+            let items = items.borrow();
+            if items.is_empty() {
+                out.push_str("[]");
+                return Ok(());
+            }
+            out.push_str("[\n");
+            for (i, item) in items.iter().enumerate() {
+                write_indent(out, level + 1);
+                write_pretty(item, level + 1, out)?;
+                if i + 1 < items.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            write_indent(out, level);
+            out.push(']');
+            Ok(())
+        }
+        Value::Object(fields) => {
+            let fields = fields.borrow();
+            if fields.is_empty() {
+                out.push_str("{}");
+                return Ok(());
+            }
+            out.push_str("{\n");
+            for (i, (key, item)) in fields.iter().enumerate() {
+                write_indent(out, level + 1);
+                write_string(key, out);
+                out.push_str(": ");
+                write_pretty(item, level + 1, out)?;
+                if i + 1 < fields.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            write_indent(out, level);
+            out.push('}');
+            Ok(())
+        }
+        other => write_json(other, out),
+    }
+}
+
+fn write_indent(out: &mut String, level: usize) {
+    for _ in 0..level {
+        out.push_str("  ");
+    }
 }
 
 /// Parse JSON text into a runtime value.
@@ -415,14 +479,14 @@ fn get(root: &Value, path: &str) -> Value {
 }
 
 /// Store `value` at a dotted path, creating missing objects along the way.
-/// Arrays must already have the target index. The (possibly new) root is
-/// returned; the mutation is visible through shared array/object values.
+/// Arrays must already have the target index. The original root is returned so
+/// callers can encode it; mutations are visible through shared containers.
 fn set(root: Value, path: &str, value: Value) -> Result<Value, String> {
     if path.is_empty() {
         return Ok(value);
     }
     let segments: Vec<&str> = path.split('.').collect();
-    let mut root = match root {
+    let root = match root {
         Value::Null => Value::new_object(BTreeMap::new()),
         Value::Object(_) | Value::Array(_) => root,
         other => {
@@ -432,54 +496,63 @@ fn set(root: Value, path: &str, value: Value) -> Result<Value, String> {
             ))
         }
     };
-    for (i, segment) in segments.iter().enumerate() {
-        let last = i + 1 == segments.len();
-        match &root {
-            Value::Object(fields) => {
-                if last {
-                    fields.borrow_mut().insert((*segment).to_string(), value);
-                    return Ok(root);
-                }
-                let next = fields.borrow().get(*segment).cloned().unwrap_or(Value::Null);
-                root = match next {
-                    Value::Object(_) | Value::Array(_) => next,
-                    Value::Null => Value::new_object(BTreeMap::new()),
-                    other => {
-                        return Err(format!(
-                            "Cannot descend into a {} at '{}' for json.set",
-                            other.type_name(), segment
-                        ))
-                    }
-                };
-                fields.borrow_mut().insert((*segment).to_string(), root.clone());
+    set_at(&root, &segments, value)?;
+    Ok(root)
+}
+
+fn set_at(container: &Value, segments: &[&str], value: Value) -> Result<(), String> {
+    let segment = segments[0];
+    let last = segments.len() == 1;
+    match container {
+        Value::Object(fields) => {
+            if last {
+                fields.borrow_mut().insert(segment.to_string(), value);
+                return Ok(());
             }
-            Value::Array(items) => {
-                let index = segment.parse::<usize>().map_err(|_| {
-                    format!("Expected an array index in path, found '{segment}'")
-                })?;
-                let mut items = items.borrow_mut();
-                if last {
-                    if index < items.len() {
-                        items[index] = value;
-                    } else if index == items.len() {
-                        items.push(value);
-                    } else {
-                        return Err("json.set array index is past the end of the array".to_string());
-                    }
-                    return Ok(root);
+            let next = fields.borrow().get(segment).cloned().unwrap_or(Value::Null);
+            let child = match next {
+                Value::Object(_) | Value::Array(_) => next,
+                Value::Null => Value::new_object(BTreeMap::new()),
+                other => {
+                    return Err(format!(
+                        "Cannot descend into a {} at '{}' for json.set",
+                        other.type_name(), segment
+                    ))
                 }
-                if index >= items.len() {
+            };
+            // Re-link the child before recursing: a newly created object must
+            // be reachable from the original root.
+            fields.borrow_mut().insert(segment.to_string(), child.clone());
+            set_at(&child, &segments[1..], value)
+        }
+        Value::Array(items) => {
+            let index = segment.parse::<usize>().map_err(|_| {
+                format!("Expected an array index in path, found '{segment}'")
+            })?;
+            if last {
+                let mut items = items.borrow_mut();
+                if index < items.len() {
+                    items[index] = value;
+                } else if index == items.len() {
+                    items.push(value);
+                } else {
                     return Err("json.set array index is past the end of the array".to_string());
                 }
-                root = items[index].clone();
-                if !matches!(root, Value::Object(_) | Value::Array(_)) {
-                    return Err("Cannot descend into a non-container for json.set".to_string());
-                }
+                return Ok(());
             }
-            _ => unreachable!(),
+            let child = items.borrow().get(index).cloned().ok_or_else(|| {
+                "json.set array index is past the end of the array".to_string()
+            })?;
+            if !matches!(child, Value::Object(_) | Value::Array(_)) {
+                return Err("Cannot descend into a non-container for json.set".to_string());
+            }
+            set_at(&child, &segments[1..], value)
         }
+        other => Err(format!(
+            "json.set cannot descend into a {} at '{}'",
+            other.type_name(), segment
+        )),
     }
-    Ok(root)
 }
 
 #[cfg(test)]
@@ -501,15 +574,33 @@ mod tests {
             text.display(),
             "{\"a\":null,\"z\":true}"
         );
-        assert_eq!(call("decode", &[text]).unwrap().display(), "{a: null, z: true}");
-        assert!(call("encode", &[Value::Native(crate::runtime::native("x", |_| Ok(Value::Null)))]).is_err());
+        assert_eq!(
+            call("decode", &[text]).unwrap().display(),
+            "{a: null, z: true}"
+        );
+        let function = crate::runtime::native("x", |_| Ok(Value::Null));
+        assert!(call("encode", &[function]).is_err());
+    }
+
+    #[test]
+    fn pretty_prints_indented_json() {
+        let source = call(
+            "decode",
+            &[Value::String("{\"a\":[1,2]}".to_string())],
+        )
+        .unwrap();
+        assert_eq!(
+            call("pretty", &[source]).unwrap().display(),
+            "{\n  \"a\": [\n    1,\n    2\n  ]\n}"
+        );
     }
 
     #[test]
     fn escape_sequences_and_unicode() {
         let text = call("encode", &[Value::String("a\"\n\u{08}☃".to_string())]).unwrap();
         assert_eq!(text.display(), "\"a\\\"\\n\\b☃\"");
-        let Value::String(decoded) = call("decode", &[Value::String("\\u2603 \\uD83D\\uDE00".to_string())]).unwrap() else {
+        let json = "\"\\u2603 \\uD83D\\uDE00\"";
+        let Value::String(decoded) = call("decode", &[Value::String(json.to_string())]).unwrap() else {
             panic!("decoded value is not a string");
         };
         assert_eq!(decoded, "☃ 😀");

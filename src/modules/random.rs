@@ -1,7 +1,9 @@
 //! Deterministic-when-seeded pseudo-random numbers, using only the standard
 //! library. The generator is an xorshift64* state kept per thread.
 
-use crate::modules::support::{array_items, call_native};
+use crate::modules::support::array_items;
+#[cfg(test)]
+use crate::modules::support::call_native;
 use crate::runtime::{expect_number, native};
 use crate::value::Value;
 use std::cell::Cell;
@@ -47,7 +49,8 @@ fn next_float() -> f64 {
 fn next_int(min: i64, max: i64) -> i64 {
     let span = (max as i128 - min as i128 + 1) as u128;
     let offset = ((next_u64() as u128).wrapping_mul(span)) >> 64;
-    min + offset as i64
+    // Work in i128 so the full i64 range (including i64::MIN) cannot overflow.
+    (min as i128 + offset as i128) as i64
 }
 
 pub fn module() -> Value {
@@ -108,6 +111,52 @@ pub fn module() -> Value {
                 items.swap(i, j);
             }
             Ok(Value::new_array(items))
+        }),
+    );
+
+    fields.insert(
+        "bool".to_string(),
+        native("random.bool", |_args| Ok(Value::Bool(next_float() < 0.5))),
+    );
+
+    fields.insert(
+        "range".to_string(),
+        native("random.range", |args| {
+            let min = expect_number(
+                args.get(0).unwrap_or(&Value::Null),
+                "as the minimum for random.range",
+            )?;
+            let max = expect_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the maximum for random.range",
+            )?;
+            if !min.is_finite() || !max.is_finite() || min >= max {
+                return Err("random.range expects finite numbers with min < max".to_string());
+            }
+            Ok(Value::Number(min + next_float() * (max - min)))
+        }),
+    );
+
+    fields.insert(
+        "sample".to_string(),
+        native("random.sample", |args| {
+            let items = array_items(
+                args.get(0).unwrap_or(&Value::Null),
+                "for random.sample",
+            )?;
+            let count = whole_number(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the count for random.sample",
+            )?;
+            if count < 0 || count as usize > items.len() {
+                return Err("random.sample count must be between 0 and the array length".to_string());
+            }
+            let mut pool = items;
+            for i in 0..count as usize {
+                let j = i as i64 + next_int(0, (pool.len() - i) as i64 - 1);
+                pool.swap(i, j as usize);
+            }
+            Ok(Value::new_array(pool[..count as usize].to_vec()))
         }),
     );
 
@@ -180,7 +229,9 @@ mod tests {
         let second: Vec<Value> = (0..4)
             .map(|_| call("float", &[]).unwrap())
             .collect();
-        assert_eq!(first, second);
+        let displays: Vec<String> = first.iter().map(Value::display).collect();
+        let repeats: Vec<String> = second.iter().map(Value::display).collect();
+        assert_eq!(displays, repeats);
         for value in first {
             let Value::Number(n) = value else {
                 panic!("float should return a number");
@@ -223,6 +274,37 @@ mod tests {
         assert_eq!(sorted, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
         assert!(call("choice", &[Value::new_array(vec![])]).is_err());
         assert!(call("int", &[Value::Number(5.0), Value::Number(1.0)]).is_err());
+    }
+
+    #[test]
+    fn bool_range_and_sample() {
+        call("seed", &[Value::Number(99.0)]).unwrap();
+        assert!(matches!(call("bool", &[]).unwrap(), Value::Bool(_)));
+        for _ in 0..20 {
+            let value = call("range", &[Value::Number(2.0), Value::Number(5.0)]).unwrap();
+            let Value::Number(n) = value else {
+                panic!("range should return a number");
+            };
+            assert!((2.0..5.0).contains(&n));
+        }
+        let items = Value::new_array((0..6).map(|i| Value::Number(i as f64)).collect());
+        let sampled = call("sample", &[items, Value::Number(3.0)]).unwrap();
+        let Value::Array(values) = sampled else {
+            panic!("sample should return an array");
+        };
+        assert_eq!(values.borrow().len(), 3);
+        let mut numbers: Vec<f64> = values
+            .borrow()
+            .iter()
+            .map(|value| match value {
+                Value::Number(n) => *n,
+                _ => panic!("unexpected item"),
+            })
+            .collect();
+        numbers.sort_by(f64::total_cmp);
+        assert!(numbers.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(call("range", &[Value::Number(1.0), Value::Number(1.0)]).is_err());
+        assert!(call("sample", &[Value::new_array(vec![]), Value::Number(1.0)]).is_err());
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use crate::modules::support::{
-    array_items, as_usize, call_native, compare_values, expect_array, values_equal,
+    array_items, as_usize, compare_values, expect_array, values_equal,
 };
+#[cfg(test)]
+use crate::modules::support::call_native;
 use crate::runtime::native;
 use crate::value::Value;
 use std::collections::BTreeMap;
@@ -193,6 +195,187 @@ pub fn module() -> Value {
     );
 
     fields.insert(
+        "first".to_string(),
+        native("collections.first", |args| {
+            let items = array_items(
+                args.get(0).unwrap_or(&Value::Null),
+                "for collections.first",
+            )?;
+            items
+                .into_iter()
+                .next()
+                .ok_or_else(|| "collections.first expects a non-empty array".to_string())
+        }),
+    );
+
+    fields.insert(
+        "last".to_string(),
+        native("collections.last", |args| {
+            let items = array_items(
+                args.get(0).unwrap_or(&Value::Null),
+                "for collections.last",
+            )?;
+            items
+                .into_iter()
+                .last()
+                .ok_or_else(|| "collections.last expects a non-empty array".to_string())
+        }),
+    );
+
+    fields.insert(
+        "min".to_string(),
+        native("collections.min", |args| {
+            let items = array_items(
+                args.get(0).unwrap_or(&Value::Null),
+                "for collections.min",
+            )?;
+            items
+                .into_iter()
+                .min_by(compare_values)
+                .ok_or_else(|| "collections.min expects a non-empty array".to_string())
+        }),
+    );
+
+    fields.insert(
+        "max".to_string(),
+        native("collections.max", |args| {
+            let items = array_items(
+                args.get(0).unwrap_or(&Value::Null),
+                "for collections.max",
+            )?;
+            items
+                .into_iter()
+                .max_by(compare_values)
+                .ok_or_else(|| "collections.max expects a non-empty array".to_string())
+        }),
+    );
+
+    fields.insert(
+        "product".to_string(),
+        native("collections.product", |args| {
+            let items = array_items(
+                args.get(0).unwrap_or(&Value::Null),
+                "for collections.product",
+            )?;
+            let mut total = 1.0;
+            for item in items {
+                total *= crate::runtime::expect_number(&item, "in the array for collections.product")?;
+            }
+            Ok(Value::Number(total))
+        }),
+    );
+
+    fields.insert(
+        "has".to_string(),
+        native("collections.has", |args| {
+            let Value::Object(fields) = args.get(0).unwrap_or(&Value::Null) else {
+                return Err("collections.has expects an object".to_string());
+            };
+            let key = crate::runtime::expect_string(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the key for collections.has",
+            )?;
+            Ok(Value::Bool(fields.borrow().contains_key(&key)))
+        }),
+    );
+
+    fields.insert(
+        "get".to_string(),
+        native("collections.get", |args| {
+            let Value::Object(fields) = args.get(0).unwrap_or(&Value::Null) else {
+                return Err("collections.get expects an object".to_string());
+            };
+            let key = crate::runtime::expect_string(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the key for collections.get",
+            )?;
+            Ok(fields
+                .borrow()
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| args.get(2).cloned().unwrap_or(Value::Null)))
+        }),
+    );
+
+    fields.insert(
+        "set".to_string(),
+        native("collections.set", |args| {
+            let Value::Object(fields) = args.get(0).unwrap_or(&Value::Null) else {
+                return Err("collections.set expects an object".to_string());
+            };
+            let key = crate::runtime::expect_string(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the key for collections.set",
+            )?;
+            let value = args.get(2).cloned().unwrap_or(Value::Null);
+            fields.borrow_mut().insert(key, value);
+            Ok(args.get(0).unwrap_or(&Value::Null).clone())
+        }),
+    );
+
+    fields.insert(
+        "delete".to_string(),
+        native("collections.delete", |args| {
+            let Value::Object(fields) = args.get(0).unwrap_or(&Value::Null) else {
+                return Err("collections.delete expects an object".to_string());
+            };
+            let key = crate::runtime::expect_string(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the key for collections.delete",
+            )?;
+            Ok(Value::Bool(fields.borrow_mut().remove(&key).is_some()))
+        }),
+    );
+
+    fields.insert(
+        "keys".to_string(),
+        native("collections.keys", |args| {
+            let Value::Object(fields) = args.get(0).unwrap_or(&Value::Null) else {
+                return Err("collections.keys expects an object".to_string());
+            };
+            let keys = fields
+                .borrow()
+                .keys()
+                .map(|key| Value::String(key.clone()))
+                .collect();
+            Ok(Value::new_array(keys))
+        }),
+    );
+
+    fields.insert(
+        "values".to_string(),
+        native("collections.values", |args| {
+            let Value::Object(fields) = args.get(0).unwrap_or(&Value::Null) else {
+                return Err("collections.values expects an object".to_string());
+            };
+            Ok(Value::new_array(fields.borrow().values().cloned().collect()))
+        }),
+    );
+
+    fields.insert(
+        "merge".to_string(),
+        native("collections.merge", |args| {
+            let mut merged = std::collections::BTreeMap::new();
+            for arg in args {
+                let Value::Object(fields) = arg else {
+                    return Err("collections.merge expects objects".to_string());
+                };
+                for (key, value) in fields.borrow().iter() {
+                    merged.insert(key.clone(), copy_value(value));
+                }
+            }
+            Ok(Value::new_object(merged))
+        }),
+    );
+
+    fields.insert(
+        "copy".to_string(),
+        native("collections.copy", |args| {
+            Ok(copy_value(args.get(0).unwrap_or(&Value::Null)))
+        }),
+    );
+
+    fields.insert(
         "average".to_string(),
         native("collections.average", |args| {
             let items = array_items(
@@ -211,6 +394,27 @@ pub fn module() -> Value {
     );
 
     Value::new_object(fields)
+}
+
+/// Deep-copy arrays and objects so `merge` and `copy` do not alias the input.
+fn copy_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::new_array(
+            items
+                .borrow()
+                .iter()
+                .map(copy_value)
+                .collect(),
+        ),
+        Value::Object(fields) => Value::new_object(
+            fields
+                .borrow()
+                .iter()
+                .map(|(key, value)| (key.clone(), copy_value(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 fn flatten_into(items: Vec<Value>, out: &mut Vec<Value>) {
@@ -331,5 +535,78 @@ mod tests {
         assert!(call("average", &[Value::new_array(vec![])]).is_err());
         assert!(call("range", &[Value::Number(1.0), Value::Number(2.0), Value::Number(0.0)]).is_err());
         assert!(call("sum", &[Value::new_array(vec![Value::String("x".to_string())])]).is_err());
+    }
+
+    #[test]
+    fn endpoints_extremes_and_product() {
+        let items = numbers(&[3.0, 1.0, 4.0]);
+        assert!(matches!(call("first", &[items.clone()]).unwrap(), Value::Number(n) if n == 3.0));
+        assert!(matches!(call("last", &[items.clone()]).unwrap(), Value::Number(n) if n == 4.0));
+        assert!(matches!(call("min", &[items.clone()]).unwrap(), Value::Number(n) if n == 1.0));
+        assert!(matches!(call("max", &[items.clone()]).unwrap(), Value::Number(n) if n == 4.0));
+        assert!(matches!(call("product", &[items.clone()]).unwrap(), Value::Number(n) if n == 12.0));
+        assert!(call("first", &[Value::new_array(vec![])]).is_err());
+        assert!(call("min", &[Value::new_array(vec![])]).is_err());
+    }
+
+    #[test]
+    fn object_helpers() {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("a".to_string(), Value::Number(1.0));
+        fields.insert("b".to_string(), Value::Number(2.0));
+        let object = Value::new_object(fields);
+        assert!(matches!(
+            call("has", &[object.clone(), Value::String("a".to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("get", &[object.clone(), Value::String("z".to_string())]).unwrap(),
+            Value::Null
+        ));
+        assert!(matches!(
+            call(
+                "get",
+                &[
+                    object.clone(),
+                    Value::String("z".to_string()),
+                    Value::String("fallback".to_string())
+                ]
+            )
+            .unwrap(),
+            Value::String(s) if s == "fallback"
+        ));
+        call(
+            "set",
+            &[
+                object.clone(),
+                Value::String("c".to_string()),
+                Value::Number(3.0),
+            ],
+        )
+        .unwrap();
+        assert_eq!(call("keys", &[object.clone()]).unwrap().display(), "[\"a\", \"b\", \"c\"]");
+        assert_eq!(call("values", &[object.clone()]).unwrap().display(), "[1, 2, 3]");
+        assert!(matches!(
+            call("delete", &[object.clone(), Value::String("a".to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("delete", &[object.clone(), Value::String("a".to_string())]).unwrap(),
+            Value::Bool(false)
+        ));
+
+        let mut more = std::collections::BTreeMap::new();
+        more.insert("b".to_string(), Value::Number(9.0));
+        more.insert("d".to_string(), Value::Number(4.0));
+        let merged = call("merge", &[object, Value::new_object(more)]).unwrap();
+        assert_eq!(
+            call("get", &[merged.clone(), Value::String("b".to_string())])
+                .unwrap()
+                .display(),
+            "9"
+        );
+        let copied = call("copy", &[merged.clone()]).unwrap();
+        assert_eq!(copied.display(), merged.display());
+        assert!(call("merge", &[Value::Number(1.0)]).is_err());
     }
 }

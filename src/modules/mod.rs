@@ -47,6 +47,25 @@ pub fn load_module(name: &str) -> Option<Value> {
 mod tests {
     use super::*;
 
+    fn parse(source: &str) -> Vec<crate::ast::Stmt> {
+        crate::parser::parse(crate::lexer::tokenize(source).unwrap()).unwrap()
+    }
+
+    fn run_interpreted(source: &str) -> crate::interpreter::Interpreter {
+        let program = parse(source);
+        let mut interpreter = crate::interpreter::Interpreter::new();
+        interpreter.run(&program).unwrap();
+        interpreter
+    }
+
+    fn run_compiled(source: &str) -> crate::vm::Vm {
+        let program = parse(source);
+        let chunk = crate::compiler::compile(&program).unwrap();
+        let mut vm = crate::vm::Vm::new();
+        vm.run(chunk).unwrap();
+        vm
+    }
+
     #[test]
     fn every_registered_module_loads_as_an_object() {
         for name in STD_MODULES {
@@ -76,8 +95,54 @@ mod tests {
                 unreachable!()
             };
             for (key, value) in fields.borrow().iter() {
-                assert!(matches!(value, Value::Native(_)), "{name}.{key} is not native");
+                assert!(
+                    matches!(value, Value::Native(_)) || matches!(value, Value::Number(_)),
+                    "{name}.{key} is neither a native function nor a constant"
+                );
             }
+            assert!(
+                fields.borrow().values().any(|value| matches!(value, Value::Native(_))),
+                "module '{name}' exports no native functions"
+            );
+        }
+    }
+
+    #[test]
+    fn native_modules_agree_across_both_backends() {
+        let source = r#"
+import math
+import string
+import json
+import collections
+import random
+import time
+import os
+import fs
+
+text = string.upper("hello")
+power = math.pow(2, 8)
+encoded = json.encode(collections.sorted([3, 1, 2]))
+random.seed(11)
+dice = random.int(1, 6)
+weekday_name = time.weekday()
+platform_name = os.platform()
+working_dir = fs.cwd()
+"#;
+        let interpreted = run_interpreted(source);
+        let compiled = run_compiled(source);
+        for name in [
+            "text",
+            "power",
+            "encoded",
+            "dice",
+            "weekday_name",
+            "platform_name",
+            "working_dir",
+        ] {
+            let left = interpreted.globals.get(name).unwrap();
+            let right = compiled.globals.get(name).unwrap();
+            assert_eq!(left.type_name(), right.type_name(), "{name} has a different type");
+            assert_eq!(left.display(), right.display(), "{name} has a different value");
         }
     }
 }

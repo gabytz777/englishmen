@@ -1,10 +1,122 @@
-use crate::modules::support::{array_items, as_usize, call_native};
+use crate::modules::support::{array_items, as_usize};
+#[cfg(test)]
+use crate::modules::support::call_native;
 use crate::runtime::{expect_string, native};
 use crate::value::Value;
 use std::collections::BTreeMap;
 
 pub fn module() -> Value {
     let mut fields = BTreeMap::new();
+
+    fields.insert(
+        "length".to_string(),
+        native("string.length", |args| {
+            let text = expect_string(
+                args.get(0).unwrap_or(&Value::Null),
+                "for string.length",
+            )?;
+            Ok(Value::Number(text.chars().count() as f64))
+        }),
+    );
+
+    fields.insert(
+        "charAt".to_string(),
+        native("string.charAt", |args| {
+            let text = expect_string(
+                args.get(0).unwrap_or(&Value::Null),
+                "for string.charAt",
+            )?;
+            let index = as_usize(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the index for string.charAt",
+            )?;
+            let Some(ch) = text.chars().nth(index) else {
+                return Err(format!(
+                    "string.charAt index {index} is out of range for a {}-character string",
+                    text.chars().count()
+                ));
+            };
+            Ok(Value::String(ch.to_string()))
+        }),
+    );
+
+    fields.insert(
+        "indexOf".to_string(),
+        native("string.indexOf", |args| {
+            let text = expect_string(
+                args.get(0).unwrap_or(&Value::Null),
+                "for string.indexOf",
+            )?;
+            let needle = expect_string(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the text to find for string.indexOf",
+            )?;
+            if needle.is_empty() {
+                return Ok(Value::Number(0.0));
+            }
+            match text.find(&needle) {
+                Some(byte) => Ok(Value::Number(text[..byte].chars().count() as f64)),
+                None => Ok(Value::Number(-1.0)),
+            }
+        }),
+    );
+
+    fields.insert(
+        "lastIndexOf".to_string(),
+        native("string.lastIndexOf", |args| {
+            let text = expect_string(
+                args.get(0).unwrap_or(&Value::Null),
+                "for string.lastIndexOf",
+            )?;
+            let needle = expect_string(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the text to find for string.lastIndexOf",
+            )?;
+            if needle.is_empty() {
+                return Ok(Value::Number(text.chars().count() as f64));
+            }
+            match text.rfind(&needle) {
+                Some(byte) => Ok(Value::Number(text[..byte].chars().count() as f64)),
+                None => Ok(Value::Number(-1.0)),
+            }
+        }),
+    );
+
+    fields.insert(
+        "substring".to_string(),
+        native("string.substring", |args| {
+            let text = expect_string(
+                args.get(0).unwrap_or(&Value::Null),
+                "for string.substring",
+            )?;
+            let chars: Vec<char> = text.chars().collect();
+            let start = as_usize(
+                args.get(1).unwrap_or(&Value::Null),
+                "as the start for string.substring",
+            )?;
+            let end = args
+                .get(2)
+                .map(|value| as_usize(value, "as the end for string.substring"))
+                .transpose()?
+                .unwrap_or(chars.len());
+            if start > end || end > chars.len() {
+                return Err("string.substring expects 0 <= start <= end <= length".to_string());
+            }
+            Ok(Value::String(chars[start..end].iter().collect()))
+        }),
+    );
+
+    fields.insert(
+        "lines".to_string(),
+        native("string.lines", |args| {
+            let text = expect_string(args.get(0).unwrap_or(&Value::Null), "for string.lines")?;
+            let lines = text
+                .lines()
+                .map(|line| Value::String(line.to_string()))
+                .collect();
+            Ok(Value::new_array(lines))
+        }),
+    );
 
     fields.insert(
         "upper".to_string(),
@@ -146,7 +258,7 @@ pub fn module() -> Value {
                 .get(3)
                 .map(|v| expect_string(v, "as the alignment for string.pad"))
                 .transpose()?
-                .unwrap_or_else(|| "right".to_string());
+                .unwrap_or_else(|| "left".to_string());
             let current = text.chars().count();
             if current >= width {
                 return Ok(Value::String(text));
@@ -209,6 +321,63 @@ pub fn module() -> Value {
                 "as the suffix for string.endsWith",
             )?;
             Ok(Value::Bool(text.ends_with(suffix.as_str())))
+        }),
+    );
+
+    fields.insert(
+        "isDigit".to_string(),
+        native("string.isDigit", |args| {
+            let text = expect_string(args.get(0).unwrap_or(&Value::Null), "for string.isDigit")?;
+            Ok(Value::Bool(
+                !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()),
+            ))
+        }),
+    );
+
+    fields.insert(
+        "isAlpha".to_string(),
+        native("string.isAlpha", |args| {
+            let text = expect_string(args.get(0).unwrap_or(&Value::Null), "for string.isAlpha")?;
+            Ok(Value::Bool(
+                !text.is_empty() && text.chars().all(char::is_alphabetic),
+            ))
+        }),
+    );
+
+    fields.insert(
+        "isAlphanumeric".to_string(),
+        native("string.isAlphanumeric", |args| {
+            let text = expect_string(
+                args.get(0).unwrap_or(&Value::Null),
+                "for string.isAlphanumeric",
+            )?;
+            Ok(Value::Bool(
+                !text.is_empty()
+                    && text
+                        .chars()
+                        .all(|c| c.is_alphabetic() || c.is_ascii_digit()),
+            ))
+        }),
+    );
+
+    fields.insert(
+        "isWhitespace".to_string(),
+        native("string.isWhitespace", |args| {
+            let text = expect_string(
+                args.get(0).unwrap_or(&Value::Null),
+                "for string.isWhitespace",
+            )?;
+            Ok(Value::Bool(
+                !text.is_empty() && text.chars().all(char::is_whitespace),
+            ))
+        }),
+    );
+
+    fields.insert(
+        "isEmpty".to_string(),
+        native("string.isEmpty", |args| {
+            let text = expect_string(args.get(0).unwrap_or(&Value::Null), "for string.isEmpty")?;
+            Ok(Value::Bool(text.is_empty()))
         }),
     );
 
@@ -356,5 +525,96 @@ mod tests {
             &[Value::String("a".to_string()), Value::Number(-1.0)]
         )
         .is_err());
+    }
+
+    #[test]
+    fn length_char_at_and_substrings() {
+        let text = Value::String("héllo".to_string());
+        assert!(matches!(call("length", &[text.clone()]).unwrap(), Value::Number(n) if n == 5.0));
+        assert_eq!(
+            call("charAt", &[text.clone(), Value::Number(1.0)])
+                .unwrap()
+                .display(),
+            "é"
+        );
+        assert!(call("charAt", &[text.clone(), Value::Number(5.0)]).is_err());
+        assert_eq!(
+            call(
+                "substring",
+                &[text.clone(), Value::Number(1.0), Value::Number(4.0)]
+            )
+            .unwrap()
+            .display(),
+            "éll"
+        );
+        assert_eq!(
+            call("substring", &[text.clone(), Value::Number(3.0)])
+                .unwrap()
+                .display(),
+            "lo"
+        );
+        assert!(call(
+            "substring",
+            &[text, Value::Number(4.0), Value::Number(2.0)]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn searching_is_counted_in_characters() {
+        let text = Value::String("a☃b☃".to_string());
+        let needle = Value::String("☃".to_string());
+        assert!(matches!(
+            call("indexOf", &[text.clone(), needle.clone()]).unwrap(),
+            Value::Number(n) if n == 1.0
+        ));
+        assert!(matches!(
+            call("lastIndexOf", &[text.clone(), needle]).unwrap(),
+            Value::Number(n) if n == 3.0
+        ));
+        assert!(matches!(
+            call("indexOf", &[text.clone(), Value::String("z".to_string())]).unwrap(),
+            Value::Number(n) if n == -1.0
+        ));
+        assert_eq!(
+            call("lines", &[Value::String("a\r\nb\nc\n".to_string())])
+                .unwrap()
+                .display(),
+            "[\"a\", \"b\", \"c\"]"
+        );
+    }
+
+    #[test]
+    fn character_class_predicates() {
+        for name in ["isDigit", "isAlpha", "isAlphanumeric", "isWhitespace"] {
+            assert!(matches!(
+                call(name, &[Value::String(String::new())]).unwrap(),
+                Value::Bool(false)
+            ));
+        }
+        assert!(matches!(
+            call("isDigit", &[Value::String("123".to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("isDigit", &[Value::String("12a".to_string())]).unwrap(),
+            Value::Bool(false)
+        ));
+        assert!(matches!(
+            call("isAlpha", &[Value::String("héllo".to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("isAlphanumeric", &[Value::String("a1".to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("isWhitespace", &[Value::String(" \t\n".to_string())]).unwrap(),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            call("isEmpty", &[Value::String(String::new())]).unwrap(),
+            Value::Bool(true)
+        ));
     }
 }

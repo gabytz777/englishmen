@@ -1,6 +1,6 @@
 use crate::runtime::{expect_number, expect_string, native};
 use crate::value::Value;
-use chrono::{Datelike, Local, TimeZone, Timelike};
+use chrono::{Datelike, Local, TimeZone, Timelike, Utc, Weekday};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -95,7 +95,16 @@ pub fn module() -> Value {
     fields.insert(
         "weekday".to_string(),
         native("time.weekday", |_args| {
-            Ok(Value::String(Local::now().weekday().to_string()))
+            let name = match Local::now().weekday() {
+                Weekday::Mon => "Monday",
+                Weekday::Tue => "Tuesday",
+                Weekday::Wed => "Wednesday",
+                Weekday::Thu => "Thursday",
+                Weekday::Fri => "Friday",
+                Weekday::Sat => "Saturday",
+                Weekday::Sun => "Sunday",
+            };
+            Ok(Value::String(name.to_string()))
         }),
     );
 
@@ -136,6 +145,13 @@ pub fn module() -> Value {
                 Local::now()
             };
             Ok(Value::String(moment.format(&pattern).to_string()))
+        }),
+    );
+
+    fields.insert(
+        "isoUtc".to_string(),
+        native("time.isoUtc", |_args| {
+            Ok(Value::String(Utc::now().to_rfc3339()))
         }),
     );
 
@@ -219,6 +235,8 @@ mod tests {
         assert_eq!(today.as_bytes()[4], b'-');
         let iso = call("iso", &[]).unwrap().display();
         assert!(iso.contains('T'));
+        let utc = call("isoUtc", &[]).unwrap().display();
+        assert!(utc.contains('T') && utc.contains("+00:00"));
         let weekday = call("weekday", &[]).unwrap().display();
         assert!(matches!(
             weekday.as_str(),
