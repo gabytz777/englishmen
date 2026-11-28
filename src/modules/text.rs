@@ -218,12 +218,14 @@ pub fn module() -> Value {
                 args.get(1).unwrap_or(&Value::Null),
                 "as the prefix for text.indent",
             )?;
-            Ok(Value::String(
-                text.lines()
-                    .map(|line| format!("{prefix}{line}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ))
+            // `split_inclusive` keeps trailing newlines and CRLF terminators;
+            // `str::lines()` would silently normalise both away.
+            let mut result = String::new();
+            for segment in text.split_inclusive('\n') {
+                result.push_str(&prefix);
+                result.push_str(segment);
+            }
+            Ok(Value::String(result))
         }),
     );
 
@@ -231,20 +233,21 @@ pub fn module() -> Value {
         "dedent".to_string(),
         native("text.dedent", |args| {
             let text = first_string(args, "dedent")?;
-            let lines: Vec<&str> = text.lines().collect();
-            let common = lines
+            let segments: Vec<&str> = text.split_inclusive('\n').collect();
+            let common = segments
                 .iter()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| line.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+                .map(|segment| split_line_ending(segment).0)
+                .filter(|body| !body.trim().is_empty())
+                .map(|body| body.chars().take_while(|c| *c == ' ' || *c == '\t').count())
                 .min()
                 .unwrap_or(0);
-            Ok(Value::String(
-                lines
-                    .iter()
-                    .map(|line| line.chars().skip(common).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ))
+            let mut result = String::new();
+            for segment in segments {
+                let (body, ending) = split_line_ending(segment);
+                result.extend(body.chars().skip(common));
+                result.push_str(ending);
+            }
+            Ok(Value::String(result))
         }),
     );
 
@@ -277,15 +280,14 @@ pub fn module() -> Value {
         "isPalindrome".to_string(),
         native("text.isPalindrome", |args| {
             let text = first_string(args, "isPalindrome")?;
-            // Compare normalised "letters" so punctuation, spacing and case are
-            // ignored. Lowercasing can expand a character, so keep a vec of
-            // strings rather than a vec of chars.
-            let mut normalized: Vec<String> = Vec::new();
+            // Compare case-folded alphanumeric characters so punctuation,
+            // spacing and case are ignored. Full folding can expand a single
+            // character, so build a flat vec of characters first.
+            let mut folded = String::new();
             for ch in text.chars().filter(|ch| ch.is_alphanumeric()) {
-                for lower in ch.to_lowercase() {
-                    normalized.push(lower.to_string());
-                }
+                folded.push_str(&casefold_char(ch));
             }
+            let normalized: Vec<char> = folded.chars().collect();
             Ok(Value::Bool(normalized.iter().eq(normalized.iter().rev())))
         }),
     );
@@ -298,6 +300,14 @@ pub fn module() -> Value {
                 args.get(1).unwrap_or(&Value::Null),
                 "as the second string for text.levenshtein",
             )?;
+            // An empty side needs only the other side's length, so return
+            // before allocating a table that could be arbitrarily wide.
+            if left.is_empty() {
+                return Ok(Value::Number(right.chars().count() as f64));
+            }
+            if right.is_empty() {
+                return Ok(Value::Number(left.chars().count() as f64));
+            }
             let a: Vec<char> = left.chars().collect();
             let b: Vec<char> = right.chars().collect();
             // Bound the dynamic-programming table so a typo cannot allocate
@@ -330,6 +340,36 @@ fn first_string(args: &[Value], function: &str) -> Result<String, String> {
         args.get(0).unwrap_or(&Value::Null),
         &format!("for text.{function}"),
     )
+}
+
+/// Split a `split_inclusive('\n')` segment into its body and line ending,
+/// keeping CRLF as a single terminator.
+fn split_line_ending(segment: &str) -> (&str, &str) {
+    let Some(body) = segment.strip_suffix('\n') else {
+        return (segment, "");
+    };
+    match body.strip_suffix('\r') {
+        Some(body) => (body, "\r\n"),
+        None => (body, "\n"),
+    }
+}
+
+/// Apply Unicode full case folding for the common multi-character folds that
+/// `char::to_lowercase` does not cover. Returned strings are always non-empty
+/// for alphanumeric inputs.
+fn casefold_char(ch: char) -> String {
+    match ch {
+        'ß' => "ss".to_string(),
+        'ẛ' => "ṡ".to_string(),
+        'ﬀ' => "ff".to_string(),
+        'ﬁ' => "fi".to_string(),
+        'ﬂ' => "fl".to_string(),
+        'ﬃ' => "ffi".to_string(),
+        'ﬄ' => "ffl".to_string(),
+        'ﬅ' | 'ﬆ' => "st".to_string(),
+        'ς' => "σ".to_string(),
+        other => other.to_lowercase().collect(),
+    }
 }
 
 /// Uppercase the first character and lowercase the rest.
@@ -367,7 +407,7 @@ fn identifier_words(text: &str) -> Vec<String> {
             let previous = chars[index - 1];
             let next_is_lowercase = chars.get(index + 1).is_some_and(|ch| ch.is_lowercase());
             let boundary = previous.is_lowercase()
-                || previous.is_ascii_digit()
+                || previous.is_numeric()
                 || (previous.is_uppercase() && next_is_lowercase);
             if boundary {
                 words.push(std::mem::take(&mut current).to_lowercase());
@@ -413,12 +453,36 @@ mod tests {
     }
 
     #[test]
-    fn exports_at_least_ten_native_functions() {
+    fn exports_exactly_the_expected_native_functions() {
+        let expected = [
+            "words",
+            "title",
+            "capitalize",
+            "swapCase",
+            "snake",
+            "kebab",
+            "camel",
+            "pascal",
+            "slug",
+            "collapseWhitespace",
+            "count",
+            "truncate",
+            "wrap",
+            "indent",
+            "dedent",
+            "reverseWords",
+            "initials",
+            "isPalindrome",
+            "levenshtein",
+        ];
         let Value::Object(fields) = module() else {
             panic!("text module is not an object");
         };
         let fields = fields.borrow();
-        assert!(fields.len() >= 10, "text module exports too few functions");
+        assert_eq!(fields.len(), expected.len(), "unexpected export count");
+        for name in expected {
+            assert!(fields.contains_key(name), "missing text.{name} export");
+        }
         for (name, value) in fields.iter() {
             assert!(
                 matches!(value, Value::Native(_)),
@@ -458,6 +522,11 @@ mod tests {
         assert_eq!(apply("camel", "XMLHttpRequest"), "xmlHttpRequest");
         assert_eq!(apply("pascal", "hello-world"), "HelloWorld");
         assert_eq!(apply("pascal", "hello"), "Hello");
+        assert_eq!(
+            apply("snake", "a١B"),
+            "a١_b",
+            "Unicode digits are boundaries too"
+        );
         assert_eq!(apply("snake", ""), "");
     }
 
@@ -551,6 +620,29 @@ mod tests {
     }
 
     #[test]
+    fn indent_and_dedent_preserve_line_endings() {
+        assert_eq!(
+            call("indent", &[string("a\n"), string("> ")])
+                .unwrap()
+                .display(),
+            "> a\n",
+            "a trailing newline must survive indentation"
+        );
+        assert_eq!(
+            call("indent", &[string("a\r\nb"), string("> ")])
+                .unwrap()
+                .display(),
+            "> a\r\n> b",
+            "CRLF must not be normalised to LF"
+        );
+        assert_eq!(
+            apply("dedent", "  a\r\n  b\r\n"),
+            "a\r\nb\r\n",
+            "dedent must preserve CRLF and the final terminator"
+        );
+    }
+
+    #[test]
     fn initials_and_palindrome_checks() {
         assert_eq!(apply("initials", "ada lovelace"), "AL");
         assert_eq!(apply("initials", " john   doe "), "JD");
@@ -563,14 +655,40 @@ mod tests {
             call("isPalindrome", &[string("héllo")]).unwrap(),
             Value::Bool(false)
         ));
+        assert!(
+            matches!(
+                call("isPalindrome", &[string("ßSS")]).unwrap(),
+                Value::Bool(true)
+            ),
+            "full case folding must expand ß to ss"
+        );
     }
 
     #[test]
     fn module_is_importable_in_both_backends() {
+        // Every export is called here so a name that resolves in one backend
+        // but not the other cannot hide behind a two-function smoke test.
         let source = r#"
 import text
-snake_name = text.snake("HTTP Server")
-word_count = text.count("aaaa", "aa")
+r01 = text.words("a b")
+r02 = text.title("hello world")
+r03 = text.capitalize("hELLO")
+r04 = text.swapCase("aB")
+r05 = text.snake("HTTP Server")
+r06 = text.kebab("HTTP Server")
+r07 = text.camel("http server")
+r08 = text.pascal("http server")
+r09 = text.slug("Hi, There!")
+r10 = text.collapseWhitespace("a   b")
+r11 = text.count("aaaa", "aa")
+r12 = text.truncate("abcdef", 4)
+r13 = text.wrap("a b c", 2)
+r14 = text.indent("a\n", "> ")
+r15 = text.dedent("  a\n  b")
+r16 = text.reverseWords("a b")
+r17 = text.initials("ada lovelace")
+r18 = text.isPalindrome("ßSS")
+r19 = text.levenshtein("kitten", "sitting")
 "#;
         let program = crate::parser::parse(crate::lexer::tokenize(source).unwrap()).unwrap();
 
@@ -581,7 +699,28 @@ word_count = text.count("aaaa", "aa")
         let mut vm = crate::vm::Vm::new();
         vm.run(chunk).unwrap();
 
-        for (name, expected) in [("snake_name", "http_server"), ("word_count", "2")] {
+        let expectations = [
+            ("r01", "[\"a\", \"b\"]"),
+            ("r02", "Hello World"),
+            ("r03", "Hello"),
+            ("r04", "Ab"),
+            ("r05", "http_server"),
+            ("r06", "http-server"),
+            ("r07", "httpServer"),
+            ("r08", "HttpServer"),
+            ("r09", "hi-there"),
+            ("r10", "a b"),
+            ("r11", "2"),
+            ("r12", "a..."),
+            ("r13", "[\"a\", \"b\", \"c\"]"),
+            ("r14", "> a\n"),
+            ("r15", "a\nb"),
+            ("r16", "b a"),
+            ("r17", "AL"),
+            ("r18", "true"),
+            ("r19", "3"),
+        ];
+        for (name, expected) in expectations {
             assert_eq!(interpreter.globals.get(name).unwrap().display(), expected);
             assert_eq!(vm.globals.get(name).unwrap().display(), expected);
         }
@@ -602,5 +741,14 @@ word_count = text.count("aaaa", "aa")
             Value::Number(n) if n == 1.0
         ));
         assert!(call("levenshtein", &[string("only one")]).is_err());
+        let huge = "x".repeat(1_000_001);
+        assert!(matches!(
+            call("levenshtein", &[string(""), string(&huge)]).unwrap(),
+            Value::Number(n) if n == 1_000_001.0
+        ));
+        assert!(
+            call("levenshtein", &[string("a"), string(&huge)]).is_err(),
+            "a wide table with a non-empty left side must be rejected"
+        );
     }
 }
