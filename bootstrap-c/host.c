@@ -18,13 +18,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "host.h"
-
-/* vm.h includes emb.h, whose EmFunctionProto typedef conflicts with the
- * forward declaration in value.h.  Declare the only VM entry point used here
- * with exactly the signature from vm.h instead of editing parent-owned
- * headers. */
-int em_vm_register_import(EmVm *vm, const char *name, EmValue *module);
-EmValue *em_vm_lookup_import(EmVm *vm, const char *name);
+#include "vm.h"
 
 #include <errno.h>
 #include <limits.h>
