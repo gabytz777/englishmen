@@ -12,10 +12,6 @@ typedef struct {
     EmValue *value;
 } EmObjectEntry;
 
-/* value.h only forward-declares EmFunctionProto (and cannot be included
- * alongside emb.h, which defines it as an anonymous typedef). emb.h puts the
- * function name first, so read just that field without including emb.h. */
-
 struct EmValue {
     EmValueType type;
     size_t refcount;
