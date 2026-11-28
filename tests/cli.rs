@@ -1340,6 +1340,102 @@ fn fmt_help_and_missing_file_are_clear() {
     assert!(String::from_utf8_lossy(&missing.stderr).contains("needs a file to format"));
 }
 
+#[test]
+fn fmt_preserves_comments_inside_interpolation() {
+    let dir = scratch("fmt_interp_comment");
+    let file = dir.join("interp.enm");
+    std::fs::write(&file, "x = 7\nsay(  \"v={x $- inside -$ + 1}\"  )\n").unwrap();
+
+    let output = run(&["fmt", file.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let formatted = std::fs::read_to_string(&file).unwrap();
+    assert!(formatted.contains("$- inside -$"), "{formatted}");
+    // The comment must still live inside the braces, not be flushed to the
+    // end of the file where it would no longer qualify the expression.
+    let open = formatted.find('{').unwrap();
+    let close = formatted.find('}').unwrap();
+    let comment = formatted.find("$- inside -$").unwrap();
+    assert!(comment > open && comment < close, "{formatted}");
+    // A second pass must leave the preserved literal alone.
+    let again = run(&["fmt", file.to_str().unwrap()]);
+    assert!(again.status.success());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), formatted);
+    let checked = run(&["check", file.to_str().unwrap()]);
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fmt_keeps_comments_attached_in_multiline_literals() {
+    let dir = scratch("fmt_multiline_comments");
+    let file = dir.join("list.enm");
+    std::fs::write(
+        &file,
+        "xs = [\n    1, $- first -$\n    2 $- second -$\n]\nsay(xs)\n",
+    )
+    .unwrap();
+
+    let output = run(&["fmt", file.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let formatted = std::fs::read_to_string(&file).unwrap();
+    let literal_line = formatted
+        .lines()
+        .find(|line| line.starts_with("xs = "))
+        .expect("the literal should still be one canonical line");
+    assert!(literal_line.contains("1, $- first -$ 2"), "{literal_line}");
+    assert!(literal_line.contains("$- second -$"), "{literal_line}");
+    // Neither annotation may be detached and moved after the program.
+    assert!(
+        !formatted.lines().any(|line| line.trim() == "$- first -$"),
+        "{formatted}"
+    );
+    let checked = run(&["check", file.to_str().unwrap()]);
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fmt_formats_indexed_access_without_space() {
+    let dir = scratch("fmt_indexing");
+    let file = dir.join("index.enm");
+    std::fs::write(
+        &file,
+        "function pair()\n    return [10, 20]\nend\nxs = [10, 20]\nsay(xs [1])\nsay(xs [0] + xs [1])\nsay(pair() [1])\n",
+    )
+    .unwrap();
+
+    let output = run(&["fmt", file.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "function pair()\n    return [10, 20]\nend\nxs = [10, 20]\nsay(xs[1])\nsay(xs[0] + xs[1])\nsay(pair()[1])\n"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- em eval ---------------------------------------------------------------
 
 #[test]
@@ -1444,6 +1540,43 @@ fn build_stats_prints_code_statistics_without_writing_a_file() {
     assert!(stdout.contains("instructions:"), "{stdout}");
     assert!(stdout.contains("functions: 1"), "{stdout}");
     assert!(!dir.join("prog.emb").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_rejects_conflicting_mode_flags() {
+    let dir = scratch("build_conflicts");
+    let source = dir.join("prog.enm");
+    std::fs::write(&source, "say(\"hi\")\n").unwrap();
+
+    let combinations: &[&[&str]] = &[
+        &["--stats", "--emit", "asm"],
+        &["--stats", "--emit", "ast"],
+        &["--emit", "asm", "--emit", "ast"],
+        &["--stats", "--run"],
+        &["--emit", "ast", "--run"],
+        &["--stats", "--exe"],
+        &["--stats", "--appimage"],
+        &["--emit", "asm", "--appimage"],
+    ];
+    for flags in combinations {
+        let mut args = vec!["build", source.to_str().unwrap()];
+        args.extend_from_slice(flags);
+        let output = run(&args);
+        assert!(
+            !output.status.success(),
+            "flags {flags:?} unexpectedly succeeded"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("cannot be combined"),
+            "flags {flags:?}: {stderr}"
+        );
+    }
+    // A rejected combination must not go on to write a build product.
+    assert!(!dir.join("prog.emb").exists());
+    assert!(!dir.join("prog").exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

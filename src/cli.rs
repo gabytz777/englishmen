@@ -384,15 +384,40 @@ fn cmd_build(args: &[String]) -> ExitCode {
         }
     }
 
+    // The inspection modes all return before a file is written, and `--run`
+    // needs the compiled program, so none of them can be combined. Reject the
+    // combinations explicitly rather than letting whichever check comes first
+    // silently win.
+    let inspection_modes: [(&str, bool); 3] = [
+        ("--emit asm", emit_asm),
+        ("--emit ast", emit_ast),
+        ("--stats", stats),
+    ];
+    let chosen: Vec<&str> = inspection_modes
+        .iter()
+        .filter_map(|(name, enabled)| enabled.then_some(*name))
+        .collect();
+    if chosen.len() > 1 {
+        eprintln!(
+            "Error: {} cannot be combined; choose one build mode",
+            chosen.join(" with ")
+        );
+        return ExitCode::FAILURE;
+    }
+    if let Some(mode) = chosen.first() {
+        if run_after {
+            eprintln!("Error: '{mode}' cannot be combined with '--run'");
+            return ExitCode::FAILURE;
+        }
+        if standalone || appimage {
+            eprintln!("Error: '{mode}' cannot be combined with '--exe' or '--appimage'");
+            return ExitCode::FAILURE;
+        }
+    }
+
     if appimage {
         if !cfg!(target_os = "linux") {
             eprintln!("Error: '--appimage' builds Linux AppImages and is only available on Linux");
-            return ExitCode::FAILURE;
-        }
-        if emit_asm || emit_ast {
-            eprintln!(
-                "Error: '--appimage' cannot be combined with '--emit asm' or '--emit ast'"
-            );
             return ExitCode::FAILURE;
         }
         // An AppImage wraps the standalone binary, so ask for one.
@@ -868,16 +893,22 @@ fn cmd_doc(args: &[String]) -> ExitCode {
 // ---------------------------------------------------------------------------
 
 /// A comment lifted out of the source so the lexer can tokenise the rest.
-/// Comments are later put back on their own line (or at the end of a line).
+/// Comments are later put back on their own line, at the end of a line, or
+/// (for comments inside a string interpolation) restored with the raw literal.
 struct FormatComment {
     line: usize,
     col: usize,
     text: String,
+    /// `$- ... -$` inside `{...}`: these are put back with the string they
+    /// belong to instead of being flushed after the rest of the file.
+    inside_interp: bool,
 }
 
 /// One logical line: physical newlines inside brackets do not split it.
+/// Spans are kept so comments from the intermediate physical lines can be
+/// placed next to the element they annotate.
 struct FormatLine {
-    tokens: Vec<Token>,
+    tokens: Vec<SpannedToken>,
     line: usize,
     first_col: usize,
     last_line: usize,
@@ -967,6 +998,7 @@ fn strip_comments(source: &str) -> (String, Vec<FormatComment>) {
                         line: start_line,
                         col: start_col,
                         text,
+                        inside_interp: true,
                     });
                     continue;
                 }
@@ -1114,6 +1146,7 @@ fn strip_comments(source: &str) -> (String, Vec<FormatComment>) {
                 line: start_line,
                 col: start_col,
                 text,
+                inside_interp: false,
             });
             continue;
         }
@@ -1273,8 +1306,9 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
     if matches!(prev, Token::Minus) && prefix_position(before) {
         return false;
     }
-    // Calls and indexing hug the name/value they follow; `if (...)` does not.
-    if matches!(token, Token::LParen) {
+    // Calls and indexing hug the name/value they follow; `if (...)` and
+    // `= [ ... ]` (an array literal) keep their space.
+    if matches!(token, Token::LParen | Token::LBracket) {
         return !matches!(
             prev,
             Token::Identifier(_)
@@ -1286,6 +1320,7 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
                 | Token::Null
                 | Token::RParen
                 | Token::RBracket
+                | Token::RBrace
         );
     }
     true
@@ -1309,7 +1344,7 @@ fn render_tokens(tokens: &[Token]) -> String {
 
 fn push_format_line(
     groups: &mut Vec<FormatLine>,
-    current: &mut Vec<Token>,
+    current: &mut Vec<SpannedToken>,
     first: Option<Span>,
     last: Option<Span>,
 ) {
@@ -1332,10 +1367,158 @@ fn comment_trailing(comment: &FormatComment, line: &FormatLine) -> bool {
     comment.line == line.last_line && comment.col > line.last_col
 }
 
+/// Character index of a 1-based (line, col) position.
+fn position_index(chars: &[char], line: usize, col: usize) -> usize {
+    let mut current_line = 1;
+    let mut index = 0;
+    while current_line < line && index < chars.len() {
+        if chars[index] == '\n' {
+            current_line += 1;
+        }
+        index += 1;
+    }
+    (index + col.saturating_sub(1)).min(chars.len())
+}
+
+fn index_position(chars: &[char], index: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for &c in chars.iter().take(index.min(chars.len())) {
+        if c == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// End (exclusive) of a string literal starting at `start`. Nested strings in
+/// interpolations and escaped characters are skipped.
+fn string_literal_end(chars: &[char], start: Span) -> (usize, usize) {
+    let mut index = position_index(chars, start.line, start.col) + 1;
+    let mut depth = 0usize;
+    let mut in_nested_string = false;
+    while index < chars.len() {
+        if chars[index] == '\\' {
+            index = (index + 2).min(chars.len());
+            continue;
+        }
+        if in_nested_string {
+            if chars[index] == '"' {
+                in_nested_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match chars[index] {
+            '"' if depth == 0 => {
+                index += 1;
+                break;
+            }
+            '"' => {
+                in_nested_string = true;
+                index += 1;
+            }
+            '{' => {
+                depth += 1;
+                index += 1;
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    index_position(chars, index)
+}
+
+fn comment_in_span(comment: &FormatComment, start: Span, end: (usize, usize)) -> bool {
+    (comment.line, comment.col) >= (start.line, start.col)
+        && (comment.line, comment.col) < end
+}
+
+/// Render one logical line, placing comments from intermediate physical lines
+/// immediately after the token they follow. A comment inside an interpolation
+/// is restored with the raw string literal instead of being moved elsewhere.
+fn render_line_tokens(
+    line: &FormatLine,
+    comments: &[FormatComment],
+    consumed: &mut [bool],
+    clean_chars: &[char],
+    source_chars: &[char],
+) -> String {
+    let plain: Vec<Token> = line.tokens.iter().map(|t| t.token.clone()).collect();
+    let mut out = String::new();
+
+    for (i, token) in plain.iter().enumerate() {
+        if matches!(token, Token::Newline | Token::Eof) {
+            continue;
+        }
+        if needs_space(&plain, i) {
+            out.push(' ');
+        }
+
+        if matches!(token, Token::Interpolated(_)) {
+            let span = line.tokens[i].span;
+            let end = string_literal_end(clean_chars, span);
+            let interpolation_comments: Vec<usize> = comments
+                .iter()
+                .enumerate()
+                .filter(|(j, c)| {
+                    !consumed[*j] && c.inside_interp && comment_in_span(c, span, end)
+                })
+                .map(|(j, _)| j)
+                .collect();
+            if !interpolation_comments.is_empty() {
+                // The comment is part of the string's source text. Re-emit the
+                // literal verbatim so the comment stays inside `{...}`.
+                let from = position_index(source_chars, span.line, span.col);
+                let to = position_index(source_chars, end.0, end.1);
+                out.extend(source_chars[from..to].iter());
+                for j in interpolation_comments {
+                    consumed[j] = true;
+                }
+                continue;
+            }
+        }
+        out.push_str(&token_text(token));
+
+        let token_pos = (line.tokens[i].span.line, line.tokens[i].span.col);
+        let next_pos = line
+            .tokens
+            .get(i + 1)
+            .map(|t| (t.span.line, t.span.col));
+        for (j, comment) in comments.iter().enumerate() {
+            if consumed[j] || comment.inside_interp || comment_trailing(comment, line) {
+                continue;
+            }
+            let pos = (comment.line, comment.col);
+            if pos <= token_pos || comment.line > line.last_line {
+                continue;
+            }
+            if next_pos.is_some_and(|next| pos >= next) {
+                continue;
+            }
+            out.push(' ');
+            out.push_str(&comment.text.replace('\n', " "));
+            consumed[j] = true;
+        }
+    }
+    out
+}
+
 /// Turn lexer tokens plus the saved comments into canonical source.
-fn render_format(tokens: &[SpannedToken], comments: &[FormatComment]) -> String {
+fn render_format(
+    tokens: &[SpannedToken],
+    comments: &[FormatComment],
+    clean: &str,
+    source: &str,
+) -> String {
     let mut groups: Vec<FormatLine> = Vec::new();
-    let mut current: Vec<Token> = Vec::new();
+    let mut current: Vec<SpannedToken> = Vec::new();
     let mut first: Option<Span> = None;
     let mut last: Option<Span> = None;
     let mut depth = 0usize;
@@ -1363,10 +1546,13 @@ fn render_format(tokens: &[SpannedToken], comments: &[FormatComment]) -> String 
             first = Some(spanned.span);
         }
         last = Some(spanned.span);
-        current.push(spanned.token.clone());
+        current.push(spanned.clone());
     }
     push_format_line(&mut groups, &mut current, first, last);
 
+    let clean_chars: Vec<char> = clean.chars().collect();
+    let source_chars: Vec<char> = source.chars().collect();
+    let mut consumed = vec![false; comments.len()];
     let mut out = String::new();
     let mut comment_index = 0;
     let mut indent = 0usize;
@@ -1374,18 +1560,23 @@ fn render_format(tokens: &[SpannedToken], comments: &[FormatComment]) -> String 
 
     for line in &groups {
         while let Some(comment) = comments.get(comment_index) {
+            if consumed[comment_index] {
+                comment_index += 1;
+                continue;
+            }
             if !comment_before(comment, line) {
                 break;
             }
             out.push_str(&comment.text);
             out.push('\n');
+            consumed[comment_index] = true;
             comment_index += 1;
         }
 
-        let first_token = &line.tokens[0];
+        let first_token = &line.tokens[0].token;
         let ends_block = matches!(first_token, Token::End);
         let is_else_if = matches!(first_token, Token::Else)
-            && matches!(line.tokens.get(1), Some(Token::If));
+            && matches!(line.tokens.get(1).map(|t| &t.token), Some(Token::If));
         let plain_else = matches!(first_token, Token::Else) && !is_else_if;
         let continuation_if = pending_else && matches!(first_token, Token::If);
         let mut level = indent;
@@ -1395,20 +1586,28 @@ fn render_format(tokens: &[SpannedToken], comments: &[FormatComment]) -> String 
         if level > 0 {
             out.push_str(&"    ".repeat(level));
         }
-        out.push_str(&render_tokens(&line.tokens));
+        out.push_str(&render_line_tokens(
+            line,
+            comments,
+            &mut consumed,
+            &clean_chars,
+            &source_chars,
+        ));
 
-        let mut had_trailing = false;
         while let Some(comment) = comments.get(comment_index) {
+            if consumed[comment_index] {
+                comment_index += 1;
+                continue;
+            }
             if !comment_trailing(comment, line) {
                 break;
             }
             out.push(' ');
             out.push_str(&comment.text);
-            had_trailing = true;
+            consumed[comment_index] = true;
             comment_index += 1;
         }
         out.push('\n');
-        let _ = had_trailing;
 
         if ends_block {
             indent = indent.saturating_sub(1);
@@ -1426,9 +1625,11 @@ fn render_format(tokens: &[SpannedToken], comments: &[FormatComment]) -> String 
         pending_else = plain_else;
     }
 
-    for comment in &comments[comment_index..] {
-        out.push_str(&comment.text);
-        out.push('\n');
+    for (i, comment) in comments.iter().enumerate() {
+        if !consumed[i] {
+            out.push_str(&comment.text);
+            out.push('\n');
+        }
     }
     out
 }
@@ -1438,7 +1639,7 @@ fn render_format(tokens: &[SpannedToken], comments: &[FormatComment]) -> String 
 fn format_source(source: &str) -> Result<String, EmError> {
     let (clean, comments) = strip_comments(source);
     let tokens = tokenize(&clean)?;
-    Ok(render_format(&tokens, &comments))
+    Ok(render_format(&tokens, &comments, &clean, source))
 }
 
 /// `em uninstall [-y|--yes] [--purge]`
