@@ -1,0 +1,540 @@
+$- Pure Englishmen replacements for the native `project` and `cowsay` modules.
+   Self-contained by design: Englishmen has no local `.enm` imports, so every
+   global helper is prefixed with `ppc` to survive concatenation into
+   `selfhost/full.enm`. The only import is `os`, used solely for the
+   `EM_SELFTEST` guard. Native `project` and `cowsay` are imported only inside
+   that guard, where they act as reference oracles.
+
+   File I/O goes through the `host` module (`host.readFile`, `host.writeFile`,
+   `host.cwd`, `host.tempDir`, `host.pid`), which the C bootstrap VM exposes to
+   every pure module. When the Rust CLI runs the guarded self-test, the guard
+   installs a small `host` object backed by the equivalent global builtins.
+
+   Module objects:
+
+       ppcProjectModule() -> {default, parse, load, get, section, name,
+                              version, main, write}
+       ppcCowModule()     -> {render, say}
+
+   Englishmen functions have fixed arity, so optional native arguments are
+   passed as `null` (for example `project.load(null)` means the default path). -$
+import os
+$- Return the value of one hexadecimal digit, or -1 for anything else. -$
+function ppcHexDigit(ppcHexDigit_c)
+    ppcHexDigit_n = charCode(ppcHexDigit_c)
+    if ppcHexDigit_n >= 48 and ppcHexDigit_n <= 57
+        return ppcHexDigit_n - 48
+    end
+    if ppcHexDigit_n >= 97 and ppcHexDigit_n <= 102
+        return ppcHexDigit_n - 87
+    end
+    if ppcHexDigit_n >= 65 and ppcHexDigit_n <= 70
+        return ppcHexDigit_n - 55
+    end
+    return -1
+end
+$- Reverse `u32::from_str_radix(digits, 16)` for the 1-4 digits after `\u`. -$
+function ppcHexValue(ppcHexValue_digits)
+    if ppcHexValue_digits.length() == 0
+        return -1
+    end
+    ppcHexValue_start = 0
+    if ppcHexValue_digits[0] == "+"
+        ppcHexValue_start = 1
+    else if ppcHexValue_digits[0] == "-"
+        return -1
+    end
+    if ppcHexValue_start >= ppcHexValue_digits.length()
+        return -1
+    end
+    ppcHexValue_value = 0
+    ppcHexValue_i = ppcHexValue_start
+    while ppcHexValue_i < ppcHexValue_digits.length()
+    ppcHexValue_digit = ppcHexDigit(ppcHexValue_digits[ppcHexValue_i])
+    if ppcHexValue_digit < 0
+        return -1
+    end
+    ppcHexValue_value = ppcHexValue_value * 16 + ppcHexValue_digit
+    ppcHexValue_i += 1
+end
+return ppcHexValue_value
+end
+$- Four lowercase hex digits, matching Rust's `\u{:04x}` writer. -$
+function ppcHex4(ppcHex4_n)
+    ppcHex4_digits = "0123456789abcdef"
+    ppcHex4_out = ""
+    ppcHex4_i = 3
+    while ppcHex4_i >= 0
+    ppcHex4_out = ppcHex4_digits[ppcHex4_n % 16] + ppcHex4_out
+    ppcHex4_n = floor(ppcHex4_n / 16)
+    ppcHex4_i -= 1
+end
+return ppcHex4_out
+end
+$- `char::from_u32` accepts scalars only: no surrogates and nothing above U+10FFFF. -$
+function ppcIsScalar(ppcIsScalar_n)
+    if ppcIsScalar_n < 0 or ppcIsScalar_n > 1114111
+        return false
+    end
+    if ppcIsScalar_n >= 55296 and ppcIsScalar_n <= 57343
+        return false
+    end
+    return true
+end
+$- Reverse `write_quoted` escape by escape. Unknown escapes and malformed
+   `\uXXXX` sequences are kept literally, exactly as native `project.parse`
+   does. -$
+function ppcUnescape(ppcUnescape_text)
+    ppcUnescape_chars = ppcUnescape_text.chars()
+    ppcUnescape_out = ""
+    ppcUnescape_i = 0
+    while ppcUnescape_i < ppcUnescape_chars.length()
+    ppcUnescape_c = ppcUnescape_chars[ppcUnescape_i]
+    if ppcUnescape_c != "\\"
+        ppcUnescape_out += ppcUnescape_c
+        ppcUnescape_i += 1
+        continue
+    end
+    if ppcUnescape_i + 1 >= ppcUnescape_chars.length()
+        ppcUnescape_out += "\\"
+        ppcUnescape_i += 1
+        continue
+    end
+    ppcUnescape_next = ppcUnescape_chars[ppcUnescape_i + 1]
+    if ppcUnescape_next == "\""
+        ppcUnescape_out += "\""
+        ppcUnescape_i += 2
+    else if ppcUnescape_next == "\\"
+        ppcUnescape_out += "\\"
+        ppcUnescape_i += 2
+    else if ppcUnescape_next == "n"
+        ppcUnescape_out += "\n"
+        ppcUnescape_i += 2
+    else if ppcUnescape_next == "r"
+        ppcUnescape_out += fromCharCode(13)
+        ppcUnescape_i += 2
+    else if ppcUnescape_next == "t"
+        ppcUnescape_out += "\t"
+        ppcUnescape_i += 2
+    else if ppcUnescape_next == "u"
+        ppcUnescape_digits = ""
+        ppcUnescape_j = ppcUnescape_i + 2
+        while ppcUnescape_j < ppcUnescape_chars.length() and ppcUnescape_j < ppcUnescape_i + 6
+        ppcUnescape_digits += ppcUnescape_chars[ppcUnescape_j]
+        ppcUnescape_j += 1
+    end
+    ppcUnescape_code = ppcHexValue(ppcUnescape_digits)
+    if ppcUnescape_code >= 0 and ppcIsScalar(ppcUnescape_code)
+        ppcUnescape_out += fromCharCode(ppcUnescape_code)
+    else
+        ppcUnescape_out += "\\u"
+        ppcUnescape_out += ppcUnescape_digits
+    end
+    ppcUnescape_i = ppcUnescape_j
+else
+    ppcUnescape_out += "\\"
+    ppcUnescape_out += ppcUnescape_next
+    ppcUnescape_i += 2
+end
+end
+return ppcUnescape_out
+end
+$- Trim, strip one pair of surrounding double quotes, then unescape. -$
+function ppcParseValue(ppcParseValue_raw)
+    ppcParseValue_trimmed = ppcParseValue_raw.trim()
+    if ppcParseValue_trimmed.length() >= 2 and ppcParseValue_trimmed.startsWith("\"") and ppcParseValue_trimmed.endsWith("\"")
+        return ppcUnescape(ppcParseValue_trimmed.slice(1, ppcParseValue_trimmed.length() - 1))
+    end
+    return ppcParseValue_trimmed
+end
+$- Parse `.emc` text into `{root: object, sections: object}`. Values are read
+   as strings; bare numbers, booleans and null keep their textual form. -$
+function ppcParse(ppcParse_text)
+    if isString(ppcParse_text) == false
+        assert(false, "Type mismatch: expected a string as the manifest text for project.parse, found " + type(ppcParse_text))
+    end
+    ppcParse_root = {}
+    ppcParse_sections = {}
+    ppcParse_current = null
+    ppcParse_lines = ppcParse_text.lines()
+    ppcParse_i = 0
+    while ppcParse_i < ppcParse_lines.length()
+    ppcParse_line = ppcParse_lines[ppcParse_i].trim()
+    if ppcParse_line == "" or ppcParse_line.startsWith("#")
+        ppcParse_i += 1
+        continue
+    end
+    if ppcParse_line.startsWith("[") and ppcParse_line.endsWith("]")
+        ppcParse_name = ppcParse_line.slice(1, ppcParse_line.length() - 1).trim()
+        if ppcParse_sections.has(ppcParse_name) == false
+            ppcParse_sections.set(ppcParse_name, {})
+        end
+        ppcParse_current = ppcParse_name
+        ppcParse_i += 1
+        continue
+    end
+    ppcParse_equals = ppcParse_line.indexOf("=")
+    if ppcParse_equals >= 0
+        ppcParse_key = ppcParse_line.slice(0, ppcParse_equals).trim()
+        ppcParse_value = ppcParseValue(ppcParse_line.slice(ppcParse_equals + 1))
+        if ppcParse_current == null
+            ppcParse_root.set(ppcParse_key, ppcParse_value)
+        else
+            ppcParse_sections.get(ppcParse_current).set(ppcParse_key, ppcParse_value)
+        end
+    end
+    ppcParse_i += 1
+end
+return {root: ppcParse_root, sections: ppcParse_sections}
+end
+$- Snapshot and validate the two objects of a parsed config. `op` is the native
+   function name used in error messages (name, version, main, get, section,
+   write or load). -$
+function ppcConfig(ppcConfig_manifest, ppcConfig_op)
+    if isObject(ppcConfig_manifest) == false
+        assert(false, "Type mismatch: expected a project config object for project." + ppcConfig_op + ", found " + type(ppcConfig_manifest))
+    end
+    ppcConfig_root = ppcConfig_manifest.get("root")
+    if isObject(ppcConfig_root) == false
+        if ppcConfig_manifest.has("root")
+            assert(false, "project." + ppcConfig_op + " expects 'root' to be an object, found " + type(ppcConfig_root))
+        end
+        assert(false, "project." + ppcConfig_op + " expects a config with a 'root' object")
+    end
+    ppcConfig_sections = ppcConfig_manifest.get("sections")
+    if isObject(ppcConfig_sections) == false
+        if ppcConfig_manifest.has("sections")
+            assert(false, "project." + ppcConfig_op + " expects 'sections' to be an object, found " + type(ppcConfig_sections))
+        end
+        assert(false, "project." + ppcConfig_op + " expects a config with a 'sections' object")
+    end
+    for ppcConfig_name in ppcConfig_sections.keys()
+        ppcConfig_section = ppcConfig_sections.get(ppcConfig_name)
+        if isObject(ppcConfig_section) == false
+            assert(false, "project." + ppcConfig_op + " expects section '" + ppcConfig_name + "' to be an object, found " + type(ppcConfig_section))
+        end
+    end
+    return {root: ppcConfig_root, sections: ppcConfig_sections}
+end
+function ppcRootValue(ppcRootValue_manifest, ppcRootValue_op, ppcRootValue_key)
+    ppcRootValue_parts = ppcConfig(ppcRootValue_manifest, ppcRootValue_op)
+    return ppcRootValue_parts.get("root").get(ppcRootValue_key)
+end
+function ppcName(ppcName_manifest)
+    return ppcRootValue(ppcName_manifest, "name", "name")
+end
+function ppcVersion(ppcVersion_manifest)
+    return ppcRootValue(ppcVersion_manifest, "version", "version")
+end
+function ppcMain(ppcMain_manifest)
+    return ppcRootValue(ppcMain_manifest, "main", "main")
+end
+function ppcGet(ppcGet_manifest, ppcGet_key)
+    if isString(ppcGet_key) == false
+        assert(false, "Type mismatch: expected a string as the key for project.get, found " + type(ppcGet_key))
+    end
+    ppcGet_parts = ppcConfig(ppcGet_manifest, "get")
+    return ppcGet_parts.get("root").get(ppcGet_key)
+end
+function ppcSection(ppcSection_manifest, ppcSection_name)
+    if isString(ppcSection_name) == false
+        assert(false, "Type mismatch: expected a string as the section name for project.section, found " + type(ppcSection_name))
+    end
+    ppcSection_parts = ppcConfig(ppcSection_manifest, "section")
+    ppcSection_sections = ppcSection_parts.get("sections")
+    if ppcSection_sections.has(ppcSection_name) == false
+        return {}
+    end
+    return ppcSection_sections.get(ppcSection_name)
+end
+$- The native template writes the project name verbatim between quotes. -$
+function ppcDefault(ppcDefault_name)
+    if isString(ppcDefault_name) == false
+        assert(false, "Type mismatch: expected a string as the project name for project.default, found " + type(ppcDefault_name))
+    end
+    return "name = \"" + ppcDefault_name + "\"\nversion = \"1.0.0\"\nmain = \"main.enm\"\n"
+end
+$- Read through the host module. The C VM's `host.readFile` returns an error
+   object with `__hostError` instead of raising; normalise both forms. -$
+function ppcHostRead(ppcHostRead_path)
+    ppcHostRead_result = host.readFile(ppcHostRead_path)
+    if isObject(ppcHostRead_result) and ppcHostRead_result.has("__hostError")
+        assert(false, "Could not read '" + ppcHostRead_path + "': " + toString(ppcHostRead_result.get("__hostError")))
+    end
+    return ppcHostRead_result
+end
+function ppcHostWrite(ppcHostWrite_path, ppcHostWrite_text)
+    ppcHostWrite_result = host.writeFile(ppcHostWrite_path, ppcHostWrite_text)
+    if isObject(ppcHostWrite_result) and ppcHostWrite_result.has("__hostError")
+        assert(false, "Could not write '" + ppcHostWrite_path + "': " + toString(ppcHostWrite_result.get("__hostError")))
+    end
+    return ppcHostWrite_result
+end
+$- Load a manifest from `path`, or from `englishmen.emc` in the working
+   directory when `path` is null. -$
+function ppcLoad(ppcLoad_path)
+    ppcLoad_real = ppcLoad_path
+    if ppcLoad_real == null
+        ppcLoad_real = host.cwd() + "/englishmen.emc"
+    end
+    if isString(ppcLoad_real) == false
+        assert(false, "Type mismatch: expected a string as the path for project.load, found " + type(ppcLoad_real))
+    end
+    return ppcParse(ppcHostRead(ppcLoad_real))
+end
+$- Rust `char::is_whitespace` (Unicode White_Space). -$
+function ppcIsWhitespaceCode(ppcIsWhitespaceCode_n)
+    if ppcIsWhitespaceCode_n >= 9 and ppcIsWhitespaceCode_n <= 13
+        return true
+    end
+    if ppcIsWhitespaceCode_n == 32 or ppcIsWhitespaceCode_n == 133 or ppcIsWhitespaceCode_n == 160 or ppcIsWhitespaceCode_n == 5760
+        return true
+    end
+    if ppcIsWhitespaceCode_n >= 8192 and ppcIsWhitespaceCode_n <= 8202
+        return true
+    end
+    if ppcIsWhitespaceCode_n == 8232 or ppcIsWhitespaceCode_n == 8233 or ppcIsWhitespaceCode_n == 8239 or ppcIsWhitespaceCode_n == 8287 or ppcIsWhitespaceCode_n == 12288
+        return true
+    end
+    return false
+end
+$- Keys and section names must survive the parser unchanged. -$
+function ppcValidateName(ppcValidateName_name, ppcValidateName_what)
+    ppcValidateName_message = "Invalid " + ppcValidateName_what + " '" + ppcValidateName_name + "' for project.write"
+    if ppcValidateName_name == "" or ppcValidateName_name.startsWith("#")
+        assert(false, ppcValidateName_message)
+    end
+    ppcValidateName_chars = ppcValidateName_name.chars()
+    for ppcValidateName_c in ppcValidateName_chars
+        if ppcIsWhitespaceCode(charCode(ppcValidateName_c)) or ppcValidateName_c == "[" or ppcValidateName_c == "]" or ppcValidateName_c == "="
+            assert(false, ppcValidateName_message)
+        end
+    end
+end
+$- Quote a string value, escaping exactly the characters native writes. -$
+function ppcQuoted(ppcQuoted_text)
+    ppcQuoted_out = "\""
+    for ppcQuoted_c in ppcQuoted_text.chars()
+        if ppcQuoted_c == "\""
+            ppcQuoted_out += "\\\""
+        else if ppcQuoted_c == "\\"
+            ppcQuoted_out += "\\\\"
+        else if ppcQuoted_c == "\n"
+            ppcQuoted_out += "\\n"
+        else if ppcQuoted_c == fromCharCode(13)
+            ppcQuoted_out += "\\r"
+        else if ppcQuoted_c == "\t"
+            ppcQuoted_out += "\\t"
+        else if charCode(ppcQuoted_c) < 32
+            ppcQuoted_out += "\\u" + ppcHex4(charCode(ppcQuoted_c))
+        else
+            ppcQuoted_out += ppcQuoted_c
+        end
+    end
+    return ppcQuoted_out + "\""
+end
+$- One `key = value` line, including its trailing newline. -$
+function ppcWritePair(ppcWritePair_key, ppcWritePair_value)
+    ppcValidateName(ppcWritePair_key, "manifest key")
+    ppcWritePair_kind = type(ppcWritePair_value)
+    if ppcWritePair_kind == "string"
+        return ppcWritePair_key + " = " + ppcQuoted(ppcWritePair_value) + "\n"
+    end
+    if ppcWritePair_kind == "number"
+        if isNaN(ppcWritePair_value) or ppcWritePair_value > pow(10, 308) or ppcWritePair_value < -pow(10, 308)
+            assert(false, "Cannot write a non-finite number for key '" + ppcWritePair_key + "'")
+        end
+        return ppcWritePair_key + " = " + toString(ppcWritePair_value) + "\n"
+    end
+    if ppcWritePair_kind == "boolean" or ppcWritePair_kind == "null"
+        return ppcWritePair_key + " = " + toString(ppcWritePair_value) + "\n"
+    end
+    assert(false, "Cannot write a " + ppcWritePair_kind + " for key '" + ppcWritePair_key + "' in a manifest")
+end
+$- Serialize with BTreeMap ordering: root keys first, then `[section]` headers
+   with their keys. -$
+function ppcSerialize(ppcSerialize_manifest)
+    ppcSerialize_parts = ppcConfig(ppcSerialize_manifest, "write")
+    ppcSerialize_root = ppcSerialize_parts.get("root")
+    ppcSerialize_sections = ppcSerialize_parts.get("sections")
+    ppcSerialize_out = ""
+    for ppcSerialize_key in ppcSerialize_root.keys()
+        ppcSerialize_out += ppcWritePair(ppcSerialize_key, ppcSerialize_root.get(ppcSerialize_key))
+    end
+    for ppcSerialize_name in ppcSerialize_sections.keys()
+        ppcValidateName(ppcSerialize_name, "section name")
+        ppcSerialize_out += "[" + ppcSerialize_name + "]\n"
+        ppcSerialize_fields = ppcSerialize_sections.get(ppcSerialize_name)
+        for ppcSerialize_key in ppcSerialize_fields.keys()
+            ppcSerialize_out += ppcWritePair(ppcSerialize_key, ppcSerialize_fields.get(ppcSerialize_key))
+        end
+    end
+    return ppcSerialize_out
+end
+$- The module-level writer mirrors native `project.write(path, config)`. -$
+function ppcProjectWrite(ppcProjectWrite_path, ppcProjectWrite_manifest)
+    if isString(ppcProjectWrite_path) == false
+        assert(false, "Type mismatch: expected a string as the path for project.write, found " + type(ppcProjectWrite_path))
+    end
+    ppcProjectWrite_text = ppcSerialize(ppcProjectWrite_manifest)
+    ppcHostWrite(ppcProjectWrite_path, ppcProjectWrite_text)
+    return true
+end
+$- Module object with the native `project` API plus the same helper set. -$
+function ppcProjectModule()
+    return {default: ppcDefault, parse: ppcParse, load: ppcLoad, get: ppcGet, section: ppcSection, name: ppcName, version: ppcVersion, main: ppcMain, write: ppcProjectWrite}
+end
+$- Native `str::split_whitespace`: collapse runs of Unicode whitespace. -$
+function ppcCowWords(ppcCowWords_text)
+    ppcCowWords_chars = ppcCowWords_text.chars()
+    ppcCowWords_words = []
+    ppcCowWords_current = ""
+    for ppcCowWords_c in ppcCowWords_chars
+        if ppcIsWhitespaceCode(charCode(ppcCowWords_c))
+            if ppcCowWords_current != ""
+                ppcCowWords_words.add(ppcCowWords_current)
+                ppcCowWords_current = ""
+            end
+        else
+            ppcCowWords_current += ppcCowWords_c
+        end
+    end
+    if ppcCowWords_current != ""
+        ppcCowWords_words.add(ppcCowWords_current)
+    end
+    return ppcCowWords_words
+end
+$- UTF-8 byte length, matching Rust's `str::len()` used by the native wrapper. -$
+function ppcUtf8Len(ppcUtf8Len_text)
+    ppcUtf8Len_chars = ppcUtf8Len_text.chars()
+    ppcUtf8Len_n = 0
+    for ppcUtf8Len_c in ppcUtf8Len_chars
+        ppcUtf8Len_code = charCode(ppcUtf8Len_c)
+        if ppcUtf8Len_code <= 127
+            ppcUtf8Len_n += 1
+        else if ppcUtf8Len_code <= 2047
+            ppcUtf8Len_n += 2
+        else if ppcUtf8Len_code <= 65535
+            ppcUtf8Len_n += 3
+        else
+            ppcUtf8Len_n += 4
+        end
+    end
+    return ppcUtf8Len_n
+end
+$- Cowsay speech bubble plus cow art, byte-for-byte identical to
+   `src/modules/cowsay.rs::render`. -$
+function ppcCowRender(ppcCowRender_message)
+    if isString(ppcCowRender_message) == false
+        assert(false, "Type mismatch: expected a string for cowsay.render, found " + type(ppcCowRender_message))
+    end
+    ppcCowRender_words = ppcCowWords(ppcCowRender_message)
+    ppcCowRender_lines = []
+    ppcCowRender_current = ""
+    for ppcCowRender_word in ppcCowRender_words
+        if ppcCowRender_current == ""
+            ppcCowRender_current = ppcCowRender_word
+        else if ppcUtf8Len(ppcCowRender_current) + 1 + ppcUtf8Len(ppcCowRender_word) <= 40
+            ppcCowRender_current += " " + ppcCowRender_word
+        else
+            ppcCowRender_lines.add(ppcCowRender_current)
+            ppcCowRender_current = ppcCowRender_word
+        end
+    end
+    if ppcCowRender_current != "" or ppcCowRender_lines.length() == 0
+        ppcCowRender_lines.add(ppcCowRender_current)
+    end
+    ppcCowRender_max = 0
+    for ppcCowRender_line in ppcCowRender_lines
+        ppcCowRender_len = ppcUtf8Len(ppcCowRender_line)
+        if ppcCowRender_len > ppcCowRender_max
+            ppcCowRender_max = ppcCowRender_len
+        end
+    end
+    ppcCowRender_border = ppcCowRender_max + 2
+    ppcCowRender_out = " " + "_".repeat(ppcCowRender_border) + "\n"
+    ppcCowRender_count = ppcCowRender_lines.length()
+    ppcCowRender_i = 0
+    while ppcCowRender_i < ppcCowRender_count
+    ppcCowRender_line = ppcCowRender_lines[ppcCowRender_i]
+    ppcCowRender_pad = ppcCowRender_max - ppcCowRender_line.chars().length()
+    if ppcCowRender_pad < 0
+        ppcCowRender_pad = 0
+    end
+    ppcCowRender_padded = ppcCowRender_line + " ".repeat(ppcCowRender_pad)
+    if ppcCowRender_count == 1
+        ppcCowRender_left = "<"
+        ppcCowRender_right = ">"
+    else if ppcCowRender_i == 0
+        ppcCowRender_left = "/"
+        ppcCowRender_right = "\\"
+    else if ppcCowRender_i == ppcCowRender_count - 1
+        ppcCowRender_left = "\\"
+        ppcCowRender_right = "/"
+    else
+        ppcCowRender_left = "|"
+        ppcCowRender_right = "|"
+    end
+    ppcCowRender_out += ppcCowRender_left + " " + ppcCowRender_padded + " " + ppcCowRender_right + "\n"
+    ppcCowRender_i += 1
+end
+ppcCowRender_out += " " + "-".repeat(ppcCowRender_border) + "\n"
+ppcCowRender_out += "        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||\n"
+return ppcCowRender_out
+end
+$- `say` matches the native module: `println!("{}", render(text))`. -$
+function ppcCowSay(ppcCowSay_text)
+    say(ppcCowRender(ppcCowSay_text))
+    return null
+end
+$- Module object with native `cowsay.say` and the pure `render` extension. -$
+function ppcCowModule()
+    return {render: ppcCowRender, say: ppcCowSay}
+end
+$- Inline parity self-test. Native modules are loaded only here. -$
+function ppcSelfTest()
+    ppcSelfTest_project = ppcProjectModule()
+    ppcSelfTest_cow = ppcCowModule()
+    ppcSelfTest_samples = ["", "name = \"Demo\"\nversion = \"1.0.0\"\nmain = \"main.enm\"\n", "# leading comment\n\n  name = \"  spaced  \"  \nbare = plain\nsingle = 'quoted'\n\n[installer]\ninstall_dir = \"C:/em\"\nprojects_enabled = \"true\"\n", "name = \"Demo\"" + fromCharCode(13) + "\n\tversion = \"2.1\"" + fromCharCode(13) + "\n# comment" + fromCharCode(13) + "\n[notes]" + fromCharCode(13) + "\nbody = \"hello\"" + fromCharCode(13) + "\n", "a = \"quote \\\" slash \\\\ newline \\n return \\r tab \\t control \\u001f\"\n", "a = \"short \\u41 plus \\u+42 bad \\uZZZZ surrogate \\ud800 high \\u\{1f600\}\"\n", "[a]\nx = \"first\"\n[a]\nx = \"last\"\ny = \"a=b\"\n[ü]\nключ = \"значение\"\n", "dup = \"first\"\ndup = \"second\"\n[sec]\nq = \"# not a comment\"\n", "name = \"\\u00e9\\u263a\"\nx = \"" + fromCharCode(1) + "☺\"\n"]
+    ppcSelfTest_a = host.tempDir() + "/pure_project_cowsay_a_" + toString(host.pid()) + ".emc"
+    ppcSelfTest_b = host.tempDir() + "/pure_project_cowsay_b_" + toString(host.pid()) + ".emc"
+    ppcSelfTest_i = 0
+    while ppcSelfTest_i < ppcSelfTest_samples.length()
+    ppcSelfTest_text = ppcSelfTest_samples[ppcSelfTest_i]
+    ppcSelfTest_pure = ppcSelfTest_project.parse(ppcSelfTest_text)
+    ppcSelfTest_native = project.parse(ppcSelfTest_text)
+    assert(jsonEncode(ppcSelfTest_pure) == jsonEncode(ppcSelfTest_native), "ppcParse mismatch for sample")
+    assert(jsonEncode(ppcSelfTest_project.name(ppcSelfTest_pure)) == jsonEncode(project.name(ppcSelfTest_native)), "ppcName mismatch for sample")
+    assert(jsonEncode(ppcSelfTest_project.version(ppcSelfTest_pure)) == jsonEncode(project.version(ppcSelfTest_native)), "ppcVersion mismatch for sample")
+    assert(jsonEncode(ppcSelfTest_project.main(ppcSelfTest_pure)) == jsonEncode(project.main(ppcSelfTest_native)), "ppcMain mismatch for sample")
+    assert(ppcSelfTest_project.write(ppcSelfTest_a, ppcSelfTest_pure), "pure write failed for sample")
+    assert(project.write(ppcSelfTest_b, ppcSelfTest_native), "native write failed for sample")
+    assert(host.readFile(ppcSelfTest_a) == host.readFile(ppcSelfTest_b), "write mismatch for sample")
+    assert(jsonEncode(ppcSelfTest_project.load(ppcSelfTest_a)) == jsonEncode(project.load(ppcSelfTest_b)), "load mismatch for sample")
+    ppcSelfTest_i += 1
+end
+assert(ppcSelfTest_project.default("Demo") == project.default("Demo"), "ppcDefault mismatch")
+ppcSelfTest_manifest = {root: {z: 3, name: "Demo", enabled: true, nothing: null, big: 100000000000000000000, small: 0.00001, tricky: "quote \" slash \\ newline \n return " + fromCharCode(13) + " tab \t control " + fromCharCode(31) + " unicode ☺", unicode: "é☺"}, sections: {alpha: {b: "two", a: 1}, empty: {}}}
+assert(ppcSelfTest_project.write(ppcSelfTest_a, ppcSelfTest_manifest), "pure write failed for mixed manifest")
+assert(project.write(ppcSelfTest_b, ppcSelfTest_manifest), "native write failed for mixed manifest")
+assert(host.readFile(ppcSelfTest_a) == host.readFile(ppcSelfTest_b), "write mismatch for mixed manifest")
+assert(jsonEncode(ppcSelfTest_project.load(ppcSelfTest_a)) == jsonEncode(project.load(ppcSelfTest_b)), "load mismatch for mixed manifest")
+deleteFile(ppcSelfTest_a)
+deleteFile(ppcSelfTest_b)
+ppcSelfTest_art = "        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||\n"
+ppcSelfTest_messages = ["", "Hello", "one two", "this is a fairly long message that should wrap across more than one line of the bubble", "  spaced   out\twords\nand  more  ", "éé éé éé éé éé éé éé éé éé éé éé éé éé éé éé éé éé éé éé éé"]
+ppcSelfTest_expected = [" __\n<  >\n --\n" + ppcSelfTest_art, " _______\n< Hello >\n -------\n" + ppcSelfTest_art, " _________\n< one two >\n ---------\n" + ppcSelfTest_art, " __________________________________________\n/ this is a fairly long message that       \\\n| should wrap across more than one line of |\n\\ the bubble                               /\n ------------------------------------------\n" + ppcSelfTest_art, " ___________________________\n< spaced out words and more >\n ---------------------------\n" + ppcSelfTest_art, " _________________________________________\n/ éé éé éé éé éé éé éé éé                 \\\n| éé éé éé éé éé éé éé éé                 |\n\\ éé éé éé éé                             /\n -----------------------------------------\n" + ppcSelfTest_art]
+ppcSelfTest_i = 0
+while ppcSelfTest_i < ppcSelfTest_messages.length()
+ppcSelfTest_actual = ppcSelfTest_cow.render(ppcSelfTest_messages[ppcSelfTest_i])
+assert(ppcSelfTest_actual == ppcSelfTest_expected[ppcSelfTest_i], "render mismatch for cow sample " + toString(ppcSelfTest_i) + ": " + jsonEncode(ppcSelfTest_actual) + " != " + jsonEncode(ppcSelfTest_expected[ppcSelfTest_i]))
+ppcSelfTest_i += 1
+end
+end
+if os.env("EM_SELFTEST", "") == "1"
+    import project
+    import cowsay
+    host = {readFile: readFile, writeFile: writeFile, cwd: os.cwd, tempDir: os.tempDir, pid: os.pid, env: os.env}
+    ppcSelfTest()
+    say("ok")
+end
