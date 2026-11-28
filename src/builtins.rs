@@ -493,21 +493,18 @@ fn pad_string(
     text: &str,
     target: usize,
     fill: &str,
-    name: &str,
+    _name: &str,
     at_start: bool,
 ) -> Result<String, String> {
+    // Match the string padding methods: a capped width and a space fallback.
+    let target = target.min(100_000);
     let len = text.chars().count();
     if target <= len {
         return Ok(text.to_string());
     }
-    if fill.is_empty() {
-        return Err(format!("{name} fill must not be empty"));
-    }
     let missing = target - len;
-    if missing > 1_000_000 {
-        return Err(format!("{name} target length is too large"));
-    }
-    let filler: Vec<char> = fill.chars().collect();
+    let unit = if fill.is_empty() { " " } else { fill };
+    let filler: Vec<char> = unit.chars().collect();
     let mut padding = String::new();
     for i in 0..missing {
         padding.push(filler[i % filler.len()]);
@@ -675,13 +672,10 @@ pub fn globals() -> HashMap<String, Value> {
         "isNaN".to_string(),
         native("isNaN", |args| {
             exact_args(args, 1, "isNaN")?;
-            match arg(args, 0) {
-                Value::Number(n) => Ok(Value::Bool(n.is_nan())),
-                other => Err(format!(
-                    "Type mismatch: isNaN expects a number, found {}",
-                    other.type_name()
-                )),
-            }
+            Ok(Value::Bool(matches!(
+                arg(args, 0),
+                Value::Number(n) if n.is_nan()
+            )))
         }),
     );
 
@@ -2192,15 +2186,18 @@ mod tests {
             text(ok("padEnd", &[Value::String("abcd".into()), Value::Number(2.0)])),
             "abcd"
         );
-        assert!(err(
-            "padStart",
-            &[
-                Value::String("x".into()),
-                Value::Number(2.0),
-                Value::String("".into())
-            ]
-        )
-        .contains("fill must not be empty"));
+        assert_eq!(
+            text(ok(
+                "padStart",
+                &[
+                    Value::String("x".into()),
+                    Value::Number(2.0),
+                    Value::String("".into())
+                ]
+            )),
+            " x",
+            "an empty fill falls back to a space, matching string methods"
+        );
         assert!(err("padEnd", &[Value::String("x".into()), Value::Number(-1.0)])
             .contains("non-negative integer"));
 
@@ -2332,7 +2329,7 @@ mod tests {
         assert!(err("log2", &[Value::Number(0.0)]).contains("positive"));
         assert!(err("log10", &[Value::Number(-1.0)]).contains("positive"));
         assert!(err("toRadians", &[Value::Number(f64::INFINITY)]).contains("finite"));
-        assert!(err("isNaN", &[Value::String("x".into())]).contains("expects a number"));
+        assert!(!boolean(ok("isNaN", &[Value::String("x".into())])));
     }
 
     #[test]
@@ -2461,6 +2458,12 @@ mod tests {
         .contains("all numbers or all strings"));
         assert!(err("toNumber", &[Value::String("oops".into())]).contains("could not convert"));
         assert!(err("jsonDecode", &[Value::Number(1.0)]).contains("expected a string"));
+        assert!(err("take", &[Value::Number(1.0)]).contains("expects 2 arguments"));
+        assert!(
+            err("padStart", &[Value::String("x".into())])
+                .contains("expects at least 2 arguments")
+        );
+        assert!(err("isNaN", &[]).contains("expects 1 argument"));
     }
 
     #[test]
@@ -2483,7 +2486,9 @@ mod tests {
             "n = log2(8)\n",
             "o = log10(100)\n",
             "p = isNaN(1)\n",
-            "q = padEnd(\"ab\", 4, \"xy\")\n"
+            "q = padEnd(\"ab\", 4, \"xy\")\n",
+            "r = toDegrees(0)\n",
+            "s = toRadians(0)\n"
         );
         let program = parse(tokenize(src).unwrap()).unwrap();
 
@@ -2510,6 +2515,8 @@ mod tests {
             ("o", "2"),
             ("p", "false"),
             ("q", "abxy"),
+            ("r", "0"),
+            ("s", "0"),
         ] {
             let interpreted = interpreter.globals.get(name).unwrap().display();
             let compiled = vm.globals.get(name).unwrap().display();
