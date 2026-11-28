@@ -30,6 +30,9 @@ say(string.upper("hello"))
 | `collections` | Sorting, ranges, sums, zip/enumerate/chunk, object helpers |
 | `gfx` | `canvas(w, h)` with `set`, `get`, `clear`, `text`, `save` |
 | `text` | `words`, `title`, case conversion, `slug`, whitespace cleanup, `indent`/`dedent`, `isPalindrome`, `levenshtein` |
+| `bytes` | Binary buffers, hex helpers, little-endian `u8`–`u64`/`i16`–`i64`/`f64`, binary file I/O |
+| `emb` | `encode`, `write`, `encodeOp`, `magic`, `version` — build a `.emb` image |
+| `project` | `parse`, `load`, `get`, `section`, `name`, `version`, `main`, `default`, `write` — `.emc` manifests |
 
 `text` complements `string` with whole-text helpers: `text.snake("HTTP Server")` is `http_server`, `text.wrap("a b c", 2)` splits into lines, and `text.levenshtein("kitten", "sitting")` is `3`. Case conversion and palindrome checks handle Unicode (including full case folding for `ß`).
 

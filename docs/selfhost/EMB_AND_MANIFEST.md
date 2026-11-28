@@ -10,13 +10,11 @@ a project manifest to a runnable bytecode image:
 
 Both modules are part of the self-hosting contract in
 [`CONTRACT.md`](CONTRACT.md) (sections 2 and 3). They are native Rust modules
-registered by the parent integrator; no `.enm` file can implement them yet.
+registered in `STD_MODULES`/`load_module`; no `.enm` file can implement them yet.
 
-> **Parent TODO:** the worked example below invokes `em run-fixed <file.emb>`.
-> That CLI alias is not present in the current tree. The parent must add it as
-> a thin wrapper around the existing bytecode runner (`cmd_run_bytecode`), or
-> tell this branch the intended command name. Until then `em <file.emb>` runs
-> the same image; the integration tests deliberately keep using `run-fixed`.
+`em run-fixed <file.emb>` is wired as a thin wrapper around the existing
+bytecode runner (`cmd_run_bytecode`). `em <file.emb>` and `em run <file.emb>`
+route to the same runner.
 
 ## 1. The `.emb` container
 
@@ -160,9 +158,13 @@ Run it with `em run-fixed hello.emb` (or `em hello.emb` on the current CLI).
 
 Parsing trims each line, ignores blanks and `#` comments, starts a section with
 `[name]`, and stores `key=value` with the value trimmed. Surrounding double
-quotes are removed. Serialization writes root keys first, then sections with
-`[name]` headers and one `key = "value"` line each; `BTreeMap` ordering makes
-the output stable. `Number`, `Bool` and `Null` values are formatted as bare
+quotes are removed and the escapes written by `project.write` (`\"`, `\\`,
+`\n`, `\r`, `\t`, `\uXXXX`) are decoded, so quoted values round-trip exactly.
+Serialization writes root keys first, then sections with `[name]` headers and
+one `key = "value"` line each; `BTreeMap` ordering makes the output stable.
+Keys and section names containing whitespace, `#` prefixes, or syntax
+characters are rejected because parsing would change them. `Number`, `Bool`
+and `Null` values are formatted as bare
 values instead of quoted strings.
 
 ```js
@@ -225,13 +227,16 @@ Both tests require the parent to register `emb` and `project` in
 are expected to fail in this agent branch until that integration lands; the
 failures are integration gaps, not test bugs.
 
-### TODO for the parent integrator
+### Integration status
 
-1. Register `emb` and `project` in `src/modules/mod.rs` (`STD_MODULES` and
-   `load_module`) and in the CLI module catalogue.
-2. Add `em run-fixed <file.emb>` as an alias for `cmd_run_bytecode`.
-3. Run `cargo test --test emb_manifest_example --test emb_roundtrip`.
-4. If an explicit Rust-side `bytecode::deserialize` assertion is wanted in
-   addition to the VM check, add it as a unit test in the branch that owns
-   `bytecode.rs` or introduce a library target: a `tests/*.rs` integration test
-   cannot import modules from this binary-only crate.
+1. `emb` and `project` are registered in `src/modules/mod.rs` (`STD_MODULES`
+   and `load_module`) and in the CLI module catalogue.
+2. `em run-fixed <file.emb>` is an alias for `cmd_run_bytecode`.
+3. `cargo test --test emb_manifest_example --test emb_roundtrip` passes.
+4. The Rust-side oracle is the `emb` module's unit test
+   `round_trips_a_multi_function_ir_through_bytecode_deserialize` in
+   `src/modules/emb.rs`: it builds the IR from Rust `Value`s, calls `emb.encode`,
+   asserts byte equality with `bytecode::serialize`, and asserts
+   `bytecode::deserialize` restores an equal `Chunk`. A `tests/*.rs` integration
+   test cannot import modules from this binary-only crate, so the assertion
+   belongs inside the module.

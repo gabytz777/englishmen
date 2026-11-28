@@ -22,7 +22,9 @@ pub fn to_json_string(statements: &[Stmt]) -> Result<String, String> {
     json::encode(&json::decode(&schema_ordered)?)
 }
 
-/// Render `statements` as runtime `Value`s.
+/// Render `statements` as runtime `Value`s. Kept as part of the renderer API
+/// for consumers that want a tree rather than canonical text.
+#[allow(dead_code)]
 pub fn to_json(statements: &[Stmt]) -> Result<Value, String> {
     json::decode(&to_json_string(statements)?)
 }
@@ -34,10 +36,7 @@ fn to_schema_json_string(statements: &[Stmt]) -> Result<String, String> {
         .iter()
         .map(stmt_json)
         .collect::<Result<Vec<_>, _>>()?;
-    object(vec![
-        ("version", number(1.0)?),
-        ("statements", array(body)),
-    ])
+    object(vec![("version", number(1.0)?), ("statements", array(body))])
 }
 
 fn string(value: &str) -> Result<String, String> {
@@ -138,14 +137,8 @@ fn expr_json(expr: &Expr) -> Result<String, String> {
             ("kind", string("Number")?),
             ("value", number(*value)?),
         ]),
-        Expr::String(value) => object(vec![
-            ("kind", string("String")?),
-            ("value", string(value)?),
-        ]),
-        Expr::Bool(value) => object(vec![
-            ("kind", string("Bool")?),
-            ("value", boolean(*value)),
-        ]),
+        Expr::String(value) => object(vec![("kind", string("String")?), ("value", string(value)?)]),
+        Expr::Bool(value) => object(vec![("kind", string("Bool")?), ("value", boolean(*value))]),
         Expr::Null => object(vec![("kind", string("Null")?)]),
         Expr::Variable(name) => {
             object(vec![("kind", string("Variable")?), ("name", string(name)?)])
@@ -161,10 +154,7 @@ fn expr_json(expr: &Expr) -> Result<String, String> {
             ("index", expr_json(index)?),
         ]),
         Expr::Array(items) => {
-            let items = items
-                .iter()
-                .map(expr_json)
-                .collect::<Result<Vec<_>, _>>()?;
+            let items = items.iter().map(expr_json).collect::<Result<Vec<_>, _>>()?;
             object(vec![("kind", string("Array")?), ("items", array(items))])
         }
         Expr::Object(fields) => {
@@ -177,10 +167,7 @@ fn expr_json(expr: &Expr) -> Result<String, String> {
                     ])?)
                 })
                 .collect::<Result<Vec<_>, String>>()?;
-            object(vec![
-                ("kind", string("Object")?),
-                ("fields", array(fields)),
-            ])
+            object(vec![("kind", string("Object")?), ("fields", array(fields))])
         }
         Expr::Call(callee, args) => {
             let args = args.iter().map(expr_json).collect::<Result<Vec<_>, _>>()?;
@@ -252,10 +239,7 @@ fn stmt_json(stmt: &Stmt) -> Result<String, String> {
             let branches = branches
                 .iter()
                 .map(|(condition, body)| {
-                    let body = body
-                        .iter()
-                        .map(stmt_json)
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let body = body.iter().map(stmt_json).collect::<Result<Vec<_>, _>>()?;
                     Ok(object(vec![
                         ("condition", expr_json(condition)?),
                         ("body", array(body)),
@@ -264,10 +248,7 @@ fn stmt_json(stmt: &Stmt) -> Result<String, String> {
                 .collect::<Result<Vec<_>, String>>()?;
             let otherwise = match otherwise {
                 Some(body) => {
-                    let body = body
-                        .iter()
-                        .map(stmt_json)
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let body = body.iter().map(stmt_json).collect::<Result<Vec<_>, _>>()?;
                     array(body)
                 }
                 None => "null".to_string(),
@@ -284,10 +265,7 @@ fn stmt_json(stmt: &Stmt) -> Result<String, String> {
                 .iter()
                 .map(|param| string(param))
                 .collect::<Result<Vec<_>, _>>()?;
-            let body = body
-                .iter()
-                .map(stmt_json)
-                .collect::<Result<Vec<_>, _>>()?;
+            let body = body.iter().map(stmt_json).collect::<Result<Vec<_>, _>>()?;
             object(vec![
                 ("kind", string("FunctionDef")?),
                 ("span", span_json(*span)?),
@@ -308,10 +286,7 @@ fn stmt_json(stmt: &Stmt) -> Result<String, String> {
             ),
         ]),
         Stmt::Repeat(count, body, span) => {
-            let body = body
-                .iter()
-                .map(stmt_json)
-                .collect::<Result<Vec<_>, _>>()?;
+            let body = body.iter().map(stmt_json).collect::<Result<Vec<_>, _>>()?;
             object(vec![
                 ("kind", string("Repeat")?),
                 ("span", span_json(*span)?),
@@ -320,10 +295,7 @@ fn stmt_json(stmt: &Stmt) -> Result<String, String> {
             ])
         }
         Stmt::While(condition, body, span) => {
-            let body = body
-                .iter()
-                .map(stmt_json)
-                .collect::<Result<Vec<_>, _>>()?;
+            let body = body.iter().map(stmt_json).collect::<Result<Vec<_>, _>>()?;
             object(vec![
                 ("kind", string("While")?),
                 ("span", span_json(*span)?),
@@ -332,10 +304,7 @@ fn stmt_json(stmt: &Stmt) -> Result<String, String> {
             ])
         }
         Stmt::ForIn(name, iterable, body, span) => {
-            let body = body
-                .iter()
-                .map(stmt_json)
-                .collect::<Result<Vec<_>, _>>()?;
+            let body = body.iter().map(stmt_json).collect::<Result<Vec<_>, _>>()?;
             object(vec![
                 ("kind", string("ForIn")?),
                 ("span", span_json(*span)?),
@@ -373,9 +342,17 @@ mod tests {
     #[test]
     fn fields_are_emitted_in_canonical_json_order() {
         let text = to_json_string(&program("say(1 + 2)\n")).expect("AST should serialize");
-        assert!(text.starts_with("{\"statements\":["), "root keys must be sorted");
-        assert!(text.ends_with(",\"version\":1}"), "root keys must be sorted");
-        assert!(text.contains("\"kind\":\"Binary\",\"left\":{\"kind\":\"Number\",\"value\":1},\"op\":\"+\""));
+        assert!(
+            text.starts_with("{\"statements\":["),
+            "root keys must be sorted"
+        );
+        assert!(
+            text.ends_with(",\"version\":1}"),
+            "root keys must be sorted"
+        );
+        assert!(text.contains(
+            "\"kind\":\"Binary\",\"left\":{\"kind\":\"Number\",\"value\":1},\"op\":\"+\""
+        ));
         // Canonical form is exactly what json.encode produces for the same tree.
         assert_eq!(text, json::encode(&json::decode(&text).unwrap()).unwrap());
     }
@@ -421,7 +398,10 @@ f(2)
             "Postfix",
             "ExprStmt",
         ] {
-            assert!(json.contains(&format!("\"kind\":\"{kind}\"")), "missing {kind}");
+            assert!(
+                json.contains(&format!("\"kind\":\"{kind}\"")),
+                "missing {kind}"
+            );
         }
         assert!(json::decode(&json).is_ok());
     }

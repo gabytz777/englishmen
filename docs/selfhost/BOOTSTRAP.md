@@ -48,15 +48,13 @@ narrows `args()` to script-only values, where the source path is simply
 `args[0]`. Do not introduce an `--input` flag: the contract pins the positional
 argument form.
 
-## Caveats and parent integration
+## Integration status
 
-- `em build <file> --emit ast-json` is not wired in this branch. The test skips
-  with an `eprintln!` explaining that parent integration step 3 is pending; it
-  does not weaken or fake the comparison.
-- Script argument forwarding is a parent integration step too. Until it lands,
-  the argv fallback above supplies the source path.
-- The test also skips with a clear message if `selfhost/compiler.enm` contains
-  the literal `TODO`.
+- `em build <file> --emit ast-json` is wired and executed by the parity test;
+  the skip only fires if the compiler still contains the literal `TODO`, which
+  it does not.
+- The compiler scans the full `args()` array for the source path, so no special
+  script argument forwarding is required.
 - Interpolated strings are lowered to chained `+` expressions with the same
   spans and leading empty string as `src/parser.rs::parse_interpolated`.
 - `//` is a comment unless the previous token on the same line can end an
@@ -68,9 +66,9 @@ argument form.
   `src/lexer.rs`; it reports malformed input with `assert` rather than a
   structured JSON error object.
 
-**Precise TODO for the parent:** wire `--emit ast-json` in `src/cli.rs` and
-script argument forwarding, then rerun `cargo test --all-targets` so the
-bootstrap parity assertions execute instead of skipping.
+Verification command: `cargo test --test selfhost_bootstrap`. It compares the
+compiler's stdout with `em build <example> --emit ast-json` byte-for-byte after
+trimming trailing newlines for every bundled example.
 
 ## Adding an example
 

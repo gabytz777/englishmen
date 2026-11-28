@@ -54,7 +54,7 @@ there.
 ### Requirements
 
 Running `em` needs nothing beyond the binary itself: the standard library and
-all eleven modules ship inside it. Building from source instead — either
+all fifteen modules ship inside it. Building from source instead — either
 `install.sh --from-source` or a local `cargo build --release` — needs a Rust
 toolchain from https://rustup.rs.
 
@@ -595,7 +595,7 @@ say(json.decode(fs.read("data.json")).name)
 say(random.int(1, 6))
 ```
 
-Twelve modules ship inside the binary:
+Fifteen modules ship inside the binary:
 
 - **math** — trigonometry, powers, rounding, GCD/LCM, primes, constants
 - **time** — `now`, `sleep`, date/time parts, `format`, `iso`, `isoUtc`, `millis`, `elapsed`
@@ -609,6 +609,9 @@ Twelve modules ship inside the binary:
 - **collections** — sorting, ranges, sums, zip/enumerate/chunk, object helpers
 - **gfx** — `canvas(width, height)` with `set`, `get`, `clear`, `text`, `save(path)`
 - **text** — `words`, `title`, `capitalize`, `swapCase`, `snake`, `kebab`, `camel`, `pascal`, `slug`, `collapseWhitespace`, `count`, `truncate`, `wrap`, `indent`, `dedent`, `reverseWords`, `initials`, `isPalindrome`, `levenshtein`
+- **bytes** — binary buffers, hex helpers and little-endian `u8`–`u64`, `i16`–`i64` and `f64` packing
+- **emb** — assemble an `.emb` image from a documented IR with `encode`/`write`
+- **project** — read, inspect and write `.emc` manifests
 
 All standard libraries are implemented in Rust and ship inside the `em`
 binary — no Python, Node, or other external runtimes required. See
@@ -616,7 +619,7 @@ binary — no Python, Node, or other external runtimes required. See
 
 ## Feature catalogue and guides
 
-The current language surface has **224 named language features** across five
+The current language surface has **227 named language features** across five
 groups, before counting developer tooling:
 
 | Group | Count | What it covers |
@@ -624,7 +627,7 @@ groups, before counting developer tooling:
 | Global builtins | 83 | Conversions, collections, strings, math, files, JSON, assertions |
 | Runtime methods | 95 | Array (29), object (13), string (29), number (17), boolean (7) |
 | Syntax and operator features | 18 | Loops, loop control, compound assignment, bitwise/ternary/coalescing operators, literals, interpolation |
-| Standard modules | 12 | `math` through `gfx`, plus `text`, all bundled into `em` |
+| Standard modules | 15 | `math` through `gfx`, plus `text`, `bytes`, `emb` and `project`, all bundled into `em` |
 | REPL meta-commands | 16 | Help, variables, history, loading/saving, timing, inspection, repetition, exit |
 
 On top of that are developer commands (`check`, `fmt`, `eval`, `doc`,
@@ -773,12 +776,12 @@ bytecode and a VM.
 
 ## Self-hosting roadmap
 
-Englishmen is not self-hosted yet: the lexer, parser, compiler, VM, and standard
-library are written in Rust. The language can now express its own control flow
-and data manipulation, and the bundled renderer is written in `.enm`, but a
-compiler written in Englishmen itself is still a roadmap item. See
-[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the current plan and the
-capabilities that remain before the language can compile itself.
+The compiler front end is self-hosted: `selfhost/lexer.enm`,
+`selfhost/parser.enm`, `selfhost/emit.enm` and the combined
+`selfhost/compiler.enm` produce the same AST JSON as `em build --emit
+ast-json` for every bundled example. The VM and runtime are still Rust
+programs. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the completed
+checklist and what a self-hosted runtime would still require.
 
 ## License
 

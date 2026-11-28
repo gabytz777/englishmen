@@ -13,6 +13,7 @@ $-!
     forms used by the bundled examples.
 !-$
 import fs
+import json
 function hexDigit(n)
     return "0123456789abcdef".charAt(n)
 end
@@ -77,11 +78,16 @@ function spanJson(span)
     end
     return jsonObject([jsonField("line", jsonNumber(span.get("line", 1))), jsonField("col", jsonNumber(span.get("col", 1)))])
 end
+function canonicalJson(text)
+$- Englishmen objects are backed by sorted maps, so re-encoding through
+       json.decode/json.encode gives the same key order as every other producer. -$
+    return json.encode(json.decode(text))
+end
 function emit(ast)
     if isArray(ast)
-        return jsonObject([jsonField("version", "1"), jsonField("statements", emitStatements(ast))])
+        return canonicalJson(jsonObject([jsonField("version", "1"), jsonField("statements", emitStatements(ast))]))
     end
-    return jsonObject([jsonField("version", jsonNumber(ast.get("version", 1))), jsonField("statements", emitStatements(ast.get("statements", [])))])
+    return canonicalJson(jsonObject([jsonField("version", jsonNumber(ast.get("version", 1))), jsonField("statements", emitStatements(ast.get("statements", [])))]))
 end
 function emitStatements(statements)
     parts = []
@@ -262,15 +268,33 @@ function decodeEscape(ch)
         return "\n"
     end
     if ch == "r"
-        return "\n"
+        return ""
     end
     if ch == "t"
         return "\t"
+    end
+    if ch == "b"
+        return fromCharCode(8)
+    end
+    if ch == "f"
+        return fromCharCode(12)
     end
     if ch == "0"
         return fromCharCode(0)
     end
     return ch
+end
+$- Shift a fragment's 1-based spans into the surrounding source, like
+   src/lexer.rs::offset_span does for interpolated expressions. -$
+function offsetTokens(tokens, baseLine, baseCol)
+    for token in tokens
+        originalLine = token.line
+        token.line = baseLine + originalLine - 1
+        if originalLine == 1
+            token.col = baseCol + token.col - 1
+        end
+    end
+    return tokens
 end
 function lexString(chars, start, line, col)
     index = start + 1
@@ -302,7 +326,11 @@ function lexString(chars, start, line, col)
         column += 2
     end
 else if ch == "\{"
-    parts.add({type: "Literal", value: literal})
+    exprLine = line
+    exprCol = column + 1
+    if len(literal) > 0
+        parts.add({type: "Literal", value: literal})
+    end
     literal = ""
     depth = 0
     close = index
@@ -319,7 +347,7 @@ else if ch == "\{"
     close += 1
 end
 expression = join(slice(chars, index + 1, close), "")
-parts.add({type: "Expr", value: lex(expression)})
+parts.add({type: "Expr", value: offsetTokens(lex(expression), exprLine, exprCol)})
 hasExpr = true
 for consumed in slice(chars, index, close + 1)
     if consumed == "\n"
@@ -337,7 +365,9 @@ else
 end
 end
 if hasExpr
-    parts.add({type: "Literal", value: literal})
+    if len(literal) > 0
+        parts.add({type: "Literal", value: literal})
+    end
     token = {type: "Interpolated", value: parts, line: line, col: col}
 else
     token = {type: "String", value: literal, line: line, col: col}

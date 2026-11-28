@@ -76,6 +76,14 @@ pub fn run() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "run-fixed" => match args.get(1) {
+            Some(file) => finish(cmd_run_fixed(Path::new(file), &args[2..])),
+            None => {
+                eprintln!("Error: 'em run-fixed' needs a .emb file to run\n");
+                print_help();
+                ExitCode::FAILURE
+            }
+        },
         other if other.ends_with(".em") => legacy_extension_notice(Path::new(other)),
         other if other.ends_with(".enm") || other.ends_with(".emb") => {
             finish(cmd_run_path(other, &args[1..]))
@@ -96,6 +104,7 @@ Usage:
     em <file.enm>             Compile and run a program
     em <file.emb>             Run compiled Englishmen bytecode
     em run <file>             Same as the two above
+    em run-fixed <file.emb>   Run bytecode without consulting a source file
     em build [file.enm]       Compile to bytecode (defaults to the project main)
     em check <file.enm>       Check syntax and compilation; write nothing
     em fmt <file.enm>         Format source (--check verifies without writing)
@@ -201,6 +210,22 @@ fn run_embedded(program: Result<Chunk, EmError>) -> ExitCode {
 }
 
 /// Run an `.enm` source file or a pre-compiled `.emb` bytecode file.
+/// `em run-fixed <file.emb>` is an explicit alias for running a bytecode image
+/// directly, without consulting any source file. The normal `em <file.emb>`
+/// and `em run <file.emb>` paths call the same runner.
+fn cmd_run_fixed(path: &Path, rest: &[String]) -> ExitCode {
+    let time = rest.iter().any(|a| a == "--time");
+    if let Some(bad) = rest.iter().find(|a| *a != "--time") {
+        eprintln!("Error: Unknown option '{bad}'\n");
+        print_help();
+        return ExitCode::FAILURE;
+    }
+    if path.extension().and_then(|e| e.to_str()) == Some("em") {
+        return legacy_extension_notice(path);
+    }
+    cmd_run_bytecode(path, time)
+}
+
 fn cmd_run_path(path: &str, rest: &[String]) -> ExitCode {
     let interpret = rest.iter().any(|a| a == "--interpret");
     let time = rest.iter().any(|a| a == "--time");
@@ -310,12 +335,13 @@ fn cmd_run_bytecode(path: &Path, time: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `em build [file.enm] [-o out] [--emit asm|ast] [--stats] [--exe] [--appimage] [--run]`
+/// `em build [file.enm] [-o out] [--emit asm|ast|ast-json] [--stats] [--exe] [--appimage] [--run]`
 fn cmd_build(args: &[String]) -> ExitCode {
     let mut file: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut emit_asm = false;
     let mut emit_ast = false;
+    let mut emit_ast_json = false;
     let mut stats = false;
     let mut standalone = false;
     let mut appimage = false;
@@ -343,15 +369,21 @@ fn cmd_build(args: &[String]) -> ExitCode {
                     emit_ast = true;
                     i += 2;
                 }
+                Some("ast-json") => {
+                    emit_ast_json = true;
+                    i += 2;
+                }
                 Some("bytecode") => i += 2,
                 Some(other) => {
                     eprintln!(
-                        "Error: Unknown emit format '{other}' (expected 'asm', 'ast' or 'bytecode')"
+                        "Error: Unknown emit format '{other}' (expected 'asm', 'ast', 'ast-json' or 'bytecode')"
                     );
                     return ExitCode::FAILURE;
                 }
                 None => {
-                    eprintln!("Error: '--emit' needs a format ('asm', 'ast' or 'bytecode')");
+                    eprintln!(
+                        "Error: '--emit' needs a format ('asm', 'ast', 'ast-json' or 'bytecode')"
+                    );
                     return ExitCode::FAILURE;
                 }
             },
@@ -391,9 +423,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // needs the compiled program, so none of them can be combined. Reject the
     // combinations explicitly rather than letting whichever check comes first
     // silently win.
-    let inspection_modes: [(&str, bool); 3] = [
+    let inspection_modes: [(&str, bool); 4] = [
         ("--emit asm", emit_asm),
         ("--emit ast", emit_ast),
+        ("--emit ast-json", emit_ast_json),
         ("--stats", stats),
     ];
     let chosen: Vec<&str> = inspection_modes
@@ -457,6 +490,19 @@ fn cmd_build(args: &[String]) -> ExitCode {
         // Debug formatting is intentionally the whole output: it is the
         // unmodified AST, and nothing at all is written to disk.
         println!("{program:#?}");
+        return ExitCode::SUCCESS;
+    }
+    if emit_ast_json {
+        // The self-hosted compiler emits the same canonical JSON: object keys
+        // are sorted by BTreeMap in both the Rust and Englishmen serializers.
+        let text = match crate::ast_json::to_json_string(&program) {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("Error: Could not encode AST JSON: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        println!("{text}");
         return ExitCode::SUCCESS;
     }
     let chunk = match compiler::compile(&program) {
@@ -898,6 +944,11 @@ Standard modules (import <name> first)
     gfx     canvas(w, h) with set/get/clear/text/save
     text    words, title, snake, kebab, camel, pascal, slug, indent, dedent,
             isPalindrome, levenshtein
+    bytes   fromString, toString, of, length, get, set, concat, slice, copy,
+            fromHex, toHex, u8/u16/u32/u64, i16/i32/i64, f64, read, write
+    emb     encode, write, encodeOp, magic, version — write .emb bytecode
+    project parse, load, get, section, name, version, main, default, write
+            — read and write .emc manifests
 
 Comments
     $- single-line comment -$

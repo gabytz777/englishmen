@@ -1,10 +1,13 @@
+pub mod bytes;
 pub mod collections;
 pub mod cowsay;
+pub mod emb;
 pub mod fs;
 pub mod gfx;
 pub mod json;
 pub mod math;
 pub mod os;
+pub mod project;
 pub mod qrc;
 pub mod random;
 pub mod string;
@@ -28,6 +31,9 @@ pub const STD_MODULES: &[&str] = &[
     "collections",
     "gfx",
     "text",
+    "bytes",
+    "emb",
+    "project",
 ];
 
 /// Resolve a standard module by name into its runtime value (an object of native functions).
@@ -45,6 +51,9 @@ pub fn load_module(name: &str) -> Option<Value> {
         "collections" => Some(collections::module()),
         "gfx" => Some(gfx::module()),
         "text" => Some(text::module()),
+        "bytes" => Some(bytes::module()),
+        "emb" => Some(emb::module()),
+        "project" => Some(project::module()),
         _ => None,
     }
 }

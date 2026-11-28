@@ -29,9 +29,9 @@ from a tree that includes `src/modules/bytes.rs` and its module registration.
 | `bytes.get(buffer, index)` | Byte at `index`; negative indexes count from the end (`-1` is the last byte). |
 | `bytes.set(buffer, index, value)` | Set one byte, returning the same buffer for chaining. |
 | `bytes.concat(...buffers)` | Concatenate buffers in argument order into a new buffer. |
-| `bytes.slice(buffer, start, end?)` | Half-open slice `[start, end)`; `end` defaults to `bytes.length(buffer)`. |
+| `bytes.slice(buffer, start, end?)` | Half-open slice `[start, end)`; `end` defaults to `bytes.length(buffer)`. Out-of-range bounds clamp to the buffer edges, like array/string slicing. |
 | `bytes.copy(buffer)` | An independent copy; changing it leaves the original alone. |
-| `bytes.fromHex(text)` | Parse `aa bb cc` or `aabbcc` style hex into a buffer. |
+| `bytes.fromHex(text)` | Parse `aa bb cc` or `aabbcc` hex, ignoring ASCII whitespace. |
 | `bytes.toHex(buffer)` | Lowercase hex, two digits per byte, separated by spaces. |
 | `bytes.u8(n)`, `bytes.u16(n)`, `bytes.u32(n)`, `bytes.u64(n)` | Unsigned **little-endian** packing. |
 | `bytes.i16(n)`, `bytes.i32(n)`, `bytes.i64(n)` | Signed two's-complement **little-endian** packing. |
@@ -69,8 +69,10 @@ say(clone)                       $- [0, 99, 30, 40] -$
 ```
 
 Indexes start at `0`; negative indexes count back from the end. Out-of-range
-indexes and slices, non-integer byte values, and values outside `0..=255` are
-errors rather than silent truncation.
+element indexes are errors, but slice bounds clamp to the buffer edges exactly
+like array and string slicing. Non-integer byte values, values outside
+`0..=255`, and non-integer slice bounds are errors rather than silent
+truncation.
 
 ## Text, hex and Unicode
 
@@ -153,7 +155,7 @@ bytes.write("header.bin", header)     $- 6 bytes: 52 18 120 86 52 18 -$
 Every function validates its arguments and raises a normal Englishmen error
 instead of panicking. Expect errors for a missing path argument, a non-buffer
 where a buffer is required, a non-integer or out-of-range byte, an invalid hex
-string, an out-of-range index or slice, and invalid UTF-8 in `toString` or
+string, an out-of-range element index, a non-integer slice bound, and invalid UTF-8 in `toString` or
 `bytes.read`'s text counterpart `fs.read`. Invalid numeric ranges for a packer
 (for example `bytes.u8(256)`) are errors too.
 

@@ -4,17 +4,13 @@
 //! IR object with `emb.encode`/`emb.write`, and then `em run-fixed` loads the
 //! emitted image and executes it on the VM.
 //!
-//! TODO(parent integration): the `emb` module lives on branch `sh-emb-impl` and
-//! is not present in this branch, and `em run-fixed` is not wired in `src/cli.rs`
-//! yet. The parent must (a) register `emb` in `STD_MODULES`/`load_module` and
-//! (b) add a `run-fixed <file.emb>` subcommand that routes to the existing
-//! `cmd_run_bytecode` path (`bytecode::deserialize` + `Vm::run`). Until then
-//! these tests fail at the emitter or `run-fixed` step by design. They are
-//! written for the integrated tree and must not be skipped or weakened.
+//! The `emb` module is registered in `STD_MODULES`/`load_module`, and the
+//! `run-fixed <file.emb>` subcommand routes to `cmd_run_bytecode`
+//! (`bytecode::deserialize` + `Vm::run`).
 //!
-//! The sibling test `tests/emb_roundtrip.rs` covers the Rust-side oracle
-//! (`bytecode::deserialize(&emb.encode(ir))`); this file deliberately stays at
-//! the CLI boundary.
+//! The Rust-side oracle (`bytecode::deserialize(&emb.encode(ir))`) lives in
+//! the `emb` module's unit tests; this file deliberately stays at the CLI
+//! boundary.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -88,7 +84,7 @@ ir = {{
 encoded = emb.encode(ir)
 emb.write("{image}", ir)
 
-say(encoded.length)
+say(len(encoded))
 say(emb.magic())
 say(emb.version())
 say(emb.encodeOp("LoadConst"))
@@ -106,9 +102,8 @@ fn write_image(tag: &str, flags: &[&str]) -> (PathBuf, PathBuf, std::process::Ou
     let image = dir.join("hello.emb");
     std::fs::write(&source, emitter_source(&image)).unwrap();
 
-    let mut args = vec!["run"];
+    let mut args = vec!["run", source.to_str().unwrap()];
     args.extend_from_slice(flags);
-    args.push(source.to_str().unwrap());
     let output = run(&args);
     (dir, image, output)
 }

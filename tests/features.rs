@@ -596,10 +596,10 @@ fn doc_reference_lists_the_current_catalogue() {
     let readme =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
     for text in [
-        "**224 named language features**",
+        "**227 named language features**",
         &format!("| Global builtins | {count} |"),
         "| Runtime methods | 95 |",
-        "| Standard modules | 12 |",
+        "| Standard modules | 15 |",
         "| REPL meta-commands | 16 |",
         "| `:repeat <n> <src>` |",
         "| `:reset` |",

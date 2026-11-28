@@ -165,14 +165,53 @@ fn parse_config(text: &str) -> Value {
     Value::new_object(config)
 }
 
-/// Mirror `config::parse_value`: trim, then remove one pair of quotes.
+/// Trim, remove one pair of quotes, and decode the escapes emitted by
+/// `write_quoted` so `project.write`/`project.parse` round-trip exactly.
 fn parse_value(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
-        trimmed[1..trimmed.len() - 1].to_string()
+        unescape(&trimmed[1..trimmed.len() - 1])
     } else {
         trimmed.to_string()
     }
+}
+
+/// Reverse `write_quoted`: `\"`, `\\`, `\n`, `\r`, `\t` and `\uXXXX`.
+fn unescape(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('u') => {
+                let digits: String = chars.by_ref().take(4).collect();
+                match u32::from_str_radix(&digits, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                {
+                    Some(decoded) => out.push(decoded),
+                    None => {
+                        out.push_str("\\u");
+                        out.push_str(&digits);
+                    }
+                }
+            }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Snapshot the two objects of a parsed config so native calls can inspect
@@ -288,13 +327,15 @@ fn write_pair(key: &str, value: &Value, out: &mut String) -> Result<(), String> 
     Ok(())
 }
 
-/// Keys and section names must stay on one line and must not collide with the
-/// `[section]` or `key=value` syntax.
+/// Keys and section names must stay on one line, must not collide with the
+/// `[section]` or `key=value` syntax, and must survive the trimming and
+/// comment rules of `parse_config` unchanged.
 fn validate_name(name: &str, what: &str) -> Result<(), String> {
     if name.is_empty()
+        || name.starts_with('#')
         || name
             .chars()
-            .any(|c| matches!(c, '\n' | '\r' | '[' | ']' | '='))
+            .any(|c| c.is_whitespace() || matches!(c, '[' | ']' | '='))
     {
         return Err(format!("Invalid {what} '{name}' for project.write"));
     }
@@ -500,6 +541,69 @@ mod tests {
             "main.enm"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_round_trips_escaped_string_values() {
+        let tricky = "quote \" slash \\ newline \n return \r tab \t control \u{1f}";
+        let config = Value::new_object(BTreeMap::from([
+            (
+                "root".to_string(),
+                object([("tricky", Value::String(tricky.into()))]),
+            ),
+            ("sections".to_string(), Value::new_object(BTreeMap::new())),
+        ]));
+        let path = temp_path("escaped.emc");
+        let name = path.display().to_string();
+        assert!(matches!(
+            call("write", &[Value::String(name.clone()), config]).unwrap(),
+            Value::Bool(true)
+        ));
+        let loaded = call("load", &[Value::String(name)]).unwrap();
+        assert_eq!(
+            call("get", &[loaded, Value::String("tricky".into())])
+                .unwrap()
+                .display(),
+            tricky
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_rejects_names_that_parse_would_change() {
+        for bad in ["#comment", " spaced", "trailing ", "two words", "a=b"] {
+            let config = Value::new_object(BTreeMap::from([
+                (
+                    "root".to_string(),
+                    object([(bad, Value::String("x".into()))]),
+                ),
+                ("sections".to_string(), Value::new_object(BTreeMap::new())),
+            ]));
+            let path = temp_path("badname.emc");
+            let error = call(
+                "write",
+                &[Value::String(path.display().to_string()), config],
+            )
+            .unwrap_err();
+            assert!(error.contains("Invalid manifest key"), "{bad}: {error}");
+        }
+        let config = Value::new_object(BTreeMap::from([
+            ("root".to_string(), Value::new_object(BTreeMap::new())),
+            (
+                "sections".to_string(),
+                Value::new_object(BTreeMap::from([(
+                    " #section".to_string(),
+                    Value::new_object(BTreeMap::new()),
+                )])),
+            ),
+        ]));
+        let path = temp_path("badsection.emc");
+        let error = call(
+            "write",
+            &[Value::String(path.display().to_string()), config],
+        )
+        .unwrap_err();
+        assert!(error.contains("Invalid section name"), "{error}");
     }
 
     #[test]

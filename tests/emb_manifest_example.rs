@@ -82,6 +82,7 @@ fn manifest_example_agrees_across_backends_and_writes_a_valid_image() {
     for out in [&vm_out, &interpreted_out] {
         let bytes = fs::read(out).unwrap_or_else(|e| panic!("missing image {out:?}: {e}"));
         assert_eq!(bytes.len() as u64, printed_len, "{out:?} length mismatch");
+        assert!(bytes.len() >= 6, "{out:?} is too short to hold a header");
         assert_eq!(&bytes[..4], b"EMBC", "{out:?} has the wrong magic");
         assert_eq!(
             &bytes[4..6],

@@ -1,5 +1,6 @@
 mod appimage;
 mod ast;
+mod ast_json;
 mod builtins;
 mod bundle;
 mod bytecode;

@@ -1,70 +1,70 @@
 # Road to a self-hosting Englishmen compiler
 
-A self-hosting compiler is one written in the language it compiles. Englishmen
-is not there yet: its lexer, parser, compiler and VM are Rust programs, and a
-`.enm` program cannot currently inspect the structure of its own source or
-emit the `.emb` container byte-for-byte. This document records what is still
-needed and the order in which it is cheapest to add it.
+**Status: 5 of 5 bootstrap blockers complete.** A compiler front end written
+in Englishmen now produces the same AST JSON as the Rust compiler for every
+bundled example. The Rust VM and runtime remain the execution backend; making
+those self-hosted is a separate, larger project.
 
 ## Why this is a useful goal
 
-A self-hosted front end forces the language to have:
-
-- first-class text and collection processing,
-- reliable file I/O and deterministic output,
-- structured errors and enough control flow to express a recursive-descent
-  parser and a multi-pass compiler,
-- stable bytecode and a way to serialise it.
-
-Those are useful language features in their own right, which is why the
-current feature work focuses on them rather than on a one-off trick.
+A self-hosted front end forces the language to have first-class text and
+collection processing, reliable file I/O and deterministic output, structured
+errors with enough control flow for a recursive-descent parser, and a stable
+binary container. Those are useful language features in their own right.
 
 ## Capability checklist
 
-| Area | Needed by a self-hosted compiler | Present today | Remaining for the first bootstrap |
-| --- | --- | --- | --- |
-| Lexing | character access, string indexing, escape handling, comments | string indexing, `length`, `split`, `contains`, `charAt`, `startsWith`, `endsWith`, `replace`, `replaceAll`, `lines`, `chars`, `isDigit`, `isAlpha`, Unicode/hex/binary/exponent literals, `$- ... -$` comments | regex-style pattern matching (optional, not required for the bootstrap) |
-| Parsing | arrays, objects, recursion, early exit from loops, ternaries | arrays, objects, recursion, `if`/`else`, `for ... in`, `repeat`, `while`, `break`, `continue`, ternary, `??`, compound assignment | none for the language surface; multi-error recovery is a nice-to-have |
-| AST | tagged objects with nested fields | objects, dot notation, arrays, `has`, `get`, `set`, `delete`, `merge`, `copy`, `keys`, `values` | none |
-| Code generation | numbers, bitwise operations, integer rounding, byte packing | arithmetic, `**`, `//`, bitwise ops, `floor`, `ceil`, `round`, `toHex`, `toBinary`, hex/binary literals | little-endian byte packing and raw byte buffers |
-| Output | write, append, create directories, list files | global `writeFile`, `readFile`, `appendFile`, `deleteFile`, `makeDir`, `listFiles`, plus the `fs` module | a binary writer for `.emb` output |
-| Metadata | project name/version, command-line arguments, environment | global `args`, `env`, `os` and `json` modules; `.emc` files read by the CLI | an `.enm` API for project manifests |
-| Diagnostics | structured errors with codes and source positions | error codes, source spans, hints, multi-label rendering, JSON diagnostics | better multi-error recovery |
-| Testing | run many cases with one command | `cargo test`, `em check`, `em eval`, `em fmt --check`, cross-backend integration tests | an optional `em test` runner (not required for bootstrap) |
+| Area | Needed by a self-hosted compiler | Delivered |
+| --- | --- | --- |
+| Lexing | character access, string indexing, escape handling, comments | `selfhost/lexer.enm`, token-compatible with `src/lexer.rs` on every example |
+| Parsing | arrays, objects, recursion, loop control, ternaries | `selfhost/parser.enm`, full AST envelopes plus structured errors |
+| AST | tagged objects with nested fields | schema-ordered objects, `docs/selfhost/AST_JSON.md` |
+| Binary I/O | little-endian packing and raw buffers | `bytes` module (`src/modules/bytes.rs`) |
+| Bytecode output | a writer for the `.emb` container | `emb` module (`src/modules/emb.rs`), byte-identical to `bytecode::serialize` |
+| Metadata | project name/version and argv | `project` module (`src/modules/project.rs`) for `.emc` manifests |
+| Emitter | AST to canonical JSON | `selfhost/emit.enm` |
+| Bootstrap | one CLI entry point | `selfhost/compiler.enm`, inlined lexer/parser/emitter |
+| Verification | compare against the Rust front end | `em build <file> --emit ast-json`, byte-for-byte tests |
 
-## Suggested order of work
+The five original blockers were: (1) byte buffers and LE packing, (2) an `.emb`
+writer, (3) an `.emc` manifest API, (4) a lexer/parser/AST emitter in
+Englishmen, and (5) bootstrap output parity. All five are implemented and
+tested.
 
-1. **Consolidate the language surface.** Loops with `break`/`continue`,
-   compound assignment, a full set of string/array/object methods, and global
-   builtins already make it possible to *express* a parser without awkward
-   workarounds; keep them consistent across both backends.
-2. **Make output deterministic.** The `json` module and file helpers already
-   let a compiler write an intermediate representation before native `.emb`
-   writing exists. JSON is a convenient bootstrap format because it is text
-   and easy to inspect.
-3. **Add binary I/O.** Emitting a real `.emb` needs writing little-endian
-   integers and raw bytes. A small `bytes`/`binary` module on top of `fs`
-   is the next language addition.
-4. **Write the compiler in `.enm`.** Start with the lexer: it is pure string
-   processing and can be tested against the Rust lexer on the bundled
-   examples. Then the parser, then a simple AST-to-JSON emitter.
-5. **Bootstrap.** Run the `.enm` compiler on its own source. The first target
-   is not "replace Rust" but "produce identical JSON for every example".
-6. **Optional final step.** Compile the AST to bytecode with a `.enm` writer,
-   then load it with the existing Rust VM. At that point the compiler is
-   self-hosting even though the runtime still is not.
+## How to verify
 
-## Non-goals for the first bootstrap
+```sh
+cargo test --all-targets
+em fmt --check selfhost/*.enm examples/*.enm
+em build examples/hello.enm --emit ast-json
+em run selfhost/compiler.enm examples/hello.enm
+em run selfhost/emit.enm examples/hello.enm
+```
+
+The last three commands print the same single JSON line. `tests/selfhost_bootstrap.rs`
+and `tests/selfhost_emitter.rs` assert that equality for every `examples/*.enm`
+on every full test run.
+
+## Key conventions
+
+- AST JSON object keys are **alphabetical at every level**, because all
+  producers use `json.encode` and Englishmen objects are `BTreeMap`-backed.
+  Field lists in the docs are in reading order only; consumers must look up
+  fields by name.
+- `em run <script> <file>` passes the full argv to the script, so the `.enm`
+  CLIs scan for the last existing `.enm` path rather than assuming `args[0]`.
+- Interpolated strings lower to `String("")` plus `+` chains with source spans
+  matching `src/parser.rs::parse_interpolated`.
+- `em run-fixed <file.emb>` runs a bytecode image directly through
+  `bytecode::deserialize` and the VM.
+
+## Non-goals for this bootstrap
 
 - Native machine code. Englishmen targets its own bytecode; that is a design
   decision, not a temporary limitation.
-- Replacing the Rust VM. A self-hosted *compiler* already meets the goal; a
-  self-hosted runtime is a separate, much larger project.
+- Replacing the Rust VM. A self-hosted *compiler* already meets the goal.
 - Backwards compatibility with `.em` source files. That extension is retired.
 
-## How to verify progress
-
-For each capability in the checklist, add a `.enm` example under `examples/`
-and an integration test under `tests/` that runs it through both backends.
-When a compiler written in Englishmen can process all of those examples and
-produce the same output as `em build --emit ast`, the bootstrap is ready.
+Further work could replace the inlined lexer/parser with local `.enm` imports
+once those exist, add a `.enm` bytecode writer, and add multi-error recovery.
+None of these are required for the current parity guarantee.

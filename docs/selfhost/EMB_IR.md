@@ -275,7 +275,7 @@ ir = {
 encoded = emb.encode(ir)
 emb.write("hello.emb", ir)
 
-say(encoded.length)            # 71, the canonical image size
+say(len(encoded))              # 71, the canonical image size
 say(emb.magic())               # EMBC
 say(emb.version())             # 2
 say(emb.encodeOp("LoadConst")) # 0
@@ -299,7 +299,8 @@ image.
 
 - **Rust oracle:** `bytecode::deserialize(&emb.encode(ir))` must succeed and
   round-trip constants, functions and instructions. This is the definitive
-  check and belongs in `tests/emb_roundtrip.rs`.
+  check and belongs in the `emb` module's unit tests
+  (`src/modules/emb.rs`), where the Rust modules are in scope.
 - **CLI check:** `tests/emb_ir.rs` builds an IR in a temporary `.enm` program,
   calls `emb.write`, then runs `em run-fixed <path>` and checks the VM's
   stdout. It also exercises the helpers and confirms a corrupted version field
