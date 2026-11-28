@@ -2,8 +2,8 @@ $- Pure Englishmen implementation of the native `project` manifest API.
    Self-contained by design: Englishmen has no local `.enm` imports yet, so
    every helper is global and prefixed with `pj` to survive concatenation into
    `selfhost/full.enm`. The native `project` module is imported only inside the
-   self-test guard, where it acts as an oracle. -$
-import os
+   self-test guard, where it acts as an oracle; the guard itself uses the
+   `env` builtin rather than importing `os`. -$
 $- Return the value of one hexadecimal digit, or -1 for anything else. -$
 function pjHexDigit(pjHexDigit_c)
     pjHexDigit_n = charCode(pjHexDigit_c)
@@ -308,6 +308,7 @@ end
 $- Inline parity self-test. The native module is loaded only here and is never
    used by the implementation above. -$
 function pjSelfTest()
+    import os
     pjSelfTest_samples = ["", "name = \"Demo\"\nversion = \"1.0.0\"\nmain = \"main.enm\"\n", "# leading comment\n\n  name = \"  spaced  \"  \nbare = plain\nsingle = 'quoted'\n\n[installer]\ninstall_dir = \"C:/em\"\nprojects_enabled = \"true\"\n", "name = \"Demo\"" + fromCharCode(13) + "\n\tversion = \"2.1\"" + fromCharCode(13) + "\n# comment" + fromCharCode(13) + "\n[notes]" + fromCharCode(13) + "\nbody = \"hello\"" + fromCharCode(13) + "\n", "a = \"quote \\\" slash \\\\ newline \\n return \\r tab \\t control \\u001f\"\n", "a = \"short \\u41 plus \\u+42 bad \\uZZZZ surrogate \\ud800 high \\u\{1f600\}\"\n", "[a]\nx = \"first\"\n[a]\nx = \"last\"\ny = \"a=b\"\n[ü]\nключ = \"значение\"\n", "dup = \"first\"\ndup = \"second\"\n[sec]\nq = \"# not a comment\"\n", "name = \"\\u00e9\\u263a\"\nx = \"" + fromCharCode(1) + "☺\"\n"]
     pjSelfTest_path = os.tempDir() + "/lib_project_selftest_" + os.pid() + ".emc"
     pjSelfTest_i = 0
@@ -338,7 +339,7 @@ assert(pjWrite(pjSelfTest_manifest) == pjSelfTest_expected, "pjWrite mismatch fo
 assert(jsonEncode(pjParse(pjSelfTest_expected)) == jsonEncode(project.parse(pjSelfTest_expected)), "mixed manifest round trip mismatch")
 deleteFile(pjSelfTest_path)
 end
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
     import project
     pjSelfTest()
     say("ok")

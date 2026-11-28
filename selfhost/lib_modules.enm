@@ -12,9 +12,9 @@ $- Pure Englishmen implementations of the native `string` and `json` modules.
    null)` uses the default fill and alignment.
 
    Native `string` and `json` modules are imported only inside the self-test
-   guard at the bottom, where they act as reference oracles.
+   guard at the bottom, where they act as reference oracles. The guard itself
+   uses the `env` builtin rather than importing `os`.
 -$
-import os
 $- ---------------------------------------------------------------------------
    Shared argument helpers
    --------------------------------------------------------------------------- -$
@@ -1174,7 +1174,7 @@ end
 $- ---------------------------------------------------------------------------
    Self-tests: native modules are oracles only below this point.
    --------------------------------------------------------------------------- -$
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
     import string
     import json
     function lmSelfEqual(lmSelfEqual_left, lmSelfEqual_right, lmSelfEqual_label)
