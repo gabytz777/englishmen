@@ -541,6 +541,7 @@ canvas.save("red-dot.png")
 - **qrc** — `make(text, path)` generates a QR code PNG (no external binaries)
 - **cowsay** — `say(message)` prints ASCII-art cow speech (implemented natively, no `cowsay` executable required)
 - **gfx** — `canvas(width, height)` creates an RGB framebuffer with `set`, `get`, `clear`, `text` and `save(path)` methods, for drawing images from Englishmen code
+- **text** — `words`, `title`, `capitalize`, `swapCase`, `snake`, `kebab`, `camel`, `pascal`, `slug`, `collapseWhitespace`, `count`, `truncate`, `wrap`, `indent`, `dedent`, `reverseWords`, `initials`, `isPalindrome` and `levenshtein` for whole-text processing, identifier case conversion and small string algorithms
 
 All standard libraries are implemented in Rust and ship inside the `em`
 binary — no Python, Node, or other external runtimes required.
