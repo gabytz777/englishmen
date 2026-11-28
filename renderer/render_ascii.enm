@@ -10,26 +10,20 @@ $-
     Run with your normal Englishmen command:
         em render_ascii.enm
 -$
-
 import math
-
 W = 80
 H = 40
 FOCAL_X = 55
 FOCAL_Y = 28
 CAM_Z = 4.2
-
 MAJOR = 20
 MINOR = 12
 BIG_R = 1.15
 SMALL_R = 0.48
-
 LIGHT_X = -0.45
 LIGHT_Y = 0.72
 LIGHT_Z = 0.53
-
 SHADES = " .:-=+*#%@"
-
 grid = []
 depth = []
 i = 0
@@ -38,7 +32,6 @@ repeat W * H
     depth.add(1000000000)
     i = i + 1
 end
-
 $- Sine via Taylor series, reduced to one turn. -$
 function sine(x)
     tau = math.pi * 2
@@ -54,51 +47,43 @@ function sine(x)
     end
     return total
 end
-
 function cosine(x)
     return sine(x + math.pi / 2)
 end
-
 function rotate_point(x, y, z, ax, ay)
     cx = cosine(ax)
     sx = sine(ax)
     cy = cosine(ay)
     sy = sine(ay)
-
     y1 = y * cx - z * sx
     z1 = y * sx + z * cx
     x2 = x * cy + z1 * sy
     z2 = -x * sy + z1 * cy
     return [x2, y1, z2]
 end
-
 function torus_point(u, v)
     ring = BIG_R + SMALL_R * cosine(v)
     return [ring * cosine(u), ring * sine(u), SMALL_R * sine(v)]
 end
-
 function torus_normal(u, v, ax, ay)
     n = [cosine(v) * cosine(u), cosine(v) * sine(u), sine(v)]
     return rotate_point(n[0], n[1], n[2], ax, ay)
 end
-
 function project(p, ax, ay)
     q = rotate_point(p[0], p[1], p[2], ax, ay)
-    $- Camera on +Z: larger z is nearer, so distance is CAM_Z - z.
+$- Camera on +Z: larger z is nearer, so distance is CAM_Z - z.
        Do not call this local `depth`: that name is the global z-buffer. -$
     dist = CAM_Z - q[2]
     sx = W / 2 + q[0] * FOCAL_X / dist
     sy = H / 2 - q[1] * FOCAL_Y / dist
     return [sx, sy, dist]
 end
-
 $- Rasterise a triangle into the character grid with a z-buffer. -$
 function raster(x0, y0, z0, x1, y1, z1, x2, y2, z2, glyph)
     minx = math.floor(math.min(x0, math.min(x1, x2)))
     maxx = math.ceil(math.max(x0, math.max(x1, x2)))
     miny = math.floor(math.min(y0, math.min(y1, y2)))
     maxy = math.ceil(math.max(y0, math.max(y1, y2)))
-
     if minx < 0
         minx = 0
     end
@@ -111,12 +96,10 @@ function raster(x0, y0, z0, x1, y1, z1, x2, y2, z2, glyph)
     if maxy > H - 1
         maxy = H - 1
     end
-
     area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)
     if area == 0
         return
     end
-
     y = miny
     repeat maxy - miny + 1
         x = minx
@@ -124,7 +107,6 @@ function raster(x0, y0, z0, x1, y1, z1, x2, y2, z2, glyph)
             w0 = ((x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)) / area
             w1 = ((x0 - x2) * (y - y2) - (y0 - y2) * (x - x2)) / area
             w2 = 1 - w0 - w1
-
             if (w0 >= -0.0001 and w1 >= -0.0001 and w2 >= -0.0001) or (w0 <= 0.0001 and w1 <= 0.0001 and w2 <= 0.0001)
                 z = w0 * z0 + w1 * z1 + w2 * z2
                 index = y * W + x
@@ -138,24 +120,20 @@ function raster(x0, y0, z0, x1, y1, z1, x2, y2, z2, glyph)
         y = y + 1
     end
 end
-
 $- Shade one quad and split it into two triangles. -$
 function draw_quad(u0, v0, u1, v1, ax, ay)
     a = torus_point(u0, v0)
     b = torus_point(u1, v0)
     c = torus_point(u1, v1)
     d = torus_point(u0, v1)
-
     sa = project(a, ax, ay)
     sb = project(b, ax, ay)
     sc = project(c, ax, ay)
     sd = project(d, ax, ay)
-
     n = torus_normal(u0 + (u1 - u0) / 2, v0 + (v1 - v0) / 2, ax, ay)
     if n[2] <= 0
         return
     end
-
     light = n[0] * LIGHT_X + n[1] * LIGHT_Y + n[2] * LIGHT_Z
     if light < 0
         light = 0
@@ -166,11 +144,9 @@ function draw_quad(u0, v0, u1, v1, ax, ay)
         level = 9
     end
     glyph = SHADES[level]
-
     raster(sa[0], sa[1], sa[2], sb[0], sb[1], sb[2], sc[0], sc[1], sc[2], glyph)
     raster(sa[0], sa[1], sa[2], sc[0], sc[1], sc[2], sd[0], sd[1], sd[2], glyph)
 end
-
 $- Reset the buffers, build the mesh, then print the frame. -$
 function render_frame(ax, ay)
     k = 0
@@ -179,7 +155,6 @@ function render_frame(ax, ay)
         depth[k] = 1000000000
         k = k + 1
     end
-
     i = 0
     repeat MAJOR
         u0 = i * 2 * math.pi / MAJOR
@@ -193,7 +168,6 @@ function render_frame(ax, ay)
         end
         i = i + 1
     end
-
     y = 0
     repeat H
         row = ""
@@ -206,6 +180,5 @@ function render_frame(ax, ay)
         y = y + 1
     end
 end
-
 say("Shaded, depth-buffered torus - 80x40 ASCII, rendered in Englishmen")
 render_frame(0.65, 0.85)
