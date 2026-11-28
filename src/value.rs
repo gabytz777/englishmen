@@ -2,9 +2,31 @@ use crate::ast::Stmt;
 use crate::bytecode::FunctionProto;
 use crate::environment::Environment;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::rc::Rc;
+
+/// Tracks already-copied values and environments while taking a snapshot, so
+/// shared and cyclic structures stay intact without aliasing the originals.
+pub struct Snapshot {
+    pub(crate) values: HashMap<usize, Value>,
+    pub(crate) envs: HashMap<usize, Rc<Environment>>,
+}
+
+impl Snapshot {
+    pub fn new() -> Self {
+        Snapshot {
+            values: HashMap::new(),
+            envs: HashMap::new(),
+        }
+    }
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone)]
 pub enum Value {
@@ -70,6 +92,58 @@ impl Value {
 
     pub fn new_object(fields: BTreeMap<String, Value>) -> Value {
         Value::Object(Rc::new(RefCell::new(fields)))
+    }
+
+    /// Deep-copy this value into a snapshot, preserving sharing and cycles.
+    /// Natives are immutable and can be reused; closures get copied scopes.
+    pub fn snapshot(&self, snapshot: &mut Snapshot) -> Value {
+        match self {
+            Value::Number(n) => Value::Number(*n),
+            Value::String(s) => Value::String(s.clone()),
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Null => Value::Null,
+            Value::Native(f) => Value::Native(Rc::clone(f)),
+            Value::Array(original) => {
+                let key = Rc::as_ptr(original) as usize;
+                if let Some(copy) = snapshot.values.get(&key) {
+                    return copy.clone();
+                }
+                let copy = Value::new_array(Vec::new());
+                snapshot.values.insert(key, copy.clone());
+                let items: Vec<Value> = original.borrow().iter().map(|v| v.snapshot(snapshot)).collect();
+                if let Value::Array(target) = &copy {
+                    *target.borrow_mut() = items;
+                }
+                copy
+            }
+            Value::Object(original) => {
+                let key = Rc::as_ptr(original) as usize;
+                if let Some(copy) = snapshot.values.get(&key) {
+                    return copy.clone();
+                }
+                let copy = Value::new_object(BTreeMap::new());
+                snapshot.values.insert(key, copy.clone());
+                let fields: BTreeMap<String, Value> = original
+                    .borrow()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.snapshot(snapshot)))
+                    .collect();
+                if let Value::Object(target) = &copy {
+                    *target.borrow_mut() = fields;
+                }
+                copy
+            }
+            Value::Function(f) => Value::Function(Rc::new(FunctionValue {
+                name: f.name.clone(),
+                params: f.params.clone(),
+                body: f.body.clone(),
+                closure: f.closure.snapshot(snapshot),
+            })),
+            Value::Compiled(f) => Value::Compiled(Rc::new(CompiledFunction {
+                proto: Rc::clone(&f.proto),
+                closure: f.closure.snapshot(snapshot),
+            })),
+        }
     }
 
     pub fn display(&self) -> String {

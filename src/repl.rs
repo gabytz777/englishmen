@@ -8,6 +8,7 @@ use crate::compiler;
 use crate::environment::Environment;
 use crate::lexer::tokenize;
 use crate::parser::parse;
+use crate::value::Snapshot;
 use crate::vm::Vm;
 use std::fs;
 use std::io::{self, Write};
@@ -16,6 +17,10 @@ use std::time::{Duration, Instant};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPL_NAME: &str = "repl";
+/// Variable used by `:type` inside a scratch scope, never in the session VM.
+const TYPE_PROBE: &str = "__repl_type_probe";
+/// Guard against accidentally running a huge `:repeat` loop.
+const MAX_REPEAT: usize = 1000;
 
 /// A `:` meta command, or the plain `exit`/`quit` shorthand.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +34,13 @@ enum Command {
     Save(String),
     Time(String),
     About,
+    Echo(String),
+    Source,
+    Reset,
+    Again,
+    Eval(String),
+    Type(String),
+    Repeat { count: usize, source: String },
     /// A malformed command, with the message to show to the user.
     Invalid(String),
 }
@@ -49,6 +61,8 @@ struct Repl {
     history: Vec<String>,
     /// Completed source snippets, used by `:save`.
     session_source: String,
+    /// Most recently executed source, used by `:again`.
+    last_source: String,
     quit: bool,
 }
 
@@ -59,6 +73,7 @@ impl Repl {
             buffer: String::new(),
             history: Vec::new(),
             session_source: String::new(),
+            last_source: String::new(),
             quit: false,
         }
     }
@@ -81,15 +96,45 @@ impl Repl {
                     return;
                 }
                 let source = std::mem::take(&mut self.buffer);
-                if !source.trim().is_empty() {
-                    self.session_source.push_str(&source);
-                    if !self.session_source.ends_with('\n') {
-                        self.session_source.push('\n');
-                    }
-                }
-                run_snippet(&mut self.vm, &source, REPL_NAME);
+                self.execute_source(&source, REPL_NAME, true);
             }
         }
+    }
+
+    /// Execute a snippet in the session VM. `record` controls whether it also
+    /// becomes part of the source written by `:save`.
+    fn execute_source(&mut self, source: &str, filename: &str, record: bool) -> bool {
+        if source.trim().is_empty() {
+            return false;
+        }
+        self.last_source = source.to_string();
+        if record {
+            self.session_source.push_str(source);
+            if !self.session_source.ends_with('\n') {
+                self.session_source.push('\n');
+            }
+        }
+        run_snippet(&mut self.vm, source, filename)
+    }
+
+    /// `:again` re-runs the last snippet without adding it to `:save` output.
+    fn repeat_last_source(&mut self) {
+        if self.last_source.trim().is_empty() {
+            println!("Nothing to repeat: no source entered yet.");
+            return;
+        }
+        let source = self.last_source.clone();
+        self.execute_source(&source, REPL_NAME, false);
+    }
+
+    /// Unlike `:clear`, this also forgets history, session source and `:again`.
+    fn reset_session(&mut self) {
+        self.vm = Vm::new();
+        self.buffer.clear();
+        self.history.clear();
+        self.session_source.clear();
+        self.last_source.clear();
+        println!("Session reset. Globals, history and source are cleared.");
     }
 
     fn run_command(&mut self, command: Command) {
@@ -107,8 +152,36 @@ impl Repl {
             Command::Save(path) => {
                 save_source(&path, &self.session_source);
             }
-            Command::Time(expression) => time_expression(&mut self.vm, &expression),
+            Command::Time(expression) => {
+                self.last_source = source_for_time(&expression);
+                time_expression(&mut self.vm, &expression);
+            }
             Command::About => print_lines(&about_lines()),
+            Command::Echo(text) => println!("{text}"),
+            Command::Source => print_lines(&source_lines(&self.session_source)),
+            Command::Reset => self.reset_session(),
+            Command::Again => self.repeat_last_source(),
+            Command::Eval(expression) => {
+                let source = source_for_expression(&expression);
+                self.execute_source(&source, REPL_NAME, false);
+            }
+            Command::Type(expression) => type_expression(&self.vm, &expression),
+            Command::Repeat { count, source } => {
+                let mut succeeded = 0;
+                for _ in 0..count {
+                    if self.execute_source(&source, REPL_NAME, false) {
+                        succeeded += 1;
+                    }
+                }
+                if succeeded == 0 {
+                    println!("Source failed on all {count} attempts.");
+                } else {
+                    println!(
+                        "Ran source {succeeded} time{}.",
+                        if succeeded == 1 { "" } else { "s" }
+                    );
+                }
+            }
             Command::Invalid(message) => println!("{message}"),
         }
     }
@@ -201,9 +274,35 @@ fn with_argument(
     }
 }
 
+/// Parse `:repeat <count> <source>`; the source is a single statement.
+fn repeat_command(argument: &str) -> Command {
+    let (count_text, source) = split_command(argument);
+    if count_text.is_empty() || source.is_empty() {
+        return Command::Invalid("':repeat' needs a count and source".to_string());
+    }
+    match count_text.parse::<usize>() {
+        Ok(0) => Command::Invalid("':repeat' count must be at least 1".to_string()),
+        Ok(count) if count > MAX_REPEAT => Command::Invalid(format!(
+            "':repeat' count must not exceed {MAX_REPEAT}"
+        )),
+        Ok(count) => Command::Repeat {
+            count,
+            source: source.to_string(),
+        },
+        Err(_) => Command::Invalid(format!(
+            "':repeat' count must be a whole number, got '{count_text}'"
+        )),
+    }
+}
+
 /// Turn one input line into an action. `continuing` is true while a multiline
 /// block is being collected; in that case the line is always source.
 fn classify_input(line: &str, continuing: bool) -> Input {
+    // `:reset` must work even while a multiline block is open, otherwise the
+    // command text itself would be recorded as source and break `:save`.
+    if continuing && line.trim().eq_ignore_ascii_case(":reset") {
+        return Input::Command(Command::Reset);
+    }
     if continuing {
         return Input::Source(line.to_string());
     }
@@ -221,6 +320,13 @@ fn classify_input(line: &str, continuing: bool) -> Input {
             "history" => no_argument(name, argument, Command::History),
             "quit" | "exit" => no_argument(name, argument, Command::Quit),
             "about" => no_argument(name, argument, Command::About),
+            "echo" => with_argument(name, argument, "some text", false, Command::Echo),
+            "source" => no_argument(name, argument, Command::Source),
+            "reset" => no_argument(name, argument, Command::Reset),
+            "again" => no_argument(name, argument, Command::Again),
+            "eval" => with_argument(name, argument, "an expression", false, Command::Eval),
+            "type" => with_argument(name, argument, "an expression", false, Command::Type),
+            "repeat" => repeat_command(argument),
             "load" => with_argument(name, argument, "a file name", true, Command::Load),
             "save" => with_argument(name, argument, "a file name", true, Command::Save),
             // Expressions keep their quotes: `:time "hi"` must pass a string
@@ -266,6 +372,7 @@ fn banner_lines() -> Vec<String> {
         "An English-inspired, beginner-friendly programming language.".to_string(),
         "Type ':help' for commands, ':quit' to exit.".to_string(),
         "End a block with 'end'; the prompt becomes '...>' while it is open.".to_string(),
+        "Use ':source' to review input, ':again' to re-run it, ':reset' to start over.".to_string(),
         String::new(),
     ]
 }
@@ -282,6 +389,13 @@ fn help_lines() -> Vec<String> {
         "  :save <file>     Write entered session source to a .enm file".to_string(),
         "  :time <expr>     Run and time a single expression".to_string(),
         "  :about           Show version and language information".to_string(),
+        "  :echo <text>     Print a line of text".to_string(),
+        "  :source          Show numbered source entered in this session".to_string(),
+        "  :again           Re-run the most recent source snippet".to_string(),
+        "  :eval <expr>     Evaluate an expression and show its value".to_string(),
+        "  :type <expr>     Show an expression's value and type".to_string(),
+        "  :repeat <n> <src> Run one source statement n times".to_string(),
+        "  :reset           Clear globals, history, source and prompt state".to_string(),
     ]
 }
 
@@ -325,6 +439,17 @@ fn history_lines(history: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn source_lines(source: &str) -> Vec<String> {
+    if source.trim().is_empty() {
+        return vec!["Nothing entered yet.".to_string()];
+    }
+    let mut lines = vec!["Session source:".to_string()];
+    for (index, line) in source.lines().enumerate() {
+        lines.push(format!("{:>4}  {line}", index + 1));
+    }
+    lines
+}
+
 fn print_lines(lines: &[String]) {
     for line in lines {
         println!("{line}");
@@ -344,9 +469,20 @@ fn is_source_file(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("enm"))
 }
 
+/// Wrap an expression in `say` so its value is visible as usual.
+fn source_for_expression(expression: &str) -> String {
+    format!("say({})\n", expression.trim())
+}
+
 /// Wrap a timed expression in `say` so its value is visible as usual.
 fn source_for_time(expression: &str) -> String {
-    format!("say({})\n", expression.trim())
+    source_for_expression(expression)
+}
+
+/// Store a value in a scratch scope so `:type` can inspect it without
+/// declaring a variable in the session VM.
+fn source_for_type(expression: &str) -> String {
+    format!("{TYPE_PROBE} = {}\n", expression.trim())
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -400,6 +536,22 @@ fn time_expression(vm: &mut Vm, expression: &str) {
     let started = Instant::now();
     run_snippet(vm, &source, REPL_NAME);
     println!("Time: {}", format_duration(started.elapsed()));
+}
+
+fn type_expression(vm: &Vm, expression: &str) {
+    if expression.trim().is_empty() {
+        println!("Error: ':type' needs an expression");
+        return;
+    }
+    let source = source_for_type(expression);
+    let mut scratch = Vm::new();
+    scratch.globals = vm.globals.snapshot(&mut Snapshot::new());
+    if run_snippet(&mut scratch, &source, REPL_NAME) {
+        match scratch.globals.get(TYPE_PROBE) {
+            Some(value) => println!("{} ({})", value.debug_display(), value.type_name()),
+            None => println!("Error: ':type' could not read the expression's value"),
+        }
+    }
 }
 
 /// Compile and run a snippet in the REPL's VM. Returns whether it succeeded.
@@ -469,6 +621,16 @@ mod tests {
         assert_eq!(command(":load main.enm"), Command::Load("main.enm".to_string()));
         assert_eq!(command(":save out.enm"), Command::Save("out.enm".to_string()));
         assert_eq!(command(":time 2 + 2"), Command::Time("2 + 2".to_string()));
+        assert_eq!(command(":echo hello there"), Command::Echo("hello there".to_string()));
+        assert_eq!(command(":source"), Command::Source);
+        assert_eq!(command(":reset"), Command::Reset);
+        assert_eq!(command(":again"), Command::Again);
+        assert_eq!(command(":eval 2 + 2"), Command::Eval("2 + 2".to_string()));
+        assert_eq!(command(":type \"hi\""), Command::Type("\"hi\"".to_string()));
+        assert_eq!(
+            command(":repeat 3 say(1)"),
+            Command::Repeat { count: 3, source: "say(1)".to_string() }
+        );
     }
 
     #[test]
@@ -479,6 +641,15 @@ mod tests {
         assert_eq!(command(":Load   \"my program.enm\"  "), Command::Load("my program.enm".to_string()));
         assert_eq!(command(":time   'x * 2'"), Command::Time("'x * 2'".to_string()));
         assert_eq!(command(":time \"hello\""), Command::Time("\"hello\"".to_string()));
+        assert_eq!(command(":ECHO   hello  "), Command::Echo("hello".to_string()));
+        assert_eq!(
+            command(":RePeAt 2 x = x + 1"),
+            Command::Repeat {
+                count: 2,
+                source: "x = x + 1".to_string()
+            }
+        );
+        assert_eq!(command(":eval \"a + b\""), Command::Eval("\"a + b\"".to_string()));
     }
 
     #[test]
@@ -488,6 +659,17 @@ mod tests {
         assert!(matches!(command(":save"), Command::Invalid(message) if message.contains("needs a file name")));
         assert!(matches!(command(":time"), Command::Invalid(message) if message.contains("needs an expression")));
         assert!(matches!(command(":vars extra"), Command::Invalid(message) if message.contains("takes no arguments")));
+        assert!(matches!(command(":echo"), Command::Invalid(message) if message.contains("needs some text")));
+        assert!(matches!(command(":eval"), Command::Invalid(message) if message.contains("needs an expression")));
+        assert!(matches!(command(":type"), Command::Invalid(message) if message.contains("needs an expression")));
+        assert!(matches!(command(":source x"), Command::Invalid(message) if message.contains("takes no arguments")));
+        assert!(matches!(command(":reset x"), Command::Invalid(message) if message.contains("takes no arguments")));
+        assert!(matches!(command(":again x"), Command::Invalid(message) if message.contains("takes no arguments")));
+        assert!(matches!(command(":repeat"), Command::Invalid(message) if message.contains("needs a count and source")));
+        assert!(matches!(command(":repeat 3"), Command::Invalid(message) if message.contains("needs a count and source")));
+        assert!(matches!(command(":repeat lots say(1)"), Command::Invalid(message) if message.contains("whole number")));
+        assert!(matches!(command(":repeat 0 say(1)"), Command::Invalid(message) if message.contains("at least 1")));
+        assert!(matches!(command(":repeat 1001 say(1)"), Command::Invalid(message) if message.contains("must not exceed")));
     }
 
     #[test]
@@ -495,6 +677,25 @@ mod tests {
         assert_eq!(classify_input("x = 1", false), Input::Source("x = 1".to_string()));
         assert_eq!(classify_input("   ", false), Input::Blank);
         assert_eq!(classify_input("", false), Input::Blank);
+    }
+
+    #[test]
+    fn reset_is_recognized_while_a_block_is_open() {
+        assert_eq!(classify_input(":reset", true), Input::Command(Command::Reset));
+        assert_eq!(classify_input("  :RESET  ", true), Input::Command(Command::Reset));
+        assert_eq!(classify_input(":reset now", true), Input::Source(":reset now".to_string()));
+        assert_eq!(classify_input("say(1)", true), Input::Source("say(1)".to_string()));
+    }
+
+    #[test]
+    fn type_expression_cannot_mutate_session_globals() {
+        let mut vm = Vm::new();
+        assert!(run_snippet(&mut vm, "a = [1]\n", REPL_NAME));
+        type_expression(&vm, "a.push(2)");
+        let Some(Value::Array(items)) = vm.globals.get("a") else {
+            panic!("session array disappeared");
+        };
+        assert_eq!(items.borrow().len(), 1, ":type must not mutate session state");
     }
 
     #[test]
@@ -526,6 +727,8 @@ mod tests {
     fn timed_expression_is_wrapped_in_say() {
         assert_eq!(source_for_time(" 2 + 2 "), "say(2 + 2)\n");
         assert_eq!(source_for_time("\"hi\""), "say(\"hi\")\n");
+        assert_eq!(source_for_expression(" x + 1 "), "say(x + 1)\n");
+        assert_eq!(source_for_type(" x + 1 "), "__repl_type_probe = x + 1\n");
         assert_eq!(format_duration(Duration::from_micros(1500)), "1.500 ms");
         assert_eq!(format_duration(Duration::from_secs(1)), "1000.000 ms");
     }
@@ -570,7 +773,7 @@ mod tests {
         let help = help_lines().join("\n");
         for name in [
             ":help", ":vars", ":clear", ":history", ":quit", ":exit", ":load", ":save", ":time",
-            ":about",
+            ":about", ":echo", ":source", ":again", ":eval", ":type", ":repeat", ":reset",
         ] {
             assert!(help.contains(name), "missing {name} from help");
         }
@@ -651,6 +854,7 @@ mod tests {
         repl.run_command(Command::Invalid("oops".to_string()));
         assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 7.0));
         assert_eq!(repl.session_source, "x = 7\n");
+        assert_eq!(repl.last_source, "say(x + 1)\n");
     }
 
     #[test]
@@ -672,5 +876,97 @@ mod tests {
         assert!(!run_snippet(&mut vm, ":not englishmen\n", REPL_NAME));
         assert!(run_snippet(&mut vm, "x = 1\n", REPL_NAME));
         assert!(matches!(vm.globals.get("x"), Some(Value::Number(n)) if n == 1.0));
+    }
+
+    #[test]
+    fn source_listing_is_numbered_and_reports_empty_state() {
+        assert_eq!(source_lines("  \n"), vec!["Nothing entered yet.".to_string()]);
+        let lines = source_lines("x = 1\nsay(x)\n");
+        assert_eq!(lines.first().map(String::as_str), Some("Session source:"));
+        assert!(lines[1].ends_with("1  x = 1"));
+        assert!(lines[2].ends_with("2  say(x)"));
+    }
+
+    #[test]
+    fn again_reruns_last_source_without_adding_it_to_saved_source() {
+        let mut repl = Repl::new();
+        repl.handle_line("x = 1\n");
+        repl.handle_line("x = x + 1\n");
+        assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 2.0));
+        assert_eq!(repl.session_source, "x = 1\nx = x + 1\n");
+
+        repl.run_command(Command::Again);
+        assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 3.0));
+        assert_eq!(repl.session_source, "x = 1\nx = x + 1\n");
+        assert_eq!(repl.last_source, "x = x + 1\n");
+
+        // `:again` in a fresh session is harmless.
+        Repl::new().run_command(Command::Again);
+    }
+
+    #[test]
+    fn eval_runs_an_expression_without_recording_it_as_session_source() {
+        let mut repl = Repl::new();
+        repl.handle_line("x = 4\n");
+        repl.run_command(Command::Eval("x * 2".to_string()));
+        assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 4.0));
+        assert_eq!(repl.session_source, "x = 4\n");
+        assert_eq!(repl.last_source, "say(x * 2)\n");
+    }
+
+    #[test]
+    fn type_inspects_a_value_in_a_scratch_scope() {
+        let mut repl = Repl::new();
+        repl.handle_line("x = 1\n");
+        repl.run_command(Command::Type("x + 1".to_string()));
+        assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 1.0));
+        assert!(
+            !repl.vm.globals.has(TYPE_PROBE),
+            "the :type probe must not leak into session globals"
+        );
+
+        let vm = Vm::new();
+        type_expression(&vm, "undefined_name");
+        assert!(!vm.globals.has(TYPE_PROBE));
+    }
+
+    #[test]
+    fn repeat_runs_source_the_requested_number_of_times() {
+        let mut repl = Repl::new();
+        repl.handle_line("x = 0\n");
+        repl.run_command(Command::Repeat {
+            count: 3,
+            source: "x = x + 1".to_string(),
+        });
+        assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 3.0));
+        assert_eq!(repl.session_source, "x = 0\n");
+        assert_eq!(repl.last_source, "x = x + 1");
+    }
+
+    #[test]
+    fn reset_clears_all_session_state_and_stays_usable() {
+        let mut repl = Repl::new();
+        repl.handle_line("x = 1\n");
+        repl.handle_line(":vars\n");
+        repl.run_command(Command::Reset);
+        assert!(repl.vm.globals.get("x").is_none());
+        assert!(repl.history.is_empty());
+        assert!(repl.session_source.is_empty());
+        assert!(repl.last_source.is_empty());
+        assert!(repl.buffer.is_empty());
+        assert!(!repl.quit);
+
+        repl.handle_line("y = 2\n");
+        assert!(matches!(repl.vm.globals.get("y"), Some(Value::Number(n)) if n == 2.0));
+        assert_eq!(repl.history.len(), 1);
+    }
+
+    #[test]
+    fn echo_does_not_change_session_state() {
+        let mut repl = Repl::new();
+        repl.handle_line("x = 1\n");
+        repl.run_command(Command::Echo("hello".to_string()));
+        assert_eq!(repl.session_source, "x = 1\n");
+        assert!(matches!(repl.vm.globals.get("x"), Some(Value::Number(n)) if n == 1.0));
     }
 }
