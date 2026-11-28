@@ -86,7 +86,7 @@ pub fn module() -> Value {
 /// Serialize a runtime value as compact JSON text.
 const MAX_JSON_DEPTH: usize = 100;
 
-fn encode(value: &Value) -> Result<String, String> {
+pub fn encode(value: &Value) -> Result<String, String> {
     let mut out = String::new();
     write_json(value, &mut out, 0)?;
     Ok(out)
@@ -213,7 +213,7 @@ fn write_indent(out: &mut String, level: usize) {
 }
 
 /// Parse JSON text into a runtime value.
-fn decode(text: &str) -> Result<Value, String> {
+pub fn decode(text: &str) -> Result<Value, String> {
     let mut parser = Parser {
         chars: text.chars().collect(),
         pos: 0,

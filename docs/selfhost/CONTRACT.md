@@ -245,8 +245,9 @@ stable across runs.
 
 Write `function emit(ast)` in Englishmen that converts the AST object shape
 above into compact JSON text byte-for-byte compatible with
-`json.encode(crate::ast_json::to_json(statements))`. It must preserve field
-order exactly as the schema lists it, escape strings the same way as the
+`json.encode(crate::ast_json::to_json(statements))`. Because Englishmen objects
+are `BTreeMap`-backed, that means **alphabetical object keys** at every level;
+the schema lists fields in reading order only. It must escape strings the same way as the
 `json` module (`\"`, `\\`, `\n`, `\r`, `\t`, control chars as `\u00XX`), and
 emit numbers with `format_number` rules (integers without `.0`).
 
