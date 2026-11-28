@@ -1,0 +1,2004 @@
+$-!
+    selfhost/vm_runtime.enm
+
+    A self-hosted Englishmen VM runtime. It executes the EMB IR object shape
+    described in docs/selfhost/EMB_AND_MANIFEST.md and collects `Say` output in
+    an array instead of printing it, so a caller can compare the result with the
+    native VM. Englishmen has no local .enm imports, so all helpers are global
+    and prefixed with `rt` to make this file safe to inline into full.enm.
+
+    CLI:  em run selfhost/vm_runtime.enm <ir.json>
+          prints jsonEncode(outputArray)
+    Test: EM_SELFTEST=1 em run selfhost/vm_runtime.enm   prints ok
+!-$
+import fs
+import os
+$- One VM at a time; every helper reaches the mutable state through rtVm. -$
+rtVm = null
+function rtError(message)
+    assert(false, "ENM VM: " + message)
+end
+function rtArg(args, index, fallback)
+    if index >= 0 and index < len(args)
+        return args[index]
+    end
+    return fallback
+end
+function rtTypeName(value)
+    if isObject(value)
+        kind = value.get("rtKind", "")
+        if kind == "closure" or kind == "native"
+            return "function"
+        end
+    end
+    return type(value)
+end
+function rtDebugDisplay(value)
+    if isString(value)
+        return "\"" + value + "\""
+    end
+    return rtDisplay(value)
+end
+function rtDisplay(value)
+    if isNull(value)
+        return "null"
+    end
+    if isBool(value)
+        if value
+            return "true"
+        end
+        return "false"
+    end
+    if isNumber(value)
+        return toString(value)
+    end
+    if isString(value)
+        return value
+    end
+    if isObject(value)
+        kind = value.get("rtKind", "")
+        if kind == "closure"
+            return "<function " + value.get("rtProto", {}).get("name", "?") + ">"
+        end
+        if kind == "native"
+            return "<native function " + value.get("rtName", "?") + ">"
+        end
+        parts = []
+        for key in keys(value)
+            parts.add(key + ": " + rtDebugDisplay(value.get(key, null)))
+        end
+        return "\{" + join(parts, ", ") + "\}"
+    end
+    if isArray(value)
+        parts = []
+        for item in value
+            parts.add(rtDebugDisplay(item))
+        end
+        return "[" + join(parts, ", ") + "]"
+    end
+    return "<function ?>"
+end
+function rtTruthy(value)
+    if isBool(value)
+        return value
+    end
+    if isNull(value)
+        return false
+    end
+    if isNumber(value)
+        return value != 0
+    end
+    if isString(value)
+        return value != ""
+    end
+    if isArray(value)
+        return len(value) > 0
+    end
+    return true
+end
+function rtEquals(left, right)
+    return left == right
+end
+function rtExpectNumber(value, context)
+    if not isNumber(value)
+        rtError("Type mismatch: expected a number " + context + ", found " + rtTypeName(value))
+    end
+    return value
+end
+function rtExpectString(value, context)
+    if not isString(value)
+        rtError("Type mismatch: expected a string " + context + ", found " + rtTypeName(value))
+    end
+    return value
+end
+function rtTrunc(value)
+    n = rtExpectNumber(value, "as a whole number")
+    if n >= 0
+        return floor(n)
+    end
+    return ceil(n)
+end
+function rtClampIndex(length, raw)
+    n = rtExpectNumber(raw, "as an index")
+    if isNaN(n)
+        if n < 0
+            return 0
+        end
+        return length
+    end
+    if n < 0
+        index = length + n
+        if index < 0
+            return 0
+        end
+        return index
+    end
+    if n > length
+        return length
+    end
+    return n
+end
+function rtExactIndex(length, raw)
+    n = rtExpectNumber(raw, "as an index")
+    if isNaN(n) or n % 1 != 0
+        return -1
+    end
+    if n < 0
+        index = length + n
+        if index < 0
+            return -1
+        end
+        return index
+    end
+    if n >= length
+        return -1
+    end
+    return n
+end
+function rtSliceRange(length, start, finish)
+    from = rtClampIndex(length, start)
+    to = rtClampIndex(length, finish)
+    if to < from
+        return [from, from]
+    end
+    return [from, to]
+end
+function rtArrayCopy(array)
+    out = []
+    for item in array
+        out.add(item)
+    end
+    return out
+end
+function rtArrayReplace(array, items)
+    while len(array) > 0
+    array.pop()
+end
+for item in items
+    array.add(item)
+end
+return array
+end
+function rtArrayInsert(array, index, value)
+    out = []
+    at = rtClampIndex(len(array), index)
+    i = 0
+    while i < at
+    out.add(array[i])
+    i += 1
+end
+out.add(value)
+while i < len(array)
+out.add(array[i])
+i += 1
+end
+return rtArrayReplace(array, out)
+end
+function rtArrayRemoveAt(array, index)
+    at = rtTrunc(index)
+    if at < 0 or at >= len(array)
+        return false
+    end
+    out = []
+    i = 0
+    while i < len(array)
+    if i != at
+        out.add(array[i])
+    end
+    i += 1
+end
+rtArrayReplace(array, out)
+return true
+end
+function rtArraySlice(array, from, to)
+    out = []
+    i = from
+    while i < to and i < len(array)
+    out.add(array[i])
+    i += 1
+end
+return out
+end
+function rtCompareValues(left, right, numeric)
+    if numeric and isNumber(left) and isNumber(right)
+        if left < right
+            return -1
+        end
+        if left > right
+            return 1
+        end
+        return 0
+    end
+    leftText = rtDisplay(left)
+    rightText = rtDisplay(right)
+    if leftText < rightText
+        return -1
+    end
+    if leftText > rightText
+        return 1
+    end
+    return 0
+end
+function rtArraySort(array)
+    numeric = true
+    for item in array
+        if not isNumber(item)
+            numeric = false
+        end
+    end
+    items = rtArrayCopy(array)
+    i = 1
+    while i < len(items)
+    key = items[i]
+    j = i - 1
+    while j >= 0 and rtCompareValues(items[j], key, numeric) > 0
+    items[j + 1] = items[j]
+    j -= 1
+end
+items[j + 1] = key
+i += 1
+end
+return rtArrayReplace(array, items)
+end
+function rtObjectKeys(object)
+    if not isObject(object)
+        rtError("expected an object, found " + rtTypeName(object))
+    end
+    return keys(object)
+end
+function rtObjectValues(object)
+    out = []
+    for key in rtObjectKeys(object)
+        out.add(object.get(key, null))
+    end
+    return out
+end
+function rtObjectHas(object, key)
+    found = keys(object).indexOf(key)
+    return found >= 0
+end
+function rtObjectGet(object, key, fallback)
+    if rtObjectHas(object, key)
+        return object.get(key, fallback)
+    end
+    return fallback
+end
+function rtObjectSet(object, key, value)
+    object.set(key, value)
+    return null
+end
+function rtObjectDelete(object, key)
+    return object.delete(key)
+end
+function rtLen(value)
+    if isString(value)
+        return len(value)
+    end
+    if isArray(value)
+        return len(value)
+    end
+    if isObject(value)
+        return len(rtObjectKeys(value))
+    end
+    rtError("len expects a string, array, or object, found " + rtTypeName(value))
+end
+$- Collect Say lines instead of writing them; this is the C1 output convention. -$
+function rtSay(args)
+    parts = []
+    for value in args
+        parts.add(rtDisplay(value))
+    end
+    line = join(parts, " ")
+    if rtVm != null
+        rtVm.output.add(line)
+    end
+    return null
+end
+$- Environments are objects with a parent chain, matching Environment. -$
+function rtEnvNew(parent)
+    return {rtVars: {}, rtParent: parent}
+end
+function rtEnvHas(env, name)
+    cursor = env
+    while cursor != null
+    if rtObjectHas(cursor.rtVars, name)
+        return true
+    end
+    cursor = cursor.rtParent
+end
+return false
+end
+function rtEnvGet(env, name)
+    cursor = env
+    while cursor != null
+    if rtObjectHas(cursor.rtVars, name)
+        return cursor.rtVars.get(name, null)
+    end
+    cursor = cursor.rtParent
+end
+rtError("Unknown variable '" + name + "'")
+end
+function rtEnvDefine(env, name, value)
+    env.rtVars.set(name, value)
+    return null
+end
+function rtEnvAssign(env, name, value)
+    cursor = env
+    while cursor != null
+    if rtObjectHas(cursor.rtVars, name)
+        cursor.rtVars.set(name, value)
+        return null
+    end
+    cursor = cursor.rtParent
+end
+return rtEnvDefine(env, name, value)
+end
+$- Native builtins are represented as tagged objects so IR Call can find them. -$
+function rtNative(name)
+    return {rtKind: "native", rtName: name}
+end
+function rtGlobalEnv()
+    env = rtEnvNew(null)
+    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format"]
+    for name in names
+        rtEnvDefine(env, name, rtNative(name))
+    end
+    return env
+end
+$- The IR view of a chunk: constants, functions and code are ordinary values. -$
+function rtChunkCode(chunk)
+    code = chunk.get("code", null)
+    if isArray(code)
+        return code
+    end
+    return []
+end
+function rtChunkConstants(chunk)
+    constants = chunk.get("constants", null)
+    if isArray(constants)
+        return constants
+    end
+    return []
+end
+function rtChunkFunctions(chunk)
+    functions = chunk.get("functions", null)
+    if isArray(functions)
+        return functions
+    end
+    return []
+end
+function rtConstValue(chunk, index)
+    constants = rtChunkConstants(chunk)
+    if index < 0 or index >= len(constants)
+        rtError("constant index " + toString(index) + " is out of range")
+    end
+    constant = constants[index]
+    tag = constant.get("tag", "")
+    if tag == "number"
+        return rtExpectNumber(constant.get("value", 0), "as a constant")
+    end
+    if tag == "string"
+        return rtExpectString(constant.get("value", ""), "as a constant")
+    end
+    if tag == "bool"
+        return constant.get("value", false) == true
+    end
+    if tag == "null"
+        return null
+    end
+    rtError("unknown constant tag '" + tag + "'")
+end
+function rtName(chunk, index)
+    constants = rtChunkConstants(chunk)
+    if index < 0 or index >= len(constants)
+        rtError("name index " + toString(index) + " is out of range")
+    end
+    value = constants[index].get("value", null)
+    return rtExpectString(value, "as a name")
+end
+function rtStackPush(value)
+    rtVm.stack.add(value)
+    return null
+end
+function rtStackPop()
+    if len(rtVm.stack) == 0
+        rtError("Corrupt bytecode: the value stack ran empty")
+    end
+    return rtVm.stack.pop()
+end
+function rtStackPeek()
+    if len(rtVm.stack) == 0
+        rtError("Corrupt bytecode: the value stack ran empty")
+    end
+    return rtVm.stack[len(rtVm.stack) - 1]
+end
+function rtStackDrain(count)
+    if count < 0 or count > len(rtVm.stack)
+        rtError("Corrupt bytecode: the value stack ran empty")
+    end
+    reversed = []
+    i = 0
+    while i < count
+    reversed.add(rtStackPop())
+    i += 1
+end
+out = []
+i = len(reversed) - 1
+while i >= 0
+out.add(reversed[i])
+i -= 1
+end
+return out
+end
+$- Frames hold a unit, an instruction pointer, an environment and a stack base. -$
+function rtFrameNew(unit, ip, env, stackBase)
+    return {rtUnit: unit, rtIp: ip, rtEnv: env, rtBase: stackBase}
+end
+function rtPopFrame(result)
+    frame = rtVm.frames[len(rtVm.frames) - 1]
+    while len(rtVm.stack) > frame.rtBase
+    rtStackPop()
+end
+rtVm.frames.pop()
+if len(rtVm.frames) == 0
+    return true
+end
+rtStackPush(result)
+return false
+end
+function rtIsCallable(value)
+    if isObject(value)
+        kind = value.get("rtKind", "")
+        return kind == "closure" or kind == "native"
+    end
+    return isFunction(value)
+end
+$- rtInvoke returns a tagged result; a frame push means no value is pushed here. -$
+function rtInvoke(callee, args, hint)
+    if not rtIsCallable(callee)
+        rtError("'" + hint + "' is not callable (found " + rtTypeName(callee) + ")")
+    end
+    if isFunction(callee)
+        rtError("host functions cannot be called by the self-hosted VM")
+    end
+    kind = callee.get("rtKind", "")
+    if kind == "native"
+        value = rtNativeCall(callee.get("rtName", ""), args)
+        return {rtPushed: false, rtValue: value}
+    end
+    proto = callee.get("rtProto", {})
+    params = proto.get("params", [])
+    if len(args) != len(params)
+        rtError("Function '" + proto.get("name", "?") + "' expects " + len(params) + " argument(s) but got " + len(args))
+    end
+    env = rtEnvNew(callee.get("rtEnv", null))
+    i = 0
+    while i < len(params)
+    rtEnvDefine(env, params[i], args[i])
+    i += 1
+end
+unit = {rtKind: "function", rtChunk: proto.get("chunk", {})}
+rtVm.frames.add(rtFrameNew(unit, 0, env, len(rtVm.stack)))
+return {rtPushed: true, rtValue: null}
+end
+$- ---------------------------------------------------------------------------
+   Numeric, string, array and object methods. Every global helper is `rt...`.
+   --------------------------------------------------------------------------- -$
+function rtNumberMethod(value, method, args)
+    n = rtExpectNumber(value, "as a number method receiver")
+    if method == "isEven"
+        return n % 1 == 0 and n % 2 == 0
+    end
+    if method == "isOdd"
+        return n % 1 == 0 and n % 2 != 0
+    end
+    if method == "isInteger"
+        return n % 1 == 0
+    end
+    if method == "isFinite"
+        return n.isFinite()
+    end
+    if method == "toFixed"
+        digits = rtTrunc(rtArg(args, 0, 0))
+        if digits < 0 or digits > 10
+            rtError("toFixed() expects between 0 and 10 digits")
+        end
+        scale = 10 ** digits
+        rounded = round(n * scale)
+        negative = rounded < 0
+        rounded = abs(rounded)
+        whole = floor(rounded / scale)
+        fraction = rounded - whole * scale
+        text = toString(whole)
+        if digits > 0
+            fractionText = toString(fraction)
+            while len(fractionText) < digits
+            fractionText = "0" + fractionText
+        end
+        text += "." + fractionText
+    end
+    if negative
+        return "-" + text
+    end
+    return text
+end
+if method == "clamp"
+    lower = rtExpectNumber(rtArg(args, 0, null), "as a minimum")
+    upper = rtExpectNumber(rtArg(args, 1, null), "as a maximum")
+    if lower > upper
+        rtError("clamp() expects minimum <= maximum")
+    end
+    if n < lower
+        return lower
+    end
+    if n > upper
+        return upper
+    end
+    return n
+end
+if method == "toHex" or method == "toBinary" or method == "toOctal"
+    if isNaN(n) or n >= 9223372036854776000 or n <= -9223372036854776000
+        rtError("toHex/toBinary/toOctal need a finite integer within range")
+    end
+    negative = n < 0
+    magnitude = abs(rtTrunc(n))
+    base = 16
+    digits = "0123456789abcdef"
+    if method == "toBinary"
+        base = 2
+    else if method == "toOctal"
+        base = 8
+    end
+    text = ""
+    if magnitude == 0
+        text = "0"
+    else
+        while magnitude > 0
+        digit = magnitude % base
+        text = digits.charAt(digit) + text
+        magnitude = floor(magnitude / base)
+    end
+end
+if negative and text != "0"
+    return "-" + text
+end
+return text
+end
+if method == "sign"
+    if n > 0
+        return 1
+    end
+    if n < 0
+        return -1
+    end
+    return 0
+end
+if method == "abs"
+    return abs(n)
+end
+if method == "floor"
+    return floor(n)
+end
+if method == "ceil"
+    return ceil(n)
+end
+if method == "round"
+    return round(n)
+end
+if method == "sqrt"
+    if n < 0
+        rtError("sqrt() expects a non-negative number")
+    end
+    return sqrt(n)
+end
+if method == "toDegrees"
+    return n * 180 / 3.141592653589793
+end
+if method == "reciprocal"
+    if n == 0
+        rtError("reciprocal() is undefined for zero")
+    end
+    return 1 / n
+end
+rtError("Number has no method '" + method + "'")
+end
+function rtStringChars(text)
+    out = []
+    for ch in text.chars()
+        out.add(ch)
+    end
+    return out
+end
+function rtStringSlice(text, start, finish)
+    chars = rtStringChars(text)
+    range = rtSliceRange(len(chars), start, finish)
+    out = ""
+    i = range[0]
+    while i < range[1]
+    out += chars[i]
+    i += 1
+end
+return out
+end
+function rtStringIndexOf(text, needle)
+    return indexOf(text, needle)
+end
+function rtStringLastIndexOf(text, needle)
+    return text.lastIndexOf(needle)
+end
+function rtStringRepeat(text, count)
+    n = rtExpectNumber(count, "as a repeat count")
+    if n < 0
+        return ""
+    end
+    if n % 1 != 0
+        rtError("repeat() expects a whole number of repetitions")
+    end
+    if n > 1000000
+        rtError("repeat() result would be too large")
+    end
+    out = ""
+    i = 0
+    while i < n
+    out += text
+    i += 1
+end
+return out
+end
+function rtStringPad(text, width, padding, atStart)
+    w = rtTrunc(width)
+    if w < 0 or w > 100000
+        rtError("padLeft/padRight expects a non-negative whole width")
+    end
+    unit = rtExpectString(padding, "as padding")
+    if unit == ""
+        unit = " "
+    end
+    missing = w - len(text)
+    if missing <= 0
+        return text
+    end
+    pad = ""
+    while len(pad) < missing
+    pad += unit
+end
+pad = slice(pad, 0, missing)
+if atStart
+    return pad + text
+end
+return text + pad
+end
+function rtStringNumeric(text)
+    if text == ""
+        return false
+    end
+    chars = rtStringChars(text)
+    i = 0
+    if chars[0] == "+" or chars[0] == "-"
+        i += 1
+    end
+    digits = 0
+    while i < len(chars) and chars[i] >= "0" and chars[i] <= "9"
+    digits += 1
+    i += 1
+end
+if i < len(chars) and chars[i] == "."
+    i += 1
+    while i < len(chars) and chars[i] >= "0" and chars[i] <= "9"
+    digits += 1
+    i += 1
+end
+end
+if digits == 0
+    return false
+end
+if i < len(chars) and (chars[i] == "e" or chars[i] == "E")
+    i += 1
+    if i < len(chars) and (chars[i] == "+" or chars[i] == "-")
+        i += 1
+    end
+    exponentDigits = 0
+    while i < len(chars) and chars[i] >= "0" and chars[i] <= "9"
+    exponentDigits += 1
+    i += 1
+end
+if exponentDigits == 0
+    return false
+end
+end
+return i == len(chars)
+end
+function rtStringReplace(text, old, replacement, all)
+    if old == ""
+        if all
+            out = replacement
+            for ch in text.chars()
+                out += ch + replacement
+            end
+            return out
+        end
+        return replacement + text
+    end
+    out = ""
+    rest = text
+    while true
+    at = rtStringIndexOf(rest, old)
+    if at < 0
+        out += rest
+        break
+    end
+    out += rtStringSlice(rest, 0, at)
+    out += replacement
+    rest = rtStringSlice(rest, at + len(old), len(rest))
+    if not all
+        out += rest
+        break
+    end
+end
+return out
+end
+function rtStringMethod(text, method, args)
+    if method == "length"
+        return len(text)
+    end
+    if method == "upper"
+        return upper(text)
+    end
+    if method == "lower"
+        return lower(text)
+    end
+    if method == "trim"
+        return trim(text)
+    end
+    if method == "split"
+        separator = rtExpectString(rtArg(args, 0, ""), "as a separator")
+        if separator == ""
+            return rtStringChars(text)
+        end
+        return text.split(separator)
+    end
+    if method == "contains"
+        return rtStringIndexOf(text, rtExpectString(rtArg(args, 0, ""), "to search for")) >= 0
+    end
+    if method == "startsWith"
+        return startsWith(text, rtExpectString(rtArg(args, 0, null), "as a prefix"))
+    end
+    if method == "endsWith"
+        return endsWith(text, rtExpectString(rtArg(args, 0, null), "as a suffix"))
+    end
+    if method == "replace"
+        return rtStringReplace(text, rtExpectString(rtArg(args, 0, null), "to replace"), rtExpectString(rtArg(args, 1, null), "as a replacement"), false)
+    end
+    if method == "replaceAll"
+        return rtStringReplace(text, rtExpectString(rtArg(args, 0, null), "to replace"), rtExpectString(rtArg(args, 1, null), "as a replacement"), true)
+    end
+    if method == "slice"
+        return rtStringSlice(text, rtArg(args, 0, 0), rtArg(args, 1, len(text)))
+    end
+    if method == "substring"
+        chars = rtStringChars(text)
+        from = rtClampIndex(len(chars), rtArg(args, 0, 0))
+        to = rtClampIndex(len(chars), rtArg(args, 1, len(chars)))
+        if to < from
+            swap = from
+            from = to
+            to = swap
+        end
+        out = ""
+        i = from
+        while i < to
+        out += chars[i]
+        i += 1
+    end
+    return out
+end
+if method == "indexOf"
+    return rtStringIndexOf(text, rtExpectString(rtArg(args, 0, null), "to search for"))
+end
+if method == "lastIndexOf"
+    return rtStringLastIndexOf(text, rtExpectString(rtArg(args, 0, null), "to search for"))
+end
+if method == "charAt"
+    chars = rtStringChars(text)
+    at = rtExactIndex(len(chars), rtArg(args, 0, null))
+    if at < 0
+        return ""
+    end
+    return chars[at]
+end
+if method == "toNumber"
+    trimmed = trim(text)
+    if not rtStringNumeric(trimmed)
+        return null
+    end
+    return toNumber(trimmed)
+end
+if method == "capitalize"
+    if text == ""
+        return ""
+    end
+    return upper(slice(text, 0, 1)) + slice(text, 1, len(text))
+end
+if method == "titleCase"
+    out = ""
+    start = true
+    for ch in text.chars()
+        if trim(ch) == ""
+            out += ch
+            start = true
+        else if start
+            out += upper(ch)
+            start = false
+        else
+            out += lower(ch)
+        end
+    end
+    return out
+end
+if method == "reverse"
+    chars = rtStringChars(text)
+    out = ""
+    i = len(chars) - 1
+    while i >= 0
+    out += chars[i]
+    i -= 1
+end
+return out
+end
+if method == "repeat"
+    return rtStringRepeat(text, rtArg(args, 0, null))
+end
+if method == "padLeft"
+    return rtStringPad(text, rtArg(args, 0, null), rtArg(args, 1, " "), true)
+end
+if method == "padRight"
+    return rtStringPad(text, rtArg(args, 0, null), rtArg(args, 1, " "), false)
+end
+if method == "isDigit"
+    if text == ""
+        return false
+    end
+    for ch in text.chars()
+        if not ch.isDigit()
+            return false
+        end
+    end
+    return true
+end
+if method == "isAlpha"
+    if text == ""
+        return false
+    end
+    for ch in text.chars()
+        if not ch.isAlpha()
+            return false
+        end
+    end
+    return true
+end
+if method == "lines"
+    out = text.split("\n")
+    if len(out) > 0 and out[len(out) - 1] == ""
+        out.pop()
+    end
+    result = []
+    for line in out
+        if len(line) > 0 and line[len(line) - 1] == ""
+            line = slice(line, 0, len(line) - 1)
+        end
+        result.add(line)
+    end
+    return result
+end
+if method == "chars"
+    return rtStringChars(text)
+end
+if method == "swapCase"
+    out = ""
+    for ch in text.chars()
+        high = upper(ch)
+        low = lower(ch)
+        if high == ch and low != ch
+            out += low
+        else if low == ch and high != ch
+            out += high
+        else
+            out += ch
+        end
+    end
+    return out
+end
+if method == "isBlank"
+    for ch in text.chars()
+        if trim(ch) != ""
+            return false
+        end
+    end
+    return true
+end
+if method == "truncate"
+    width = rtTrunc(rtArg(args, 0, null))
+    if width < 0 or width > 100000
+        rtError("truncate() expects a non-negative whole width")
+    end
+    suffix = rtExpectString(rtArg(args, 1, "..."), "as a suffix")
+    chars = rtStringChars(text)
+    if len(chars) <= width
+        return text
+    end
+    kept = width - len(suffix)
+    if kept < 0
+        kept = 0
+    end
+    out = ""
+    i = 0
+    while i < kept
+    out += chars[i]
+    i += 1
+end
+i = 0
+while i < len(suffix) and len(out) < width
+out += suffix[i]
+i += 1
+end
+return out
+end
+rtError("String has no method '" + method + "'")
+end
+function rtArrayFind(array, target, last)
+    found = -1
+    i = 0
+    while i < len(array)
+    if rtEquals(array[i], target)
+        found = i
+        if not last
+            return found
+        end
+    end
+    i += 1
+end
+return found
+end
+function rtArrayMethod(array, method, args)
+    if method == "add" or method == "push"
+        array.add(rtArg(args, 0, null))
+        return null
+    end
+    if method == "remove"
+        at = rtArrayFind(array, rtArg(args, 0, null), false)
+        if at >= 0
+            rtArrayRemoveAt(array, at)
+        end
+        return null
+    end
+    if method == "removeAt"
+        at = rtTrunc(rtArg(args, 0, -1))
+        return rtArrayRemoveAt(array, at)
+    end
+    if method == "length"
+        return len(array)
+    end
+    if method == "contains"
+        return rtArrayFind(array, rtArg(args, 0, null), false) >= 0
+    end
+    if method == "pop"
+        if len(array) == 0
+            return null
+        end
+        return array.pop()
+    end
+    if method == "shift"
+        if len(array) == 0
+            return null
+        end
+        firstValue = array[0]
+        rtArrayRemoveAt(array, 0)
+        return firstValue
+    end
+    if method == "unshift"
+        i = 0
+        while i < len(args)
+        rtArrayInsert(array, i, args[i])
+        i += 1
+    end
+    return len(array)
+end
+if method == "insert"
+    index = rtExpectNumber(rtArg(args, 0, null), "as an index")
+    value = rtArg(args, 1, null)
+    if isNull(value) and len(args) < 2
+        rtError("insert() needs a value to insert")
+    end
+    rtArrayInsert(array, index, value)
+    return null
+end
+if method == "clear"
+    return rtArrayReplace(array, [])
+end
+if method == "reverse"
+    out = []
+    i = len(array) - 1
+    while i >= 0
+    out.add(array[i])
+    i -= 1
+end
+return rtArrayReplace(array, out)
+end
+if method == "sort"
+    return rtArraySort(array)
+end
+if method == "slice"
+    range = rtSliceRange(len(array), rtArg(args, 0, 0), rtArg(args, 1, len(array)))
+    return rtArraySlice(array, range[0], range[1])
+end
+if method == "join"
+    separator = rtExpectString(rtArg(args, 0, ","), "as a separator")
+    parts = []
+    for item in array
+        parts.add(rtDisplay(item))
+    end
+    return join(parts, separator)
+end
+if method == "indexOf"
+    return rtArrayFind(array, rtArg(args, 0, null), false)
+end
+if method == "lastIndexOf"
+    return rtArrayFind(array, rtArg(args, 0, null), true)
+end
+if method == "count"
+    target = rtArg(args, 0, null)
+    total = 0
+    for item in array
+        if rtEquals(item, target)
+            total += 1
+        end
+    end
+    return total
+end
+if method == "first"
+    if len(array) == 0
+        return null
+    end
+    return array[0]
+end
+if method == "last"
+    if len(array) == 0
+        return null
+    end
+    return array[len(array) - 1]
+end
+if method == "concat"
+    out = rtArrayCopy(array)
+    for value in args
+        if isArray(value)
+            for item in value
+                out.add(item)
+            end
+        else
+            out.add(value)
+        end
+    end
+    return out
+end
+if method == "copy"
+    return rtArrayCopy(array)
+end
+if method == "isEmpty"
+    return len(array) == 0
+end
+if method == "swap"
+    left = rtExactIndex(len(array), rtArg(args, 0, null))
+    right = rtExactIndex(len(array), rtArg(args, 1, null))
+    if left < 0 or right < 0
+        return false
+    end
+    temporary = array[left]
+    array[left] = array[right]
+    array[right] = temporary
+    return true
+end
+if method == "unique"
+    out = []
+    for item in array
+        if rtArrayFind(out, item, false) < 0
+            out.add(item)
+        end
+    end
+    return rtArrayReplace(array, out)
+end
+if method == "flatten"
+    out = []
+    rtFlattenInto(array, out, [array])
+    return rtArrayReplace(array, out)
+end
+if method == "rotate"
+    amount = rtExpectNumber(rtArg(args, 0, null), "as a number of positions")
+    if amount % 1 != 0
+        rtError("rotate() expects a whole number of positions")
+    end
+    if len(array) == 0
+        return []
+    end
+    shift = amount % len(array)
+    if shift < 0
+        shift += len(array)
+    end
+    split = len(array) - shift
+    out = []
+    i = split
+    while i < len(array)
+    out.add(array[i])
+    i += 1
+end
+i = 0
+while i < split
+out.add(array[i])
+i += 1
+end
+return out
+end
+if method == "indexesOf"
+    target = rtArg(args, 0, null)
+    out = []
+    i = 0
+    while i < len(array)
+    if rtEquals(array[i], target)
+        out.add(i)
+    end
+    i += 1
+end
+return out
+end
+if method == "interleave"
+    other = rtArg(args, 0, null)
+    if not isArray(other)
+        rtError("interleave() expects an array to interleave")
+    end
+    out = []
+    i = 0
+    while i < len(array) or i < len(other)
+    if i < len(array)
+        out.add(array[i])
+    end
+    if i < len(other)
+        out.add(other[i])
+    end
+    i += 1
+end
+return out
+end
+rtError("Array has no method '" + method + "'")
+end
+function rtFlattenInto(values, out, seen)
+    for value in values
+        if isArray(value)
+            known = false
+            for previous in seen
+                if rtEquals(previous, value)
+                    known = true
+                end
+            end
+            if not known
+                seen.add(value)
+                rtFlattenInto(value, out, seen)
+                seen.pop()
+            end
+        else
+            out.add(value)
+        end
+    end
+    return null
+end
+function rtObjectMethod(object, method, args)
+    if method == "keys"
+        return rtObjectKeys(object)
+    end
+    if method == "values"
+        return rtObjectValues(object)
+    end
+    if method == "has"
+        return rtObjectHas(object, rtExpectString(rtArg(args, 0, null), "as a key"))
+    end
+    if method == "get"
+        key = rtExpectString(rtArg(args, 0, null), "as a key")
+        return rtObjectGet(object, key, rtArg(args, 1, null))
+    end
+    if method == "set"
+        key = rtExpectString(rtArg(args, 0, null), "as a key")
+        return rtObjectSet(object, key, rtArg(args, 1, null))
+    end
+    if method == "delete"
+        return rtObjectDelete(object, rtExpectString(rtArg(args, 0, null), "as a key"))
+    end
+    if method == "length"
+        return len(rtObjectKeys(object))
+    end
+    if method == "merge"
+        other = rtArg(args, 0, null)
+        if not isObject(other)
+            rtError("merge() expects an object to merge")
+        end
+        for key in rtObjectKeys(other)
+            rtObjectSet(object, key, other.get(key, null))
+        end
+        return object
+    end
+    if method == "copy"
+        out = {}
+        for key in rtObjectKeys(object)
+            rtObjectSet(out, key, object.get(key, null))
+        end
+        return out
+    end
+    if method == "isEmpty"
+        return len(rtObjectKeys(object)) == 0
+    end
+    if method == "pick"
+        out = {}
+        for key in args
+            name = rtExpectString(key, "as a key")
+            if rtObjectHas(object, name)
+                rtObjectSet(out, name, object.get(name, null))
+            end
+        end
+        return out
+    end
+    if method == "omit"
+        out = {}
+        for key in rtObjectKeys(object)
+            if keys(args).indexOf(key) < 0
+                rtObjectSet(out, key, object.get(key, null))
+            end
+        end
+        return out
+    end
+    if method == "entries"
+        out = []
+        for key in rtObjectKeys(object)
+            out.add([key, object.get(key, null)])
+        end
+        return out
+    end
+    rtError("Object has no method '" + method + "'")
+end
+function rtBoolMethod(value, method, args)
+    if method == "toggle"
+        return not value
+    end
+    if method == "toString"
+        if value
+            return "true"
+        end
+        return "false"
+    end
+    if method == "and"
+        return value and rtExpectBool(rtArg(args, 0, null), "an operand")
+    end
+    if method == "or"
+        return value or rtExpectBool(rtArg(args, 0, null), "an operand")
+    end
+    if method == "xor"
+        return value != rtExpectBool(rtArg(args, 0, null), "an operand")
+    end
+    if method == "implies"
+        other = rtExpectBool(rtArg(args, 0, null), "an operand")
+        return not value or other
+    end
+    if method == "nand"
+        other = rtExpectBool(rtArg(args, 0, null), "an operand")
+        return not (value and other)
+    end
+    rtError("Boolean has no method '" + method + "'")
+end
+function rtExpectBool(value, context)
+    if not isBool(value)
+        rtError("expected a boolean " + context + ", found " + rtTypeName(value))
+    end
+    return value
+end
+$- Object fields that hold functions win over builtin methods, as in the VM. -$
+function rtMethodCall(receiver, method, args)
+    if isObject(receiver) and rtObjectHas(receiver, method)
+        candidate = receiver.get(method, null)
+        if rtIsCallable(candidate)
+            return rtInvoke(candidate, args, method)
+        end
+    end
+    if isArray(receiver)
+        value = rtArrayMethod(receiver, method, args)
+    else if isObject(receiver)
+        value = rtObjectMethod(receiver, method, args)
+    else if isString(receiver)
+        value = rtStringMethod(receiver, method, args)
+    else if isNumber(receiver)
+        value = rtNumberMethod(receiver, method, args)
+    else if isBool(receiver)
+        value = rtBoolMethod(receiver, method, args)
+    else
+        rtError("Cannot call method '" + method + "' on a " + rtTypeName(receiver))
+    end
+    return {rtPushed: false, rtValue: value}
+end
+$- Delegate the remaining host builtins; these are language intrinsics, not
+   modules, and are documented as a remaining native dependency in VM.md. -$
+function rtNativeCall(name, args)
+    if name == "say" or name == "print"
+        return rtSay(args)
+    end
+    if name == "len"
+        return rtLen(rtArg(args, 0, null))
+    end
+    if name == "type"
+        return rtTypeName(rtArg(args, 0, null))
+    end
+    if name == "toString"
+        return rtDisplay(rtArg(args, 0, null))
+    end
+    if name == "toNumber"
+        return toNumber(rtArg(args, 0, null))
+    end
+    if name == "toBool"
+        return rtTruthy(rtArg(args, 0, null))
+    end
+    if name == "isNumber"
+        return isNumber(rtArg(args, 0, null))
+    end
+    if name == "isString"
+        return isString(rtArg(args, 0, null))
+    end
+    if name == "isArray"
+        return isArray(rtArg(args, 0, null))
+    end
+    if name == "isObject"
+        return isObject(rtArg(args, 0, null))
+    end
+    if name == "isBool"
+        return isBool(rtArg(args, 0, null))
+    end
+    if name == "isNull"
+        return isNull(rtArg(args, 0, null))
+    end
+    if name == "isFunction"
+        return isFunction(rtArg(args, 0, null)) or rtIsCallable(rtArg(args, 0, null))
+    end
+    if name == "isNaN"
+        return isNaN(rtArg(args, 0, null))
+    end
+    if name == "parseInt"
+        return parseInt(rtArg(args, 0, null), rtArg(args, 1, 10))
+    end
+    if name == "parseFloat"
+        return parseFloat(rtArg(args, 0, null))
+    end
+    if name == "range"
+        if len(args) == 1
+            return range(rtArg(args, 0, 0))
+        end
+        if len(args) == 2
+            return range(rtArg(args, 0, 0), rtArg(args, 1, 0))
+        end
+        return range(rtArg(args, 0, 0), rtArg(args, 1, 0), rtArg(args, 2, 1))
+    end
+    if name == "sum"
+        return sum(rtArg(args, 0, []))
+    end
+    if name == "average"
+        return average(rtArg(args, 0, []))
+    end
+    if name == "min"
+        return min(rtArg(args, 0, []))
+    end
+    if name == "max"
+        return max(rtArg(args, 0, []))
+    end
+    if name == "abs"
+        return abs(rtArg(args, 0, 0))
+    end
+    if name == "clamp"
+        return clamp(rtArg(args, 0, 0), rtArg(args, 1, 0), rtArg(args, 2, 0))
+    end
+    if name == "sorted"
+        return sorted(rtArg(args, 0, []))
+    end
+    if name == "reversed"
+        return reversed(rtArg(args, 0, []))
+    end
+    if name == "zip"
+        return zip(rtArg(args, 0, []), rtArg(args, 1, []))
+    end
+    if name == "take"
+        return take(rtArg(args, 0, []), rtArg(args, 1, 0))
+    end
+    if name == "drop"
+        return drop(rtArg(args, 0, []), rtArg(args, 1, 0))
+    end
+    if name == "keys"
+        return rtObjectKeys(rtArg(args, 0, null))
+    end
+    if name == "values"
+        return values(rtArg(args, 0, null))
+    end
+    if name == "entries"
+        return entries(rtArg(args, 0, null))
+    end
+    if name == "fromEntries"
+        return fromEntries(rtArg(args, 0, []))
+    end
+    if name == "first"
+        return first(rtArg(args, 0, []))
+    end
+    if name == "last"
+        return last(rtArg(args, 0, []))
+    end
+    if name == "indexOf"
+        return indexOf(rtArg(args, 0, ""), rtArg(args, 1, null))
+    end
+    if name == "contains"
+        return contains(rtArg(args, 0, ""), rtArg(args, 1, null))
+    end
+    if name == "slice"
+        if len(args) == 2
+            return slice(rtArg(args, 0, ""), rtArg(args, 1, 0))
+        end
+        return slice(rtArg(args, 0, ""), rtArg(args, 1, 0), rtArg(args, 2, 0))
+    end
+    if name == "pow"
+        return pow(rtArg(args, 0, 0), rtArg(args, 1, 0))
+    end
+    if name == "sqrt"
+        return sqrt(rtArg(args, 0, 0))
+    end
+    if name == "floor"
+        return floor(rtArg(args, 0, 0))
+    end
+    if name == "ceil"
+        return ceil(rtArg(args, 0, 0))
+    end
+    if name == "round"
+        return round(rtArg(args, 0, 0))
+    end
+    if name == "sign"
+        return sign(rtArg(args, 0, 0))
+    end
+    if name == "trim"
+        return trim(rtArg(args, 0, ""))
+    end
+    if name == "upper"
+        return upper(rtArg(args, 0, ""))
+    end
+    if name == "lower"
+        return lower(rtArg(args, 0, ""))
+    end
+    if name == "split"
+        return split(rtArg(args, 0, ""), rtArg(args, 1, ""))
+    end
+    if name == "join"
+        if len(args) == 1
+            return join(rtArg(args, 0, []), "")
+        end
+        return join(rtArg(args, 0, []), rtArg(args, 1, ""))
+    end
+    if name == "replace"
+        return replace(rtArg(args, 0, ""), rtArg(args, 1, ""), rtArg(args, 2, ""))
+    end
+    if name == "startsWith"
+        return startsWith(rtArg(args, 0, ""), rtArg(args, 1, ""))
+    end
+    if name == "endsWith"
+        return endsWith(rtArg(args, 0, ""), rtArg(args, 1, ""))
+    end
+    if name == "repeat"
+        return rtStringRepeat(rtArg(args, 0, ""), rtArg(args, 1, 0))
+    end
+    if name == "padStart" or name == "padEnd"
+        width = rtArg(args, 1, 0)
+        padding = rtArg(args, 2, " ")
+        return rtStringPad(rtArg(args, 0, ""), width, padding, name == "padStart")
+    end
+    if name == "charCode"
+        return charCode(rtArg(args, 0, ""))
+    end
+    if name == "fromCharCode"
+        return fromCharCode(rtArg(args, 0, 0))
+    end
+    if name == "random"
+        return random()
+    end
+    if name == "randomInt"
+        if len(args) == 0
+            return randomInt()
+        end
+        return randomInt(rtArg(args, 0, 0), rtArg(args, 1, 0))
+    end
+    if name == "seed"
+        return seed(rtArg(args, 0, 0))
+    end
+    if name == "format"
+        if len(args) == 1
+            return format(rtArg(args, 0, ""))
+        end
+        return format(rtArg(args, 0, ""), rtArg(args, 1, null))
+    end
+    rtError("native builtin '" + name + "' is not available in the self-hosted VM")
+end
+function rtBinary(op, left, right)
+    if op == "Eq"
+        return rtEquals(left, right)
+    end
+    if op == "NotEq"
+        return not rtEquals(left, right)
+    end
+    if op == "Add"
+        if isNumber(left) and isNumber(right)
+            return left + right
+        end
+        if isString(left)
+            return left + rtDisplay(right)
+        end
+        if isString(right)
+            return rtDisplay(left) + right
+        end
+        rtError("Cannot add " + rtTypeName(left) + " and " + rtTypeName(right))
+    end
+    if op == "Mul"
+        if isString(left) and isNumber(right)
+            return rtStringRepeat(left, right)
+        end
+        if isNumber(left) and isString(right)
+            return rtStringRepeat(right, left)
+        end
+    end
+    context = "on the left of the operator"
+    if op == "Gt" or op == "Lt" or op == "GtEq" or op == "LtEq"
+        context = "on the left of the comparison"
+    end
+    a = rtExpectNumber(left, context)
+    rightContext = "on the right of the operator"
+    if op == "Gt" or op == "Lt" or op == "GtEq" or op == "LtEq"
+        rightContext = "on the right of the comparison"
+    end
+    b = rtExpectNumber(right, rightContext)
+    if op == "Sub"
+        return a - b
+    end
+    if op == "Mul"
+        return a * b
+    end
+    if op == "Div"
+        if b == 0
+            rtError("Division by zero")
+        end
+        return a / b
+    end
+    if op == "Mod"
+        if b == 0
+            rtError("Division by zero")
+        end
+        return a % b
+    end
+    if op == "FloorDiv"
+        if b == 0
+            rtError("Division by zero")
+        end
+        return floor(a / b)
+    end
+    if op == "Pow"
+        return a ** b
+    end
+    if op == "BitAnd"
+        return a & b
+    end
+    if op == "BitOr"
+        return a | b
+    end
+    if op == "BitXor"
+        return a ^ b
+    end
+    if op == "Shl"
+        return a << b
+    end
+    if op == "Shr"
+        return a >> b
+    end
+    if op == "Gt"
+        return a > b
+    end
+    if op == "Lt"
+        return a < b
+    end
+    if op == "GtEq"
+        return a >= b
+    end
+    if op == "LtEq"
+        return a <= b
+    end
+    rtError("unknown binary operator '" + op + "'")
+end
+$- ---------------------------------------------------------------------------
+   Instruction execution. The `a` and `b` operands follow the Rust Op order.
+   --------------------------------------------------------------------------- -$
+function rtGetProperty(base, name)
+    if not isObject(base)
+        rtError("Cannot access property '" + name + "' on a " + rtTypeName(base))
+    end
+    if rtObjectHas(base, name)
+        return base.get(name, null)
+    end
+    rtError("Unknown property '" + name + "'")
+end
+function rtGetIndex(base, index)
+    if isArray(base)
+        at = rtTrunc(index)
+        if at < 0 or at >= len(base)
+            rtError("Array index " + toString(at) + " is out of bounds (length " + len(base) + ")")
+        end
+        return base[at]
+    end
+    if isString(base)
+        chars = rtStringChars(base)
+        at = rtTrunc(index)
+        if at < 0 or at >= len(chars)
+            rtError("String index " + toString(at) + " is out of bounds (length " + len(chars) + ")")
+        end
+        return chars[at]
+    end
+    rtError("Cannot index into a " + rtTypeName(base))
+end
+function rtSetIndex(base, index, value)
+    if not isArray(base)
+        rtError("Cannot index into a " + rtTypeName(base))
+    end
+    at = rtTrunc(index)
+    if at < 0 or at >= len(base)
+        rtError("Array index " + toString(at) + " is out of bounds (length " + len(base) + ")")
+    end
+    base[at] = value
+    return null
+end
+function rtStep(op, chunk, frame)
+    name = op.get("op", "")
+    a = op.get("a", 0)
+    b = op.get("b", 0)
+    if name == "LoadConst"
+        rtStackPush(rtConstValue(chunk, a))
+        return null
+    end
+    if name == "Pop"
+        rtStackPop()
+        return null
+    end
+    if name == "GetVar"
+        rtStackPush(rtEnvGet(frame.rtEnv, rtName(chunk, a)))
+        return null
+    end
+    if name == "SetVar"
+        rtEnvAssign(frame.rtEnv, rtName(chunk, a), rtStackPop())
+        return null
+    end
+    if name == "DefineVar"
+        rtEnvDefine(frame.rtEnv, rtName(chunk, a), rtStackPop())
+        return null
+    end
+    if name == "GetProp"
+        base = rtStackPop()
+        rtStackPush(rtGetProperty(base, rtName(chunk, a)))
+        return null
+    end
+    if name == "SetProp"
+        base = rtStackPop()
+        value = rtStackPop()
+        if not isObject(base)
+            rtError("Cannot set property '" + rtName(chunk, a) + "' on a " + rtTypeName(base))
+        end
+        rtObjectSet(base, rtName(chunk, a), value)
+        return null
+    end
+    if name == "GetVarOrObject"
+        variable = rtName(chunk, a)
+        if not rtEnvHas(frame.rtEnv, variable)
+            rtEnvDefine(frame.rtEnv, variable, {})
+        end
+        rtStackPush(rtEnvGet(frame.rtEnv, variable))
+        return null
+    end
+    if name == "GetPropOrObject"
+        base = rtStackPop()
+        property = rtName(chunk, a)
+        if isObject(base)
+            if not rtObjectHas(base, property)
+                rtObjectSet(base, property, {})
+            end
+            rtStackPush(base.get(property, null))
+        else
+            rtStackPush(rtGetProperty(base, property))
+        end
+        return null
+    end
+    if name == "GetPropKeep"
+        rtStackPush(rtGetProperty(rtStackPeek(), rtName(chunk, a)))
+        return null
+    end
+    if name == "GetIndex"
+        index = rtStackPop()
+        base = rtStackPop()
+        rtStackPush(rtGetIndex(base, index))
+        return null
+    end
+    if name == "GetIndexKeep"
+        index = rtStackPeek()
+        base = rtVm.stack[len(rtVm.stack) - 2]
+        rtStackPush(rtGetIndex(base, index))
+        return null
+    end
+    if name == "SetIndex"
+        index = rtStackPop()
+        base = rtStackPop()
+        value = rtStackPop()
+        rtSetIndex(base, index, value)
+        return null
+    end
+    if name == "MakeArray"
+        rtStackPush(rtStackDrain(a))
+        return null
+    end
+    if name == "MakeObject"
+        flat = rtStackDrain(a * 2)
+        object = {}
+        i = 0
+        while i < len(flat)
+        rtObjectSet(object, rtDisplay(flat[i]), flat[i + 1])
+        i += 2
+    end
+    rtStackPush(object)
+    return null
+end
+if name == "MakeClosure"
+    functions = rtChunkFunctions(chunk)
+    if a < 0 or a >= len(functions)
+        rtError("function index " + toString(a) + " is out of range")
+    end
+    rtStackPush({rtKind: "closure", rtProto: functions[a], rtEnv: frame.rtEnv})
+    return null
+end
+if name == "Call"
+    args = rtStackDrain(a)
+    callee = rtStackPop()
+    result = rtInvoke(callee, args, rtName(chunk, b))
+    if not result.rtPushed
+        rtStackPush(result.rtValue)
+    end
+    return null
+end
+if name == "MethodCall"
+    args = rtStackDrain(b)
+    receiver = rtStackPop()
+    result = rtMethodCall(receiver, rtName(chunk, a), args)
+    if not result.rtPushed
+        rtStackPush(result.rtValue)
+    end
+    return null
+end
+if name == "Say"
+    rtSay(rtStackDrain(a))
+    rtStackPush(null)
+    return null
+end
+binaryOps = ["Add", "Sub", "Mul", "Div", "Mod", "FloorDiv", "Pow", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Eq", "NotEq", "Gt", "Lt", "GtEq", "LtEq"]
+if binaryOps.indexOf(name) >= 0
+    right = rtStackPop()
+    left = rtStackPop()
+    rtStackPush(rtBinary(name, left, right))
+    return null
+end
+if name == "Neg"
+    rtStackPush(-rtExpectNumber(rtStackPop(), "for unary '-'"))
+    return null
+end
+if name == "Not"
+    rtStackPush(not rtTruthy(rtStackPop()))
+    return null
+end
+if name == "BitNot"
+    rtStackPush(~rtExpectNumber(rtStackPop(), "for bitwise '~'"))
+    return null
+end
+if name == "ToBool"
+    rtStackPush(rtTruthy(rtStackPop()))
+    return null
+end
+if name == "Dup"
+    rtStackPush(rtStackPeek())
+    return null
+end
+if name == "Rotate"
+    count = a + 1
+    if len(rtVm.stack) < count
+        rtError("Corrupt bytecode: the value stack ran empty")
+    end
+    split = len(rtVm.stack) - count
+    top = rtStackPop()
+    rtArrayInsert(rtVm.stack, split, top)
+    return null
+end
+if name == "Jump"
+    frame.rtIp = a
+    return null
+end
+if name == "JumpIfFalse"
+    if not rtTruthy(rtStackPop())
+        frame.rtIp = a
+    end
+    return null
+end
+if name == "JumpIfFalsePeek"
+    if not rtTruthy(rtStackPeek())
+        frame.rtIp = a
+    end
+    return null
+end
+if name == "JumpIfTruePeek"
+    if rtTruthy(rtStackPeek())
+        frame.rtIp = a
+    end
+    return null
+end
+if name == "JumpIfNullPeek"
+    if isNull(rtStackPeek())
+        frame.rtIp = a
+    end
+    return null
+end
+if name == "RepeatSetup"
+    count = rtExpectNumber(rtStackPop(), "as a repeat count")
+    if count < 0
+        rtError("repeat count must not be negative")
+    end
+    rtStackPush(rtTrunc(count))
+    return null
+end
+if name == "RepeatNext"
+    remaining = rtStackPeek()
+    if not isNumber(remaining)
+        rtError("Corrupt bytecode: unexpected value on the stack")
+    end
+    if remaining <= 0
+        rtStackPop()
+        frame.rtIp = a
+    else
+        rtVm.stack[len(rtVm.stack) - 1] = remaining - 1
+    end
+    return null
+end
+if name == "IterSetup"
+    iterable = rtStackPop()
+    if not isArray(iterable)
+        rtError("Cannot iterate over a " + rtTypeName(iterable))
+    end
+    rtStackPush(rtArrayCopy(iterable))
+    rtStackPush(0)
+    return null
+end
+if name == "IterNext"
+    cursor = rtStackPeek()
+    if not isNumber(cursor)
+        rtError("Corrupt bytecode: unexpected value on the stack")
+    end
+    source = rtVm.stack[len(rtVm.stack) - 2]
+    if cursor < len(source)
+        rtEnvDefine(frame.rtEnv, rtName(chunk, a), source[cursor])
+        rtVm.stack[len(rtVm.stack) - 1] = cursor + 1
+    else
+        rtStackPop()
+        rtStackPop()
+        frame.rtIp = b
+    end
+    return null
+end
+if name == "Return"
+    rtPopFrame(rtStackPop())
+    return null
+end
+if name == "ReturnNull"
+    rtPopFrame(null)
+    return null
+end
+if name == "Import"
+    rtError("module '" + rtName(chunk, a) + "' needs a native module; imports are not self-hosted yet")
+end
+rtError("unknown instruction '" + name + "'")
+end
+function rtExecute()
+    while len(rtVm.frames) > 0
+    frame = rtVm.frames[len(rtVm.frames) - 1]
+    code = rtChunkCode(frame.rtUnit.rtChunk)
+    if frame.rtIp >= len(code)
+        done = rtPopFrame(null)
+        if done
+            return null
+        end
+    else
+        op = code[frame.rtIp]
+        frame.rtIp = frame.rtIp + 1
+        rtStep(op, frame.rtUnit.rtChunk, frame)
+    end
+end
+return null
+end
+function vmRunWithRuntime(ir)
+    rtVm = {stack: [], frames: [], output: [], globals: rtGlobalEnv()}
+    unit = {rtKind: "program", rtChunk: ir}
+    rtVm.frames.add(rtFrameNew(unit, 0, rtVm.globals, 0))
+    rtExecute()
+    return rtVm.output
+end
+$- ---------------------------------------------------------------------------
+   Inline self-tests. With EM_SELFTEST=1 the whole file prints exactly `ok`.
+   --------------------------------------------------------------------------- -$
+function rtSelfTest()
+    assert(rtLen("héllo") == 5, "rtLen string")
+    assert(rtLen([1, 2, 3]) == 3, "rtLen array")
+    assert(rtLen({a: 1, b: 2}) == 2, "rtLen object")
+    assert(rtSay(["a", 2]) == null, "rtSay returns null")
+    assert(rtVm.output[len(rtVm.output) - 1] == "a 2", "rtSay output")
+    assert(rtNumberMethod(-3, "abs", []) == 3, "number abs")
+    assert(rtNumberMethod(255, "toHex", []) == "ff", "number toHex")
+    assert(rtStringMethod("Hello", "lower", []) == "hello", "string lower")
+    pieces = rtStringMethod("a,b,c", "split", [","])
+    assert(rtArrayMethod(pieces, "join", ["-"]) == "a-b-c", "string split")
+    array = [3, 1, 2]
+    rtArrayMethod(array, "sort", [])
+    assert(array[0] == 1, "array sort")
+    assert(rtArrayMethod(array, "join", ["-"]) == "1-2-3", "array join")
+    object = {a: 1}
+    assert(rtObjectMethod(object, "get", ["b", 7]) == 7, "object get default")
+    assert(rtObjectMethod(object, "length", []) == 1, "object length")
+    hello = {version: 2, constants: [{tag: "string", value: "hello from rt"}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "Say", a: 1}, {op: "ReturnNull"}]}
+    output = vmRunWithRuntime(hello)
+    assert(len(output) == 1 and output[0] == "hello from rt", "IR fixture: hello")
+    math = {version: 2, constants: [{tag: "number", value: 2}, {tag: "number", value: 3}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "LoadConst", a: 1}, {op: "Add"}, {op: "Say", a: 1}, {op: "ReturnNull"}]}
+    output = vmRunWithRuntime(math)
+    assert(len(output) == 1 and output[0] == "5", "IR fixture: arithmetic")
+    methodIr = {version: 2, constants: [{tag: "string", value: "abc"}, {tag: "string", value: "upper"}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "MethodCall", a: 1, b: 0}, {op: "Say", a: 1}, {op: "ReturnNull"}]}
+    output = vmRunWithRuntime(methodIr)
+    assert(len(output) == 1 and output[0] == "ABC", "IR fixture: method call")
+    return null
+end
+function rtCli()
+    argv = os.args()
+$- os.args() begins with the `run` subcommand and the script path. -$
+    if len(argv) < 3
+        say("usage: em run selfhost/vm_runtime.enm <ir.json>")
+        return null
+    end
+    ir = jsonDecode(fs.read(argv[2]))
+    say(jsonEncode(vmRunWithRuntime(ir)))
+    return null
+end
+if os.env("EM_SELFTEST", "") == "1"
+$- rtVm is needed by the direct rtSay assertion; start from a fresh state. -$
+    rtVm = {stack: [], frames: [], output: [], globals: rtGlobalEnv()}
+    rtSelfTest()
+    say("ok")
+else
+    rtCli()
+end
