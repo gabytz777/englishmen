@@ -2,6 +2,35 @@ use crate::ast::{expr_to_assignable, BinOp, Expr, Stmt, UnOp};
 use crate::error::{EmError, Span};
 use crate::lexer::{InterpPart, SpannedToken, Token};
 
+/// Keyword tokens that are also legal names after a dot or before a call.
+/// The lexer cannot know from one token whether `repeat` starts a loop or calls
+/// the global `repeat(text, count)` builtin, so the parser disambiguates by
+/// position instead.
+fn keyword_name(token: &Token) -> Option<&'static str> {
+    match token {
+        Token::True => Some("true"),
+        Token::False => Some("false"),
+        Token::Null => Some("null"),
+        Token::If => Some("if"),
+        Token::Else => Some("else"),
+        Token::End => Some("end"),
+        Token::Function => Some("function"),
+        Token::Return => Some("return"),
+        Token::Repeat => Some("repeat"),
+        Token::While => Some("while"),
+        Token::For => Some("for"),
+        Token::In => Some("in"),
+        Token::Import => Some("import"),
+        Token::And => Some("and"),
+        Token::Or => Some("or"),
+        Token::Not => Some("not"),
+        Token::Break => Some("break"),
+        Token::Continue => Some("continue"),
+        Token::Div => Some("div"),
+        _ => None,
+    }
+}
+
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
@@ -170,6 +199,28 @@ impl Parser {
                 .with_span(span))
             }
         }
+    }
+
+    /// After a dot, keyword tokens are legal member names: several runtime
+    /// methods (`repeat`, `and`, `toString`-style names) collide with language
+    /// keywords, but the lexer cannot know that from a single token.
+    fn expect_member_name(&mut self, context: &str) -> Result<String, EmError> {
+        let name = match self.peek() {
+            Token::Identifier(name) => name.clone(),
+            other => match keyword_name(other) {
+                Some(name) => name.to_string(),
+                None => {
+                    let span = self.peek_span();
+                    return Err(EmError::syntax(format!(
+                        "Expected member name {context}, found {}",
+                        other.describe()
+                    ))
+                    .with_span(span));
+                }
+            },
+        };
+        self.advance();
+        Ok(name)
     }
 
     fn parse_block_until(&mut self, terminators: &[Token]) -> Result<Vec<Stmt>, EmError> {
@@ -519,7 +570,7 @@ impl Parser {
         let mut expr = self.parse_primary()?;
         loop {
             if self.matches(&Token::Dot) {
-                let name = self.expect_identifier("after '.'")?;
+                let name = self.expect_member_name("after '.'")?;
                 if self.check(&Token::LParen) {
                     let args = self.parse_call_args()?;
                     expr = Expr::MethodCall(Box::new(expr), name, args);
@@ -566,6 +617,10 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expr, EmError> {
         let span = self.peek_span();
+        let next_is_call = self
+            .tokens
+            .get(self.pos + 1)
+            .is_some_and(|next| matches!(next.token, Token::LParen));
         match self.peek().clone() {
             Token::Number(n) => {
                 self.advance();
@@ -605,6 +660,11 @@ impl Parser {
             }
             Token::LBracket => self.parse_array_literal(),
             Token::LBrace => self.parse_object_literal(),
+            other if next_is_call && keyword_name(&other).is_some() => {
+                let name = keyword_name(&other).unwrap().to_string();
+                self.advance();
+                Ok(Expr::Variable(name))
+            }
             other => {
                 Err(EmError::syntax(format!("Unexpected token {}", other.describe())).with_span(span))
             }

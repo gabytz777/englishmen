@@ -827,24 +827,35 @@ const LANGUAGE_DOC: &str = r#"Englishmen quick reference
 
 Keywords
     if / else / end          Conditional branches
-    function ... end         Function definition
-    return [value]           Return from a function
+    while / break / continue Conditional loops and loop control
     repeat <count> ... end   Counted loop
     for <name> in <list> ... end
                              Loop over the items of an array
+    function ... end         Function definition
+    return [value]           Return from a function
     import <module>          Load a standard module
-    and / or / not           Boolean operators
+    and / or / not           Boolean operators (also &&, ||, !)
     true / false / null      Literal values
 
 Statement forms
     name = expression                     Assignment creates a variable
     object.property = expression          Dot notation / objects
     array[index] = expression             Indexed assignment
+    x += 1 / x -= 1 / x++ / x--           In-place updates
     function add(a, b)                    Function definition
         return a + b
     end
     if age >= 18                          Condition (else if / else supported)
         say("Adult")
+    end
+    while n < 10                          Condition loop
+        n += 1
+        if n == 3
+            continue
+        end
+        if n == 8
+            break
+        end
     end
     repeat 3                              Counted loop
         say("Hello")
@@ -859,12 +870,28 @@ Builtins
     array.add(value)         Append an item
     array.remove(value)      Remove the first matching item
     "a{n}b"                  String interpolation
+    69 global builtins       Conversions, collections, strings, math, files, JSON
+
+Methods
+    array (26)               add, push, removeAt, pop, sort, slice, flatten, ...
+    object (10)              keys, values, get, set, delete, merge, copy, ...
+    string (26)              upper, lower, trim, split, replace, padLeft, ...
+    number (14)              isEven, toFixed, clamp, toHex, round, sqrt, ...
+    boolean (5)              toggle, toString, and, or, xor
 
 Standard modules (import <name> first)
-    math    sqrt, abs, floor, ceil, round, pow, min, max, pi, e
-    time    now, sleep, year, month, day, hour, minute, second
+    math    sqrt, pow, sin/cos/tan, round, gcd, pi, e
+    time    now, sleep, format, iso, millis, elapsed
     qrc     make(text, path) — write a QR code PNG
     cowsay  say(message) — ASCII-art speech
+    string  upper, lower, trim, pad, split, join, predicates
+    json    encode, decode, pretty, isValid, get, set
+    fs      read, write, append, list, mkdir, copy, move
+    os      name, arch, args, env, cwd, homeDir, pid
+    random  float, int, choice, sample, shuffle, seed, uuid
+    collections
+            sorted, range, sum, zip, chunk, get, set
+    gfx     canvas(w, h) with set/get/clear/text/save
 
 Comments
     $- single-line comment -$
@@ -872,7 +899,9 @@ Comments
        comment -$
 
 Numbers, strings, booleans, arrays and objects are the value types. Operators:
-+ - * / %, == != > < >= <=, and/or/not. Run 'em --help' for CLI commands.
++ - * / % ** //, == != > < >= <=, and/or/not/&&/||/!, & | ^ ~ << >>,
+?: (ternary), ?? (null coalescing), += -= *= /= %= **= //= ++ --.
+Run 'em --help' for CLI commands.
 "#;
 
 fn cmd_doc(args: &[String]) -> ExitCode {
@@ -1378,8 +1407,35 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
         return false;
     }
     // Calls and indexing hug the name/value they follow; `if (...)` and
-    // `= [ ... ]` (an array literal) keep their space.
+    // `= [ ... ]` (an array literal) keep their space. Keyword tokens that
+    // double as call names (`repeat(...)`, `text.repeat(...)`) must hug too,
+    // but a keyword at statement level still keeps its separating space.
     if matches!(token, Token::LParen | Token::LBracket) {
+        let keyword_call = matches!(
+            prev,
+            Token::True
+                | Token::False
+                | Token::Null
+                | Token::If
+                | Token::Else
+                | Token::End
+                | Token::Function
+                | Token::Return
+                | Token::Repeat
+                | Token::While
+                | Token::For
+                | Token::In
+                | Token::Import
+                | Token::And
+                | Token::Or
+                | Token::Not
+                | Token::Break
+                | Token::Continue
+                | Token::Div
+        ) && (matches!(before, Some(Token::Dot)) || matches!(prev, Token::Repeat));
+        if keyword_call {
+            return false;
+        }
         return !matches!(
             prev,
             Token::Identifier(_)

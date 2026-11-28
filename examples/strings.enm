@@ -1,0 +1,15 @@
+$- Strings: interpolation, case, splitting and padding -$
+import string
+name = "alex"
+say("Hello, {name.titleCase()}!")
+say(string.upper(name))
+say("héllo".indexOf("é"))
+ha = "ha"
+say(ha.repeat(3))
+say(string.pad("hi", 5, "*", "right"))
+words = string.split("one,two,three", ",")
+say(words.join(" | "))
+text = "a-b-a"
+say(text.replaceAll("a", "x"))
+say("  trimmed  ".trim())
+say("line1\nline2".lines())

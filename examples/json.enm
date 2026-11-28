@@ -1,0 +1,13 @@
+$- JSON: encode, decode and dotted paths -$
+import json
+data = {name: "Alex", scores: [9, 7, 10], active: true}
+text = json.encode(data)
+say(text)
+say(json.isValid(text))
+say(json.isValid("[1,]"))
+clone = json.decode(text)
+say(clone.name)
+say(json.get(clone, "scores.1"))
+updated = json.set(clone, "scores.1", 8)
+say(json.get(updated, "scores"))
+say(json.pretty({ok: true, items: [1, 2]}))
