@@ -1622,6 +1622,38 @@ pub fn globals() -> HashMap<String, Value> {
     );
 
     g.insert(
+        "writeBytes".to_string(),
+        native("writeBytes", |args| {
+            exact_args(args, 2, "writeBytes")?;
+            let path = expect_str(args, 0, "as the path for writeBytes")?;
+            let Value::Array(items) = &args[1] else {
+                return Err(format!(
+                    "Type mismatch: expected an array of bytes as the bytes for writeBytes, found {}",
+                    args[1].type_name()
+                ));
+            };
+            let items = items.borrow();
+            let mut bytes = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                match item {
+                    Value::Number(n) if n.fract() == 0.0 && *n >= 0.0 && *n <= 255.0 => {
+                        bytes.push(*n as u8)
+                    }
+                    other => {
+                        return Err(format!(
+                            "writeBytes: expected byte values from 0 to 255, found {}",
+                            other.display()
+                        ))
+                    }
+                }
+            }
+            fs::write(&path, bytes)
+                .map_err(|e| format!("writeBytes could not write '{path}': {e}"))?;
+            Ok(Value::Null)
+        }),
+    );
+
+    g.insert(
         "appendFile".to_string(),
         native("appendFile", |args| {
             exact_args(args, 2, "appendFile")?;
@@ -1951,6 +1983,7 @@ mod tests {
         "fromCharCode",
         "readFile",
         "writeFile",
+        "writeBytes",
         "appendFile",
         "fileExists",
         "deleteFile",

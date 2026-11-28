@@ -1371,8 +1371,9 @@ static EmValue *em_builtin_last(EmVm *vm, EmValue **args, size_t argc, char **er
         size_t count = utf8_count(emv_as_cstr(v), emv_strlen(v));
         if (count == 0)
             return emv_null();
-        uint32_t cp;
-        utf8_char_at(emv_as_cstr(v), emv_strlen(v), count - 1, &cp);
+        uint32_t cp = 0;
+        if (!utf8_char_at(emv_as_cstr(v), emv_strlen(v), count - 1, &cp))
+            return emv_null();
         char encoded[4];
         size_t n = utf8_encode(cp, encoded);
         return emv_string_len(encoded, n);
@@ -2728,6 +2729,43 @@ static EmValue *em_builtin_write_file(EmVm *vm, EmValue **args, size_t argc, cha
     return emv_null();
 }
 
+static EmValue *em_builtin_write_bytes(EmVm *vm, EmValue **args, size_t argc, char **err)
+{
+    (void)vm;
+    if (!exact_args(argc, 2, "writeBytes", err))
+        return NULL;
+    const char *path;
+    size_t pathlen;
+    if (!expect_string(args[0], "as the path for writeBytes", &path, &pathlen, err))
+        return NULL;
+    if (!emv_is_array(args[1])) {
+        *err = em_fmt("Type mismatch: expected an array of bytes as the bytes for writeBytes, found %s",
+                      value_type_name(args[1]));
+        return NULL;
+    }
+    size_t n = emv_array_len(args[1]);
+    unsigned char *bytes = n ? xmalloc(n) : NULL;
+    for (size_t i = 0; i < n; i++) {
+        EmValue *item = emv_array_get(args[1], i);
+        double value = emv_is_number(item) ? emv_as_number(item) : -1.0;
+        if (!emv_is_number(item) || value < 0.0 || value > 255.0 || floor(value) != value) {
+            char *shown = emv_display(item);
+            *err = em_fmt("writeBytes: expected byte values from 0 to 255, found %s",
+                          shown ? shown : "unknown");
+            free(shown);
+            free(bytes);
+            return NULL;
+        }
+        bytes[i] = (unsigned char)value;
+    }
+    if (!write_file(path, (const char *)bytes, n, false, err)) {
+        free(bytes);
+        return NULL;
+    }
+    free(bytes);
+    return emv_null();
+}
+
 static EmValue *em_builtin_append_file(EmVm *vm, EmValue **args, size_t argc, char **err)
 {
     (void)vm;
@@ -3041,6 +3079,7 @@ static const BuiltinEntry kBuiltins[] = {
     {"fromCharCode", em_builtin_from_char_code},
     {"readFile", em_builtin_read_file},
     {"writeFile", em_builtin_write_file},
+    {"writeBytes", em_builtin_write_bytes},
     {"appendFile", em_builtin_append_file},
     {"fileExists", em_builtin_file_exists},
     {"deleteFile", em_builtin_delete_file},

@@ -174,13 +174,16 @@ void em_call_env_define(EmEnv *env, const char *name, EmValue *value)
 
 void em_call_env_assign(EmEnv *env, const char *name, EmValue *value)
 {
+    EmEnv *target = env;
     for (; env; env = env->parent) {
         if (emv_object_has(env->vars, name)) {
             emv_object_set(env->vars, name, value);
             return;
         }
     }
-    em_call_env_define(env, name, value);
+    /* A first assignment declares the name in the current scope. The loop
+     * leaves `env` NULL on miss, so define into the saved starting scope. */
+    em_call_env_define(target, name, value);
 }
 
 char **em_call_env_names(const EmEnv *env, size_t *count)

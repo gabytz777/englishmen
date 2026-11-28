@@ -217,11 +217,22 @@ fn run_embedded(program: Result<Chunk, EmError>) -> ExitCode {
 /// directly, without consulting any source file. The normal `em <file.emb>`
 /// and `em run <file.emb>` paths call the same runner.
 fn cmd_run_fixed(path: &Path, rest: &[String]) -> ExitCode {
-    let time = rest.iter().any(|a| a == "--time");
-    if let Some(bad) = rest.iter().find(|a| *a != "--time") {
-        eprintln!("Error: Unknown option '{bad}'\n");
-        print_help();
-        return ExitCode::FAILURE;
+    let mut time = false;
+    let mut script_args = false;
+    for arg in rest {
+        if script_args {
+            continue;
+        }
+        match arg.as_str() {
+            "--" => script_args = true,
+            "--time" => time = true,
+            bad if bad.starts_with('-') => {
+                eprintln!("Error: Unknown option '{bad}'\n");
+                print_help();
+                return ExitCode::FAILURE;
+            }
+            _ => {}
+        }
     }
     if path.extension().and_then(|e| e.to_str()) == Some("em") {
         return legacy_extension_notice(path);

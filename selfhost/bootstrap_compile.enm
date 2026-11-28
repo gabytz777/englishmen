@@ -5739,7 +5739,7 @@ function rtNative(name)
 end
 function rtGlobalEnv()
     env = rtEnvNew(null)
-    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args"]
+    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args", "readFile"]
     for name in names
         rtEnvDefine(env, name, rtNative(name))
     end
@@ -6987,7 +6987,11 @@ function rtNativeCall(name, args)
         return format(rtArg(args, 0, ""), rtArg(args, 1, null))
     end
 $- The compile-only bootstrap uses these host-provided helpers. The driver
-   defines emProgramArgs and the emJson*Value functions before running its IR. -$
+   defines emProgramArgs, emHostFsRead and the emJson*Value functions before
+   running its IR. -$
+    if name == "readFile"
+        return emHostFsRead(rtArg(args, 0, ""))
+    end
     if name == "assert"
         if not rtTruthy(rtArg(args, 0, false))
             rtError(rtDisplay(rtArg(args, 1, "assertion failed")))
@@ -8852,108 +8856,6 @@ function pfoSelfTestMinimalHost(pfoSelfTestMinimalHost_oracle)
     assert(pfoSelfTestMinimalHost_fs.exists(pfoSelfTestMinimalHost_file) == false, "minimal removed")
     pfoHostModule = pfoSelfTestMinimalHost_saved
     return null
-end
-function pfoRunSelfTest()
-    if env("EM_SELFTEST") != "1"
-        return null
-    end
-    pfoOracleNativeFs = fs
-    pfoOracleNativeOs = os
-$- The native modules are wrapped as a host module so the implementation
-       above needs no changes for the parity run. -$
-    function pfoOracleWriteFile(pfoOracleWriteFile_path, pfoOracleWriteFile_text)
-        fs.write(pfoOracleWriteFile_path, pfoOracleWriteFile_text)
-        return true
-    end
-    function pfoOracleReadFile(pfoOracleReadFile_path)
-        if not fs.exists(pfoOracleReadFile_path)
-            return {__hostError: "Could not read '" + pfoOracleReadFile_path + "': not found"}
-        end
-        if fs.isDir(pfoOracleReadFile_path)
-            return {__hostError: "Could not read '" + pfoOracleReadFile_path + "': Is a directory"}
-        end
-        return fs.read(pfoOracleReadFile_path)
-    end
-    function pfoOracleReadBytes(pfoOracleReadBytes_path)
-        if not fs.exists(pfoOracleReadBytes_path)
-            return {__hostError: "Could not read '" + pfoOracleReadBytes_path + "': not found"}
-        end
-        return bytes.read(pfoOracleReadBytes_path)
-    end
-    function pfoOracleWriteBytes(pfoOracleWriteBytes_path, pfoOracleWriteBytes_data)
-        return bytes.write(pfoOracleWriteBytes_path, pfoOracleWriteBytes_data)
-    end
-    function pfoOracleStat(pfoOracleStat_path)
-        if not fs.exists(pfoOracleStat_path)
-            return {__hostError: "Could not stat '" + pfoOracleStat_path + "': not found"}
-        end
-        return fs.metadata(pfoOracleStat_path)
-    end
-    function pfoOracleListDir(pfoOracleListDir_path)
-        return fs.list(pfoOracleListDir_path)
-    end
-    function pfoOracleMkdir(pfoOracleMkdir_path)
-        return fs.mkdir(pfoOracleMkdir_path)
-    end
-    function pfoOracleRemoveFile(pfoOracleRemoveFile_path)
-        return fs.remove(pfoOracleRemoveFile_path)
-    end
-    function pfoOracleRename(pfoOracleRename_from, pfoOracleRename_to)
-        fs.move(pfoOracleRename_from, pfoOracleRename_to)
-        return true
-    end
-    function pfoOracleCopyFile(pfoOracleCopyFile_from, pfoOracleCopyFile_to)
-        fs.copy(pfoOracleCopyFile_from, pfoOracleCopyFile_to)
-        return true
-    end
-    function pfoOracleAppendFile(pfoOracleAppendFile_path, pfoOracleAppendFile_text)
-        fs.append(pfoOracleAppendFile_path, pfoOracleAppendFile_text)
-        return true
-    end
-    function pfoOracleEnv(pfoOracleEnv_key, pfoOracleEnv_default)
-        return os.env(pfoOracleEnv_key, pfoOracleEnv_default)
-    end
-    function pfoOracleArgs()
-        return os.args()
-    end
-    function pfoOraclePid()
-        return os.pid()
-    end
-    function pfoOracleCwd()
-        return os.cwd()
-    end
-    function pfoOracleTempDir()
-        return os.tempDir()
-    end
-    function pfoOracleExit(pfoOracleExit_code)
-        return null
-    end
-    function pfoOracleStdout(pfoOracleStdout_text)
-        say(pfoOracleStdout_text)
-        return true
-    end
-    pfoSelfTestHost = {readFile: pfoOracleReadFile, writeFile: pfoOracleWriteFile, readBytes: pfoOracleReadBytes, writeBytes: pfoOracleWriteBytes, stat: pfoOracleStat, listDir: pfoOracleListDir, mkdir: pfoOracleMkdir, removeFile: pfoOracleRemoveFile, rename: pfoOracleRename, copyFile: pfoOracleCopyFile, appendFile: pfoOracleAppendFile, env: pfoOracleEnv, args: pfoOracleArgs, cwd: pfoOracleCwd, tempDir: pfoOracleTempDir, pid: pfoOraclePid, version: null, platform: null, arch: null, exit: pfoOracleExit, stdout: pfoOracleStdout, stderr: pfoOracleStdout}
-    pfoSelfTestSavedHost = pfoHostModule
-    pfoHostModule = pfoSelfTestHost
-    pfoSelfTestDir = os.tempDir() + "/pfo_selftest_" + toString(os.pid()) + "_" + toString(floor(random() * 1000000))
-    fs.mkdir(pfoSelfTestDir)
-    pfoRegistrySet(pfoSelfTestDir, "dir")
-    pfoSelfTestFs(pfoSelfTestDir)
-    pfoSelfTestOs(pfoSelfTestDir)
-    pfoSelfTestMinimalHost(pfoSelfTestHost)
-    deleteFile(pfoSelfTestDir)
-    pfoHostModule = pfoSelfTestSavedHost
-    say("ok")
-    return null
-end
-pfoSelftestRequested = false
-for pfoSelftestArg in args()
-    if pfoSelftestArg == "pfo-selftest"
-        pfoSelftestRequested = true
-    end
-end
-if pfoSelftestRequested
-    pfoRunSelfTest()
 end
 $- === inlined selfhost/pure_imports.enm === -$
 $- Pure import table for the C bootstrap VM.
@@ -11723,30 +11625,26 @@ $- === compile-only bootstrap driver ===
    This script never invokes the self-hosted VM, so compiling and executing its
    IR cannot recurse.
 -$
-if env("EM_SELFTEST") == "1"
-    say("ok")
-else
-    argvCompile = args()
-    scriptIndexCompile = -1
-    for iCompile in range(len(argvCompile))
-        if argvCompile[iCompile].endsWith("bootstrap_compile.enm")
-            scriptIndexCompile = iCompile
+argvCompile = args()
+scriptIndexCompile = -1
+for iCompile in range(len(argvCompile))
+    if argvCompile[iCompile].endsWith("bootstrap_compile.enm")
+        scriptIndexCompile = iCompile
+        break
+    end
+end
+sourcePathCompile = argvCompile[len(argvCompile) - 1]
+if scriptIndexCompile >= 0
+    for jCompile in range(scriptIndexCompile + 1, len(argvCompile))
+        candidateCompile = argvCompile[jCompile]
+        if not candidateCompile.startsWith("-") and candidateCompile != ""
+            sourcePathCompile = candidateCompile
             break
         end
     end
-    sourcePathCompile = argvCompile[len(argvCompile) - 1]
-    if scriptIndexCompile >= 0
-        for jCompile in range(scriptIndexCompile + 1, len(argvCompile))
-            candidateCompile = argvCompile[jCompile]
-            if not candidateCompile.startsWith("-") and candidateCompile != ""
-                sourcePathCompile = candidateCompile
-                break
-            end
-        end
-    end
-    sourceCompile = fs.read(sourcePathCompile)
-    astCompile = parse(lex(sourceCompile))
-    irCompile = cgCodegen(astCompile)
-    encodedCompile = ieEncode(irCompile)
-    say(jsonEncode({astStatements: len(astCompile.get("statements", [])), irInstructions: len(irCompile.get("code", [])), encodedBytes: len(encodedCompile), output: []}))
 end
+sourceCompile = readFile(sourcePathCompile)
+astCompile = parse(lex(sourceCompile))
+irCompile = cgCodegen(astCompile)
+encodedCompile = ieEncode(irCompile)
+say(jsonEncode({astStatements: len(astCompile.get("statements", [])), irInstructions: len(irCompile.get("code", [])), encodedBytes: len(encodedCompile), output: []}))

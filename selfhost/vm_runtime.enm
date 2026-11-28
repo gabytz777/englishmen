@@ -374,7 +374,7 @@ function rtNative(name)
 end
 function rtGlobalEnv()
     env = rtEnvNew(null)
-    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args"]
+    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args", "readFile"]
     for name in names
         rtEnvDefine(env, name, rtNative(name))
     end
@@ -1622,7 +1622,11 @@ function rtNativeCall(name, args)
         return format(rtArg(args, 0, ""), rtArg(args, 1, null))
     end
 $- The compile-only bootstrap uses these host-provided helpers. The driver
-   defines emProgramArgs and the emJson*Value functions before running its IR. -$
+   defines emProgramArgs, emHostFsRead and the emJson*Value functions before
+   running its IR. -$
+    if name == "readFile"
+        return emHostFsRead(rtArg(args, 0, ""))
+    end
     if name == "assert"
         if not rtTruthy(rtArg(args, 0, false))
             rtError(rtDisplay(rtArg(args, 1, "assertion failed")))

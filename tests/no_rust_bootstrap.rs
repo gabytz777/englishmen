@@ -159,6 +159,8 @@ fn no_rust_bootstrap_proof() {
             "selfhost/bootstrap_compile.enm",
             "--write-emb",
             image_arg,
+            "--",
+            "examples/hello.enm",
         ],
     );
     assert!(

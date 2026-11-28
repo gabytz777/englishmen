@@ -5855,7 +5855,7 @@ function rtNative(name)
 end
 function rtGlobalEnv()
     env = rtEnvNew(null)
-    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args"]
+    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args", "readFile"]
     for name in names
         rtEnvDefine(env, name, rtNative(name))
     end
@@ -7103,7 +7103,11 @@ function rtNativeCall(name, args)
         return format(rtArg(args, 0, ""), rtArg(args, 1, null))
     end
 $- The compile-only bootstrap uses these host-provided helpers. The driver
-   defines emProgramArgs and the emJson*Value functions before running its IR. -$
+   defines emProgramArgs, emHostFsRead and the emJson*Value functions before
+   running its IR. -$
+    if name == "readFile"
+        return emHostFsRead(rtArg(args, 0, ""))
+    end
     if name == "assert"
         if not rtTruthy(rtArg(args, 0, false))
             rtError(rtDisplay(rtArg(args, 1, "assertion failed")))
@@ -9045,108 +9049,6 @@ function pfoSelfTestMinimalHost(pfoSelfTestMinimalHost_oracle)
     assert(pfoSelfTestMinimalHost_fs.exists(pfoSelfTestMinimalHost_file) == false, "minimal removed")
     pfoHostModule = pfoSelfTestMinimalHost_saved
     return null
-end
-function pfoRunSelfTest()
-    if env("EM_SELFTEST") != "1"
-        return null
-    end
-    pfoOracleNativeFs = fs
-    pfoOracleNativeOs = os
-$- The native modules are wrapped as a host module so the implementation
-       above needs no changes for the parity run. -$
-    function pfoOracleWriteFile(pfoOracleWriteFile_path, pfoOracleWriteFile_text)
-        fs.write(pfoOracleWriteFile_path, pfoOracleWriteFile_text)
-        return true
-    end
-    function pfoOracleReadFile(pfoOracleReadFile_path)
-        if not fs.exists(pfoOracleReadFile_path)
-            return {__hostError: "Could not read '" + pfoOracleReadFile_path + "': not found"}
-        end
-        if fs.isDir(pfoOracleReadFile_path)
-            return {__hostError: "Could not read '" + pfoOracleReadFile_path + "': Is a directory"}
-        end
-        return fs.read(pfoOracleReadFile_path)
-    end
-    function pfoOracleReadBytes(pfoOracleReadBytes_path)
-        if not fs.exists(pfoOracleReadBytes_path)
-            return {__hostError: "Could not read '" + pfoOracleReadBytes_path + "': not found"}
-        end
-        return bytes.read(pfoOracleReadBytes_path)
-    end
-    function pfoOracleWriteBytes(pfoOracleWriteBytes_path, pfoOracleWriteBytes_data)
-        return bytes.write(pfoOracleWriteBytes_path, pfoOracleWriteBytes_data)
-    end
-    function pfoOracleStat(pfoOracleStat_path)
-        if not fs.exists(pfoOracleStat_path)
-            return {__hostError: "Could not stat '" + pfoOracleStat_path + "': not found"}
-        end
-        return fs.metadata(pfoOracleStat_path)
-    end
-    function pfoOracleListDir(pfoOracleListDir_path)
-        return fs.list(pfoOracleListDir_path)
-    end
-    function pfoOracleMkdir(pfoOracleMkdir_path)
-        return fs.mkdir(pfoOracleMkdir_path)
-    end
-    function pfoOracleRemoveFile(pfoOracleRemoveFile_path)
-        return fs.remove(pfoOracleRemoveFile_path)
-    end
-    function pfoOracleRename(pfoOracleRename_from, pfoOracleRename_to)
-        fs.move(pfoOracleRename_from, pfoOracleRename_to)
-        return true
-    end
-    function pfoOracleCopyFile(pfoOracleCopyFile_from, pfoOracleCopyFile_to)
-        fs.copy(pfoOracleCopyFile_from, pfoOracleCopyFile_to)
-        return true
-    end
-    function pfoOracleAppendFile(pfoOracleAppendFile_path, pfoOracleAppendFile_text)
-        fs.append(pfoOracleAppendFile_path, pfoOracleAppendFile_text)
-        return true
-    end
-    function pfoOracleEnv(pfoOracleEnv_key, pfoOracleEnv_default)
-        return os.env(pfoOracleEnv_key, pfoOracleEnv_default)
-    end
-    function pfoOracleArgs()
-        return os.args()
-    end
-    function pfoOraclePid()
-        return os.pid()
-    end
-    function pfoOracleCwd()
-        return os.cwd()
-    end
-    function pfoOracleTempDir()
-        return os.tempDir()
-    end
-    function pfoOracleExit(pfoOracleExit_code)
-        return null
-    end
-    function pfoOracleStdout(pfoOracleStdout_text)
-        say(pfoOracleStdout_text)
-        return true
-    end
-    pfoSelfTestHost = {readFile: pfoOracleReadFile, writeFile: pfoOracleWriteFile, readBytes: pfoOracleReadBytes, writeBytes: pfoOracleWriteBytes, stat: pfoOracleStat, listDir: pfoOracleListDir, mkdir: pfoOracleMkdir, removeFile: pfoOracleRemoveFile, rename: pfoOracleRename, copyFile: pfoOracleCopyFile, appendFile: pfoOracleAppendFile, env: pfoOracleEnv, args: pfoOracleArgs, cwd: pfoOracleCwd, tempDir: pfoOracleTempDir, pid: pfoOraclePid, version: null, platform: null, arch: null, exit: pfoOracleExit, stdout: pfoOracleStdout, stderr: pfoOracleStdout}
-    pfoSelfTestSavedHost = pfoHostModule
-    pfoHostModule = pfoSelfTestHost
-    pfoSelfTestDir = os.tempDir() + "/pfo_selftest_" + toString(os.pid()) + "_" + toString(floor(random() * 1000000))
-    fs.mkdir(pfoSelfTestDir)
-    pfoRegistrySet(pfoSelfTestDir, "dir")
-    pfoSelfTestFs(pfoSelfTestDir)
-    pfoSelfTestOs(pfoSelfTestDir)
-    pfoSelfTestMinimalHost(pfoSelfTestHost)
-    deleteFile(pfoSelfTestDir)
-    pfoHostModule = pfoSelfTestSavedHost
-    say("ok")
-    return null
-end
-pfoSelftestRequested = false
-for pfoSelftestArg in args()
-    if pfoSelftestArg == "pfo-selftest"
-        pfoSelftestRequested = true
-    end
-end
-if pfoSelftestRequested
-    pfoRunSelfTest()
 end
 $- === inlined selfhost/pure_imports.enm === -$
 $- Pure import table for the C bootstrap VM.
@@ -11916,7 +11818,7 @@ $- === combined full-self-hosting pipeline ===
    IR on the Englishmen runtime. The host is still the Rust `em` VM.
 
    Driver flags, parsed from the host argv before reading the source:
-     --write-emb <path>  write encodedFull to <path> with native bytes.write
+     --write-emb <path>  write encodedFull to <path> with global writeBytes
      --                  stop parsing driver flags; everything after this is
                          left in programArgsFull for the compiled program's
                          args(). Without `--`, argument handling is unchanged.
@@ -11993,7 +11895,7 @@ function emJsonDecodeValue(emJsonDecodeValue_text)
     return emPureJson.decode(emJsonDecodeValue_text)
 end
 function emHostFsRead(emHostFsRead_path)
-    return fs.read(emHostFsRead_path)
+    return readFile(emHostFsRead_path)
 end
 function emHostFsWrite(emHostFsWrite_path, emHostFsWrite_text)
     return fs.write(emHostFsWrite_path, emHostFsWrite_text)
@@ -12056,7 +11958,7 @@ function emHostBytesRead(emHostBytesRead_path)
     return bytes.read(emHostBytesRead_path)
 end
 function emHostBytesWrite(emHostBytesWrite_path, emHostBytesWrite_buffer)
-    return bytes.write(emHostBytesWrite_path, emHostBytesWrite_buffer)
+    return writeBytes(emHostBytesWrite_path, emHostBytesWrite_buffer)
 end
 $- Standard-library host wrappers: native modules are the oracle substrate for
    the self-hosted VM, never imported from .enm files. -$
@@ -12080,7 +11982,7 @@ function emHostMath1(emHostMath1_fn, emHostMath1_value)
         return math.ln(emHostMath1_value)
     end
     if emHostMath1_fn == "exp"
-        return math.exp(emHostMath1_value)
+        return pmtMathModule().exp(emHostMath1_value)
     end
     if emHostMath1_fn == "sign"
         return math.sign(emHostMath1_value)
@@ -12277,16 +12179,16 @@ function emBytesConcat(emBytesConcat_a, emBytesConcat_b, emBytesConcat_c, emByte
 end
 function emVmImports()
 $- Optional padding for pure Englishmen adapters with fixed arity. -$
-    return {__arities: {of: 8, concat: 8, slice: 3}, fs: {read: emHostFsRead, write: emHostFsWrite, exists: emHostFsExists, append: emHostFsAppend, size: emHostFsSize, metadata: emHostFsMetadata, copy: emHostFsCopy, move: emHostFsMove, remove: emHostFsRemove, list: emHostFsList, cwd: emHostFsCwd, mkdir: emHostFsMkdir, isFile: emHostFsIsFile, isDir: emHostFsIsDir}, os: {env: emHostOsEnv, args: emHostOsArgs, pid: emHostOsPid}, emb: {encode: emHostEmbEncode, write: emHostEmbWrite, writeBytes: emHostEmbWriteBytes}, json: emPureJson, string: emPureModules.string, bytes: {of: emBytesOf, fromString: btFromString, toString: btToString, fromHex: btFromHex, toHex: btToHex, length: btLength, get: btGet, set: btSet, concat: emBytesConcat, slice: emBytesSlice, copy: btCopy, u8: btU8, u16: btU16, u32: btU32, u64: btU64, i16: btI16, i32: btI32, i64: btI64, f64: btF64, read: emHostBytesRead, write: emHostBytesWrite}, math: {sqrt: emHostMathSqrt, abs: emHostMathAbs, floor: emHostMathFloor, ceil: emHostMathCeil, round: emHostMathRound, pow: emHostMathPow, min: emHostMathMin, max: emHostMathMax, log: emHostMathLog, ln: emHostMathLn, exp: emHostMathExp, hypot: emHostMathHypot, sign: emHostMathSign, gcd: emHostMathGcd, lcm: emHostMathLcm, clamp: emHostMathClamp, degrees: emHostMathDegrees, radians: emHostMathRadians, isPrime: emHostMathIsPrime, trunc: emHostMathTrunc, roundTo: emHostMathRoundTo, factorial: emHostMathFactorial, toHex: emHostMathToHex, toBinary: emHostMathToBinary, pi: math.pi, e: math.e}, cowsay: {say: emHostCowsaySay}, project: {parse: pjParse, name: pjName, version: pjVersion, main: pjMain, write: pjWrite}}
+    return {__arities: {of: 8, concat: 8, slice: 3}, fs: {read: emHostFsRead, write: emHostFsWrite, exists: emHostFsExists, append: emHostFsAppend, size: emHostFsSize, metadata: emHostFsMetadata, copy: emHostFsCopy, move: emHostFsMove, remove: emHostFsRemove, list: emHostFsList, cwd: emHostFsCwd, mkdir: emHostFsMkdir, isFile: emHostFsIsFile, isDir: emHostFsIsDir}, os: {env: emHostOsEnv, args: emHostOsArgs, pid: emHostOsPid}, emb: {encode: emHostEmbEncode, write: emHostEmbWrite, writeBytes: emHostEmbWriteBytes}, json: emPureJson, string: emPureModules.string, bytes: {of: emBytesOf, fromString: btFromString, toString: btToString, fromHex: btFromHex, toHex: btToHex, length: btLength, get: btGet, set: btSet, concat: emBytesConcat, slice: emBytesSlice, copy: btCopy, u8: btU8, u16: btU16, u32: btU32, u64: btU64, i16: btI16, i32: btI32, i64: btI64, f64: btF64, read: emHostBytesRead, write: emHostBytesWrite}, math: {sqrt: emHostMathSqrt, abs: emHostMathAbs, floor: emHostMathFloor, ceil: emHostMathCeil, round: emHostMathRound, pow: emHostMathPow, min: emHostMathMin, max: emHostMathMax, log: emHostMathLog, ln: emHostMathLn, exp: emHostMathExp, hypot: emHostMathHypot, sign: emHostMathSign, gcd: emHostMathGcd, lcm: emHostMathLcm, clamp: emHostMathClamp, degrees: emHostMathDegrees, radians: emHostMathRadians, isPrime: emHostMathIsPrime, trunc: emHostMathTrunc, roundTo: emHostMathRoundTo, factorial: emHostMathFactorial, toHex: emHostMathToHex, toBinary: emHostMathToBinary, pi: pmtMathModule().pi, e: pmtMathModule().e}, cowsay: {say: emHostCowsaySay}, project: {parse: pjParse, name: pjName, version: pjVersion, main: pjMain, write: pjWrite}}
 end
-sourceFull = fs.read(sourcePathFull)
+sourceFull = readFile(sourcePathFull)
 astFull = parse(lex(sourceFull))
 irFull = cgCodegen(astFull)
 encodedFull = ieEncode(irFull)
 if writePathFull != null
 $- Native module imports are stripped during regeneration; pure module wrappers
    supply the `bytes` write function. -$
-    bytes.write(writePathFull, encodedFull)
+    writeBytes(writePathFull, encodedFull)
 end
 outputFull = vmRunWithImports(irFull, emVmImports())
 say(jsonEncode({source: sourcePathFull, astStatements: len(astFull.get("statements", [])), irInstructions: len(irFull.get("code", [])), encodedBytes: len(encodedFull), output: outputFull}))

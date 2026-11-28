@@ -37,7 +37,7 @@ SKIP no-rust-bootstrap: bootstrap-c/emrun is not built yet. Build the independen
 The skip is explicit; the test never substitutes `em` for `emrun`.
 
 ```sh
-make -C bootstrap-c
+make -C bootstrap-c CFLAGS='-std=c11 -Wall -Wextra -Werror -O2'
 test -x bootstrap-c/emrun
 ```
 
@@ -49,7 +49,11 @@ test -x bootstrap-c/emrun
 dependency order, then the driver from the existing generated file. It cuts
 guarded self-tests, rewrites `os.env("EM_SELFTEST", ...)` guards to the global
 `env` builtin, and strips every non-guarded `import` statement. `host` is kept
-because it is the C runtime bridge, not a native module.
+because it is the C runtime bridge, not a native module. The drivers are also
+rewritten to use the global `readFile`/`writeBytes` builtins instead of native
+`fs.read`/`bytes.write`; `writeBytes(path, byteArray)` is available in both the
+Rust oracle and the C runtime. A leftover top-level `EM_SELFTEST` wrapper is
+unwrapped so the generated image never needs the global `env` builtin.
 
 ```sh
 python3 tools/regen_selfhost.py \
@@ -82,12 +86,18 @@ cargo run --quiet -- build selfhost/bootstrap_compile.enm --stats
 
 ```sh
 cargo run --quiet -- run selfhost/full.enm selfhost/bootstrap_compile.enm \
-  --write-emb "$TMPDIR/bootstrap_compile.emb"
+  --write-emb "$TMPDIR/bootstrap_compile.emb" -- examples/hello.enm
 head -c 4 "$TMPDIR/bootstrap_compile.emb"   # EMBC
 ```
 
 `full.enm` uses the pure lexer, parser, AST→IR code generator and encoder;
-the Rust CLI only compiles `full.enm` and writes the resulting bytes.
+the Rust CLI only compiles `full.enm` and writes the resulting bytes. The
+trailing `-- examples/hello.enm` is required: `full.enm` runs the generated IR
+through its own self-hosted VM once, and that VM resolves `args()` through the
+`emProgramArgs` value captured from arguments after `--`. Without a program
+argument the compile-only driver falls back to `argv[len(argv) - 1]` on an
+empty array. The image itself does not embed that path; both runtimes receive
+it again in steps 4 and 5.
 
 ## 4. Execute with the C runtime — the proof
 
@@ -133,3 +143,9 @@ Step 5 also needs the round-4 CLI agent's passthrough of trailing program
 arguments to `em run-fixed`; without it the CLI rejects `examples/hello.enm`
 as an unknown option. The assertion is left strict — a missing passthrough is
 an integration failure, not a reason to compare a different command.
+
+The C VM's first-assignment path must define a name that is not yet in scope:
+`em_call_env_assign()` in `bootstrap-c/vm_call.c` saves the starting scope
+before walking parents, because the loop leaves its parameter `NULL` on a miss.
+A regression here shows up as `Unknown variable 'argvCompile'` when the
+compiled driver reads its first argument list.

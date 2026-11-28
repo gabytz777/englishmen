@@ -65,6 +65,8 @@ COMPILER_DRIVER_PREFIXES = ("argv = args()", "argvFull = args()")
 SELFTEST_GUARD_PREFIXES = (
     'if os.env("EM_SELFTEST", "") == "1"',
     'if env("EM_SELFTEST") == "1"',
+    'if os.env("EM_SELFTEST", "") != "1"',
+    'if env("EM_SELFTEST") != "1"',
 )
 
 
@@ -85,8 +87,21 @@ def split_lines(text: str) -> list[str]:
 def _first_cut(lines: list[str], prefixes: Iterable[str]) -> int | None:
     wanted = tuple(prefixes)
     for i, line in enumerate(lines):
-        if line.startswith(wanted):
+        stripped = line.lstrip()
+        if not stripped.startswith(wanted):
+            continue
+        indent = len(line) - len(stripped)
+        if indent == 0:
             return i
+        # An inverted guard often sits inside a top-level self-test runner
+        # function. Cut at the function header so its `end` is removed too.
+        for j in range(i - 1, -1, -1):
+            outer = lines[j].lstrip()
+            if lines[j].startswith(outer) and (
+                outer.startswith("function ") or outer.startswith("if ")
+            ):
+                return j
+        return i
     return None
 
 
@@ -137,6 +152,54 @@ def canonicalize_guards(text: str) -> str:
     module import merely to decide whether to run its self-tests.
     """
     return text.replace(GUARD_OLD, GUARD_NEW)
+
+
+def unwrap_driver_selftest(text: str) -> str:
+    """Drop a leftover top-level EM_SELFTEST wrapper from a bootstrap driver.
+
+    Older generated drivers captured a self-test `if ... else ... end` block
+    around their real body. The generated image must never execute that guard,
+    because the self-hosted VM does not provide the global `env` builtin. Keep
+    the `else` body and de-indent it.
+    """
+    lines = split_lines(text)
+    guard = None
+    for i, line in enumerate(lines):
+        if line.startswith(SELFTEST_GUARD_PREFIXES):
+            guard = i
+            break
+    if guard is None:
+        return text
+    else_i = None
+    end_i = None
+    for j in range(guard + 1, len(lines)):
+        stripped = lines[j].lstrip()
+        if lines[j].startswith(stripped):
+            if stripped.startswith("else"):
+                else_i = j
+            elif stripped.startswith("end"):
+                end_i = j
+                break
+    if else_i is None or end_i is None:
+        return text
+    body = [line[4:] if line.startswith("    ") else line for line in lines[else_i + 1:end_i]]
+    return "".join(lines[:guard] + body + lines[end_i + 1:])
+
+
+def rewrite_driver_modules(text: str) -> str:
+    """Replace native module calls in the bootstrap drivers with globals.
+
+    The drivers were written for the round-3 Rust host, where `fs.read` and
+    `bytes.write` were available as native imports. Generated sources must not
+    import native modules, so use the global `readFile`/`writeBytes` builtins
+    supplied by both the Rust oracle and the C runtime.
+    """
+    text = text.replace("native bytes.write", "global writeBytes")
+    text = text.replace("fs.read(", "readFile(")
+    text = text.replace("bytes.write(", "writeBytes(")
+    text = text.replace("math.pi", "pmtMathModule().pi")
+    text = text.replace("math.e", "pmtMathModule().e")
+    return text
 
 
 def strip_unguarded_imports(text: str, *, keep: frozenset[str] = frozenset({"host"})) -> str:
@@ -288,7 +351,8 @@ def main() -> None:
         parts.append(f"$- === inlined selfhost/{source.name} === -$\n")
         parts.append(strip_unguarded_imports(text))
 
-    driver = strip_unguarded_imports(canonicalize_guards(driver))
+    driver = unwrap_driver_selftest(canonicalize_guards(driver))
+    driver = strip_unguarded_imports(rewrite_driver_modules(driver))
     output = "".join(parts) + driver
     verify_no_native_imports(output)
     if args.check:
