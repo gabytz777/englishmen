@@ -1,0 +1,1107 @@
+$-!
+    selfhost/emit.enm
+
+    Compact AST JSON emitter for the v1 AST JSON schema (docs/selfhost/CONTRACT.md).
+    `emit(ast)` writes the object fields in schema order: Englishmen objects are
+    backed by sorted maps, so json.encode cannot be used to preserve that order.
+    Strings are escaped exactly like src/modules/json.rs and numbers use
+    Value::display(), which is the same format_number used by json.encode.
+
+    This file is also a CLI: `em run selfhost/emit.enm <source.enm>` prints one
+    compact JSON line. Local .enm imports are not supported yet, so a minimal
+    lexer/parser is inlined below; it covers the common statement and expression
+    forms used by the bundled examples.
+!-$
+import fs
+function hexDigit(n)
+    return "0123456789abcdef".charAt(n)
+end
+function hexByte(n)
+    hi = floor(n / 16)
+    return hexDigit(hi) + hexDigit(n - hi * 16)
+end
+function jsonString(text)
+    out = "\""
+    for ch in text.chars()
+        code = charCode(ch)
+        if ch == "\""
+            out += "\\\""
+        else if ch == "\\"
+            out += "\\\\"
+        else if ch == "\n"
+            out += "\\n"
+        else if code == 13
+            out += "\\r"
+        else if ch == "\t"
+            out += "\\t"
+        else if code == 8
+            out += "\\b"
+        else if code == 12
+            out += "\\f"
+        else if code < 32
+            out += "\\u00" + hexByte(code)
+        else
+            out += ch
+        end
+    end
+    return out + "\""
+end
+function jsonBool(value)
+    if value
+        return "true"
+    end
+    return "false"
+end
+function jsonNumber(value)
+    return toString(value)
+end
+function jsonField(name, value)
+    return jsonString(name) + ":" + value
+end
+function jsonObject(fields)
+    return "\{" + join(fields, ",") + "\}"
+end
+function jsonArray(items)
+    return "[" + join(items, ",") + "]"
+end
+function jsonNames(names)
+    parts = []
+    for name in names
+        parts.add(jsonString(toString(name)))
+    end
+    return jsonArray(parts)
+end
+function spanJson(span)
+    if isNull(span)
+        return jsonObject([jsonField("line", "1"), jsonField("col", "1")])
+    end
+    return jsonObject([jsonField("line", jsonNumber(span.get("line", 1))), jsonField("col", jsonNumber(span.get("col", 1)))])
+end
+function emit(ast)
+    if isArray(ast)
+        return jsonObject([jsonField("version", "1"), jsonField("statements", emitStatements(ast))])
+    end
+    return jsonObject([jsonField("version", jsonNumber(ast.get("version", 1))), jsonField("statements", emitStatements(ast.get("statements", [])))])
+end
+function emitStatements(statements)
+    parts = []
+    if isNull(statements) or not isArray(statements)
+        return "[]"
+    end
+    for stmt in statements
+        parts.add(emitStmt(stmt))
+    end
+    return jsonArray(parts)
+end
+function emitExprList(items)
+    parts = []
+    if isNull(items) or not isArray(items)
+        return "[]"
+    end
+    for item in items
+        parts.add(emitExpr(item))
+    end
+    return jsonArray(parts)
+end
+function emitAssignable(node)
+    kind = node.get("kind", "")
+    if kind == "Variable"
+        return jsonObject([jsonField("kind", jsonString("Variable")), jsonField("name", jsonString(toString(node.get("name", ""))))])
+    end
+    if kind == "Property"
+        return jsonObject([jsonField("kind", jsonString("Property")), jsonField("base", emitExpr(node.get("base", null))), jsonField("name", jsonString(toString(node.get("name", ""))))])
+    end
+    if kind == "Index"
+        return jsonObject([jsonField("kind", jsonString("Index")), jsonField("base", emitExpr(node.get("base", null))), jsonField("index", emitExpr(node.get("index", null)))])
+    end
+    assert(false, "emit: unknown assignable kind '" + toString(kind) + "'")
+    return "null"
+end
+function emitExpr(node)
+    if isNull(node)
+        return "null"
+    end
+    kind = node.get("kind", "")
+    if kind == "Number"
+        return jsonObject([jsonField("kind", jsonString("Number")), jsonField("value", jsonNumber(node.get("value", 0)))])
+    end
+    if kind == "String"
+        return jsonObject([jsonField("kind", jsonString("String")), jsonField("value", jsonString(toString(node.get("value", ""))))])
+    end
+    if kind == "Bool"
+        return jsonObject([jsonField("kind", jsonString("Bool")), jsonField("value", jsonBool(node.get("value", false)))])
+    end
+    if kind == "Null"
+        return jsonObject([jsonField("kind", jsonString("Null"))])
+    end
+    if kind == "Variable"
+        return jsonObject([jsonField("kind", jsonString("Variable")), jsonField("name", jsonString(toString(node.get("name", ""))))])
+    end
+    if kind == "PropertyAccess"
+        return jsonObject([jsonField("kind", jsonString("PropertyAccess")), jsonField("base", emitExpr(node.get("base", null))), jsonField("name", jsonString(toString(node.get("name", ""))))])
+    end
+    if kind == "Index"
+        return jsonObject([jsonField("kind", jsonString("Index")), jsonField("base", emitExpr(node.get("base", null))), jsonField("index", emitExpr(node.get("index", null)))])
+    end
+    if kind == "Array"
+        return jsonObject([jsonField("kind", jsonString("Array")), jsonField("items", emitExprList(node.get("items", [])))])
+    end
+    if kind == "Object"
+        fields = []
+        for pair in node.get("fields", [])
+            fields.add(jsonObject([jsonField("name", jsonString(toString(pair.get("name", "")))), jsonField("value", emitExpr(pair.get("value", null)))]))
+        end
+        return jsonObject([jsonField("kind", jsonString("Object")), jsonField("fields", jsonArray(fields))])
+    end
+    if kind == "Call"
+        return jsonObject([jsonField("kind", jsonString("Call")), jsonField("callee", emitExpr(node.get("callee", null))), jsonField("args", emitExprList(node.get("args", [])))])
+    end
+    if kind == "MethodCall"
+        return jsonObject([jsonField("kind", jsonString("MethodCall")), jsonField("receiver", emitExpr(node.get("receiver", null))), jsonField("name", jsonString(toString(node.get("name", "")))), jsonField("args", emitExprList(node.get("args", [])))])
+    end
+    if kind == "Binary"
+        return jsonObject([jsonField("kind", jsonString("Binary")), jsonField("op", jsonString(toString(node.get("op", "")))), jsonField("left", emitExpr(node.get("left", null))), jsonField("right", emitExpr(node.get("right", null))), jsonField("span", spanJson(node.get("span", null)))])
+    end
+    if kind == "Unary"
+        return jsonObject([jsonField("kind", jsonString("Unary")), jsonField("op", jsonString(toString(node.get("op", "")))), jsonField("operand", emitExpr(node.get("operand", null))), jsonField("span", spanJson(node.get("span", null)))])
+    end
+    if kind == "Ternary"
+        return jsonObject([jsonField("kind", jsonString("Ternary")), jsonField("condition", emitExpr(node.get("condition", null))), jsonField("whenTrue", emitExpr(node.get("whenTrue", null))), jsonField("whenFalse", emitExpr(node.get("whenFalse", null))), jsonField("span", spanJson(node.get("span", null)))])
+    end
+    if kind == "Postfix"
+        return jsonObject([jsonField("kind", jsonString("Postfix")), jsonField("op", jsonString(toString(node.get("op", "++")))), jsonField("target", emitExpr(node.get("target", null))), jsonField("span", spanJson(node.get("span", null)))])
+    end
+    assert(false, "emit: unknown expression kind '" + toString(kind) + "'")
+    return "null"
+end
+function emitStmt(node)
+    kind = node.get("kind", "")
+    span = spanJson(node.get("span", null))
+    if kind == "Assign"
+        return jsonObject([jsonField("kind", jsonString("Assign")), jsonField("span", span), jsonField("target", emitAssignable(node.get("target", null))), jsonField("value", emitExpr(node.get("value", null)))])
+    end
+    if kind == "CompoundAssign"
+        return jsonObject([jsonField("kind", jsonString("CompoundAssign")), jsonField("span", span), jsonField("target", emitAssignable(node.get("target", null))), jsonField("op", jsonString(toString(node.get("op", "")))), jsonField("value", emitExpr(node.get("value", null)))])
+    end
+    if kind == "ExprStmt"
+        return jsonObject([jsonField("kind", jsonString("ExprStmt")), jsonField("span", span), jsonField("expr", emitExpr(node.get("expr", null)))])
+    end
+    if kind == "If"
+        branches = []
+        for branch in node.get("branches", [])
+            branches.add(jsonObject([jsonField("condition", emitExpr(branch.get("condition", null))), jsonField("body", emitStatements(branch.get("body", [])))]))
+        end
+        alternative = node.get("else", null)
+        alternativeJson = "null"
+        if not isNull(alternative)
+            alternativeJson = emitStatements(alternative)
+        end
+        return jsonObject([jsonField("kind", jsonString("If")), jsonField("span", span), jsonField("branches", jsonArray(branches)), jsonField("else", alternativeJson)])
+    end
+    if kind == "FunctionDef"
+        return jsonObject([jsonField("kind", jsonString("FunctionDef")), jsonField("span", span), jsonField("name", jsonString(toString(node.get("name", "")))), jsonField("params", jsonNames(node.get("params", []))), jsonField("body", emitStatements(node.get("body", [])))])
+    end
+    if kind == "Return"
+        value = node.get("value", null)
+        valueJson = "null"
+        if not isNull(value)
+            valueJson = emitExpr(value)
+        end
+        return jsonObject([jsonField("kind", jsonString("Return")), jsonField("span", span), jsonField("value", valueJson)])
+    end
+    if kind == "Repeat"
+        return jsonObject([jsonField("kind", jsonString("Repeat")), jsonField("span", span), jsonField("count", emitExpr(node.get("count", null))), jsonField("body", emitStatements(node.get("body", [])))])
+    end
+    if kind == "While"
+        return jsonObject([jsonField("kind", jsonString("While")), jsonField("span", span), jsonField("condition", emitExpr(node.get("condition", null))), jsonField("body", emitStatements(node.get("body", [])))])
+    end
+    if kind == "ForIn"
+        return jsonObject([jsonField("kind", jsonString("ForIn")), jsonField("span", span), jsonField("name", jsonString(toString(node.get("name", "")))), jsonField("iterable", emitExpr(node.get("iterable", null))), jsonField("body", emitStatements(node.get("body", [])))])
+    end
+    if kind == "Break" or kind == "Continue"
+        return jsonObject([jsonField("kind", jsonString(kind)), jsonField("span", span)])
+    end
+    if kind == "Import"
+        return jsonObject([jsonField("kind", jsonString("Import")), jsonField("span", span), jsonField("name", jsonString(toString(node.get("name", ""))))])
+    end
+    assert(false, "emit: unknown statement kind '" + toString(kind) + "'")
+    return "null"
+end
+function charAtOr(chars, index)
+    if index < 0 or index >= len(chars)
+        return ""
+    end
+    return chars[index]
+end
+function isDigitText(text)
+    if len(text) != 1
+        return false
+    end
+    code = charCode(text)
+    return code >= 48 and code <= 57
+end
+function isLetterText(text)
+    if len(text) != 1
+        return false
+    end
+    code = charCode(text)
+    return (code >= 97 and code <= 122) or (code >= 65 and code <= 90) or text == "_"
+end
+function digitValue(ch)
+    return "0123456789abcdef".indexOf(ch.lower())
+end
+function parseRadix(text, radix)
+    value = 0
+    for ch in text.chars()
+        value = value * radix + digitValue(ch)
+    end
+    return value
+end
+function decodeEscape(ch)
+    if ch == "n"
+        return "\n"
+    end
+    if ch == "r"
+        return "\n"
+    end
+    if ch == "t"
+        return "\t"
+    end
+    if ch == "0"
+        return fromCharCode(0)
+    end
+    return ch
+end
+function lexString(chars, start, line, col)
+    index = start + 1
+    column = col + 1
+    literal = ""
+    parts = []
+    hasExpr = false
+    while index < len(chars)
+    ch = chars[index]
+    if ch == "\""
+        index += 1
+        column += 1
+        break
+    end
+    if ch == "\\"
+        next = charAtOr(chars, index + 1)
+        if next == "u" and charAtOr(chars, index + 2) == "\{"
+            close = index + 3
+            while close < len(chars) and chars[close] != "\}"
+            close += 1
+        end
+        digits = join(slice(chars, index + 3, close), "")
+        literal += fromCharCode(parseRadix(digits, 16))
+        column += close + 1 - index
+        index = close + 1
+    else
+        literal += decodeEscape(next)
+        index += 2
+        column += 2
+    end
+else if ch == "\{"
+    parts.add({type: "Literal", value: literal})
+    literal = ""
+    depth = 0
+    close = index
+    while close < len(chars)
+    inner = chars[close]
+    if inner == "\{"
+        depth += 1
+    else if inner == "\}"
+        depth -= 1
+        if depth == 0
+            break
+        end
+    end
+    close += 1
+end
+expression = join(slice(chars, index + 1, close), "")
+parts.add({type: "Expr", value: lex(expression)})
+hasExpr = true
+for consumed in slice(chars, index, close + 1)
+    if consumed == "\n"
+        line += 1
+        column = 1
+    else
+        column += 1
+    end
+end
+index = close + 1
+else
+    literal += ch
+    index += 1
+    column += 1
+end
+end
+if hasExpr
+    parts.add({type: "Literal", value: literal})
+    token = {type: "Interpolated", value: parts, line: line, col: col}
+else
+    token = {type: "String", value: literal, line: line, col: col}
+end
+return {token: token, index: index, line: line, col: column}
+end
+function lex(source)
+    tokens = []
+    chars = source.chars()
+    index = 0
+    line = 1
+    col = 1
+    depth = 0
+    atLineStart = true
+    operators = ["**=", "//=", "<<=", ">>=", "==", "!=", ">=", "<=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "++", "--", "&&", "||", "??", "**", "//", "<<", ">>"]
+    while index < len(chars)
+    ch = chars[index]
+    if ch == "\n"
+        if depth == 0
+            tokens.add({type: "Newline", value: "\n", line: line, col: col})
+        end
+        index += 1
+        line += 1
+        col = 1
+        atLineStart = true
+    else if ch == " " or ch == "\t" or ch == "\n"
+        index += 1
+        col += 1
+    else if ch == "$" and charAtOr(chars, index + 1) == "-"
+        while index < len(chars) and not (chars[index] == "-" and charAtOr(chars, index + 1) == "$")
+        if chars[index] == "\n"
+            line += 1
+            col = 1
+            atLineStart = true
+        else
+            col += 1
+        end
+        index += 1
+    end
+    index = min(index + 2, len(chars))
+    col += 2
+else if ch == "/" and charAtOr(chars, index + 1) == "/" and atLineStart
+    while index < len(chars) and chars[index] != "\n"
+    index += 1
+    col += 1
+end
+else if isDigitText(ch)
+start = index
+startCol = col
+if ch == "0" and (charAtOr(chars, index + 1) == "x" or charAtOr(chars, index + 1) == "X")
+    index += 2
+    col += 2
+    start = index
+    while digitValue(charAtOr(chars, index)) >= 0 and digitValue(charAtOr(chars, index)) < 16
+    index += 1
+    col += 1
+end
+value = parseRadix(join(slice(chars, start, index), ""), 16)
+else if ch == "0" and (charAtOr(chars, index + 1) == "b" or charAtOr(chars, index + 1) == "B")
+index += 2
+col += 2
+start = index
+while charAtOr(chars, index) == "0" or charAtOr(chars, index) == "1"
+index += 1
+col += 1
+end
+value = parseRadix(join(slice(chars, start, index), ""), 2)
+else
+    while isDigitText(charAtOr(chars, index))
+    index += 1
+    col += 1
+end
+if charAtOr(chars, index) == "." and isDigitText(charAtOr(chars, index + 1))
+    index += 1
+    col += 1
+    while isDigitText(charAtOr(chars, index))
+    index += 1
+    col += 1
+end
+end
+if charAtOr(chars, index) == "e" or charAtOr(chars, index) == "E"
+    index += 1
+    col += 1
+    if charAtOr(chars, index) == "+" or charAtOr(chars, index) == "-"
+        index += 1
+        col += 1
+    end
+    while isDigitText(charAtOr(chars, index))
+    index += 1
+    col += 1
+end
+end
+value = toNumber(join(slice(chars, start, index), ""))
+end
+tokens.add({type: "Number", value: value, line: line, col: startCol})
+atLineStart = false
+else if isLetterText(ch)
+start = index
+startCol = col
+while isLetterText(charAtOr(chars, index)) or isDigitText(charAtOr(chars, index))
+index += 1
+col += 1
+end
+tokens.add({type: "Ident", value: join(slice(chars, start, index), ""), line: line, col: startCol})
+atLineStart = false
+else if ch == "\""
+startCol = col
+result = lexString(chars, index, line, col)
+tokens.add(result.token)
+index = result.index
+line = result.line
+col = result.col
+atLineStart = false
+else
+    startCol = col
+    op = ""
+    for candidate in operators
+        if join(slice(chars, index, index + len(candidate)), "") == candidate
+            op = candidate
+            break
+        end
+    end
+    if op == ""
+        op = ch
+    end
+    index += len(op)
+    col += len(op)
+    if op == "(" or op == "[" or op == "\{"
+        depth += 1
+    else if op == ")" or op == "]" or op == "\}"
+        depth -= 1
+    end
+    tokens.add({type: "Op", value: op, line: line, col: startCol})
+    atLineStart = false
+end
+end
+tokens.add({type: "Eof", value: "", line: line, col: col})
+return tokens
+end
+TOKENS = []
+POS = 0
+function peekTok()
+    if POS >= len(TOKENS)
+        return TOKENS[len(TOKENS) - 1]
+    end
+    return TOKENS[POS]
+end
+function peekType()
+    return peekTok().get("type", "")
+end
+function peekText()
+    return toString(peekTok().get("value", ""))
+end
+function advance()
+    token = peekTok()
+    if POS < len(TOKENS) - 1
+        POS += 1
+    end
+    return token
+end
+function isWordToken(text)
+    for ch in text.chars()
+        if not isLetterText(ch) and not isDigitText(ch)
+            return false
+        end
+    end
+    return true
+end
+function checkToken(text)
+    if peekType() == "Eof"
+        return false
+    end
+    if isWordToken(text)
+        return peekType() == "Ident" and peekText() == text
+    end
+    return peekType() == "Op" and peekText() == text
+end
+function matchToken(text)
+    if checkToken(text)
+        advance()
+        return true
+    end
+    return false
+end
+function expectToken(text)
+    if not matchToken(text)
+        assert(false, "Expected '" + text + "' at line " + toString(peekTok().get("line", 0)))
+    end
+    return true
+end
+function skipNewlines()
+    while peekType() == "Newline"
+    advance()
+end
+end
+function endOfStatement()
+    if peekType() == "Newline"
+        advance()
+    else if peekType() != "Eof"
+        assert(false, "Expected end of statement at line " + toString(peekTok().get("line", 0)))
+    end
+end
+function spanOf(token)
+    return {line: token.get("line", 1), col: token.get("col", 1)}
+end
+function numberNode(value)
+    return {kind: "Number", value: value}
+end
+function stringNode(value)
+    return {kind: "String", value: value}
+end
+function binaryNode(op, left, right, span)
+    return {kind: "Binary", op: op, left: left, right: right, span: span}
+end
+function unaryNode(op, operand, span)
+    return {kind: "Unary", op: op, operand: operand, span: span}
+end
+function stmtNode(kind, span)
+    return {kind: kind, span: span}
+end
+function parseBlockUntil(terminators)
+    statements = []
+    skipNewlines()
+    while not (contains(terminators, peekText()) and peekType() == "Ident") and peekType() != "Eof"
+    statements.add(parseStatement())
+    skipNewlines()
+end
+return statements
+end
+function parseIf()
+    span = spanOf(advance())
+    branches = []
+    condition = parseExpression()
+    endOfStatement()
+    branches.add({condition: condition, body: parseBlockUntil(["else", "end"])})
+    alternative = null
+    while matchToken("else")
+    if matchToken("if")
+        condition = parseExpression()
+        endOfStatement()
+        branches.add({condition: condition, body: parseBlockUntil(["else", "end"])})
+    else
+        endOfStatement()
+        alternative = parseBlockUntil(["end"])
+        break
+    end
+end
+expectToken("end")
+endOfStatement()
+node = stmtNode("If", span)
+node.branches = branches
+node.set("else", alternative)
+return node
+end
+function parseFunctionDef()
+    span = spanOf(advance())
+    name = toString(peekTok().get("value", ""))
+    advance()
+    expectToken("(")
+    params = []
+    while not checkToken(")")
+    params.add(toString(peekTok().get("value", "")))
+    advance()
+    if not matchToken(",")
+        break
+    end
+end
+expectToken(")")
+endOfStatement()
+body = parseBlockUntil(["end"])
+expectToken("end")
+endOfStatement()
+node = stmtNode("FunctionDef", span)
+node.name = name
+node.params = params
+node.body = body
+return node
+end
+function parseRepeat()
+    span = spanOf(advance())
+    count = parseExpression()
+    endOfStatement()
+    body = parseBlockUntil(["end"])
+    expectToken("end")
+    endOfStatement()
+    node = stmtNode("Repeat", span)
+    node.count = count
+    node.body = body
+    return node
+end
+function parseWhile()
+    span = spanOf(advance())
+    condition = parseExpression()
+    endOfStatement()
+    body = parseBlockUntil(["end"])
+    expectToken("end")
+    endOfStatement()
+    node = stmtNode("While", span)
+    node.condition = condition
+    node.body = body
+    return node
+end
+function parseFor()
+    span = spanOf(advance())
+    name = toString(peekTok().get("value", ""))
+    advance()
+    expectToken("in")
+    iterable = parseExpression()
+    endOfStatement()
+    body = parseBlockUntil(["end"])
+    expectToken("end")
+    endOfStatement()
+    node = stmtNode("ForIn", span)
+    node.name = name
+    node.iterable = iterable
+    node.body = body
+    return node
+end
+function compoundOp(text)
+    if text == "+="
+        return "+"
+    end
+    if text == "-="
+        return "-"
+    end
+    if text == "*="
+        return "*"
+    end
+    if text == "/="
+        return "/"
+    end
+    if text == "%="
+        return "%"
+    end
+    if text == "**="
+        return "**"
+    end
+    if text == "//="
+        return "//"
+    end
+    if text == "&="
+        return "&"
+    end
+    if text == "|="
+        return "|"
+    end
+    if text == "^="
+        return "^"
+    end
+    if text == "<<="
+        return "<<"
+    end
+    if text == ">>="
+        return ">>"
+    end
+    return ""
+end
+function toAssignable(expr, span)
+    kind = expr.get("kind", "")
+    if kind == "Variable"
+        return {kind: "Variable", name: expr.get("name", "")}
+    end
+    if kind == "PropertyAccess"
+        return {kind: "Property", base: expr.get("base", null), name: expr.get("name", "")}
+    end
+    if kind == "Index"
+        return {kind: "Index", base: expr.get("base", null), index: expr.get("index", null)}
+    end
+    assert(false, "Invalid assignment target at line " + toString(span.get("line", 0)))
+    return null
+end
+function parseAssignOrExpr()
+    span = spanOf(peekTok())
+    expr = parseExpression()
+    if matchToken("=")
+        value = parseExpression()
+        endOfStatement()
+        node = stmtNode("Assign", span)
+        node.target = toAssignable(expr, span)
+        node.value = value
+        return node
+    end
+    op = compoundOp(peekText())
+    if op != "" and peekType() == "Op"
+        advance()
+        value = parseExpression()
+        endOfStatement()
+        node = stmtNode("CompoundAssign", span)
+        node.target = toAssignable(expr, span)
+        node.op = op
+        node.value = value
+        return node
+    end
+    endOfStatement()
+    node = stmtNode("ExprStmt", span)
+    node.expr = expr
+    return node
+end
+function parseStatement()
+    if peekType() == "Ident"
+        text = peekText()
+        if text == "if"
+            return parseIf()
+        end
+        if text == "function"
+            return parseFunctionDef()
+        end
+        if text == "repeat"
+            return parseRepeat()
+        end
+        if text == "while"
+            return parseWhile()
+        end
+        if text == "for"
+            return parseFor()
+        end
+        if text == "import"
+            span = spanOf(advance())
+            name = toString(peekTok().get("value", ""))
+            advance()
+            endOfStatement()
+            node = stmtNode("Import", span)
+            node.name = name
+            return node
+        end
+        if text == "return"
+            span = spanOf(advance())
+            value = null
+            if peekType() != "Newline" and peekType() != "Eof"
+                value = parseExpression()
+            end
+            endOfStatement()
+            node = stmtNode("Return", span)
+            node.value = value
+            return node
+        end
+        if text == "break" or text == "continue"
+            span = spanOf(advance())
+            endOfStatement()
+            return stmtNode(text, span)
+        end
+    end
+    return parseAssignOrExpr()
+end
+function parseInterpolated(parts, span)
+    hasExpr = false
+    for part in parts
+        if part.get("type", "") == "Expr"
+            hasExpr = true
+        end
+    end
+    if not hasExpr
+        return stringNode(toString(parts[0].get("value", "")))
+    end
+    acc = stringNode("")
+    for part in parts
+        if part.get("type", "") == "Expr"
+            subTokens = part.get("value", [])
+            savedTokens = TOKENS
+            savedPos = POS
+            TOKENS = subTokens
+            POS = 0
+            expr = parseExpression()
+            exprSpan = span
+            for token in subTokens
+                if token.get("type", "") != "Newline" and token.get("type", "") != "Eof"
+                    exprSpan = spanOf(token)
+                    break
+                end
+            end
+            TOKENS = savedTokens
+            POS = savedPos
+        else
+            expr = stringNode(toString(part.get("value", "")))
+            exprSpan = span
+        end
+        acc = binaryNode("+", acc, expr, exprSpan)
+    end
+    return acc
+end
+function parseCallArgs()
+    expectToken("(")
+    argsList = []
+    while not checkToken(")")
+    argsList.add(parseExpression())
+    if not matchToken(",")
+        break
+    end
+end
+expectToken(")")
+return argsList
+end
+function parseArrayLiteral()
+    expectToken("[")
+    items = []
+    while not checkToken("]")
+    items.add(parseExpression())
+    if not matchToken(",")
+        break
+    end
+end
+expectToken("]")
+return {kind: "Array", items: items}
+end
+function parseObjectLiteral()
+    expectToken("\{")
+    fields = []
+    while not checkToken("\}")
+    key = toString(peekTok().get("value", ""))
+    advance()
+    expectToken(":")
+    value = parseExpression()
+    fields.add({name: key, value: value})
+    if not matchToken(",")
+        break
+    end
+end
+expectToken("\}")
+return {kind: "Object", fields: fields}
+end
+function parsePostfix()
+    expr = parsePrimary()
+    while true
+    if matchToken(".")
+        name = toString(peekTok().get("value", ""))
+        advance()
+        if checkToken("(")
+            expr = {kind: "MethodCall", receiver: expr, name: name, args: parseCallArgs()}
+        else
+            expr = {kind: "PropertyAccess", base: expr, name: name}
+        end
+    else if matchToken("[")
+        index = parseExpression()
+        expectToken("]")
+        expr = {kind: "Index", base: expr, index: index}
+    else if checkToken("(")
+        expr = {kind: "Call", callee: expr, args: parseCallArgs()}
+    else if checkToken("++") or checkToken("--")
+        token = advance()
+        op = "++"
+        if token.get("value", "") == "--"
+            op = "--"
+        end
+        expr = {kind: "Postfix", op: op, target: expr, span: spanOf(token)}
+    else
+        break
+    end
+end
+return expr
+end
+function parsePower()
+    left = parsePostfix()
+    if checkToken("**")
+        token = advance()
+        right = parseUnary()
+        return binaryNode("**", left, right, spanOf(token))
+    end
+    return left
+end
+function parseUnary()
+    if checkToken("-") or checkToken("~")
+        token = advance()
+        op = "-"
+        if token.get("value", "") == "~"
+            op = "~"
+        end
+        return unaryNode(op, parseUnary(), spanOf(token))
+    end
+    return parsePower()
+end
+function parseComparison()
+    left = parseAdditive()
+    while true
+    text = peekText()
+    op = ""
+    if contains(["==", "!=", ">", "<", ">=", "<="], text) and peekType() == "Op"
+        op = text
+    end
+    if op == ""
+        break
+    end
+    token = advance()
+    left = binaryNode(op, left, parseAdditive(), spanOf(token))
+end
+return left
+end
+function parseNot()
+    if (checkToken("not") or checkToken("!")) and (peekType() == "Ident" or peekType() == "Op")
+        token = advance()
+        return unaryNode("not", parseNot(), spanOf(token))
+    end
+    return parseComparison()
+end
+function parseAnd()
+    left = parseNot()
+    while true
+    if not (checkToken("and") or checkToken("&&"))
+        break
+    end
+    token = advance()
+    left = binaryNode("and", left, parseNot(), spanOf(token))
+end
+return left
+end
+function parseShift()
+    left = parseAnd()
+    while true
+    if not (checkToken("<<") or checkToken(">>"))
+        break
+    end
+    token = peekTok()
+    op = toString(token.get("value", ""))
+    advance()
+    left = binaryNode(op, left, parseAnd(), spanOf(token))
+end
+return left
+end
+function parseBitAnd()
+    left = parseShift()
+    while checkToken("&")
+    token = advance()
+    left = binaryNode("&", left, parseShift(), spanOf(token))
+end
+return left
+end
+function parseBitXor()
+    left = parseBitAnd()
+    while checkToken("^")
+    token = advance()
+    left = binaryNode("^", left, parseBitAnd(), spanOf(token))
+end
+return left
+end
+function parseBitOr()
+    left = parseBitXor()
+    while checkToken("|")
+    token = advance()
+    left = binaryNode("|", left, parseBitXor(), spanOf(token))
+end
+return left
+end
+function parseOr()
+    left = parseBitOr()
+    while checkToken("or") or checkToken("||")
+    token = advance()
+    left = binaryNode("or", left, parseBitOr(), spanOf(token))
+end
+return left
+end
+function parseCoalesce()
+    left = parseOr()
+    if checkToken("??")
+        token = advance()
+        left = binaryNode("??", left, parseCoalesce(), spanOf(token))
+    end
+    return left
+end
+function parseExpression()
+    condition = parseCoalesce()
+    if checkToken("?")
+        token = advance()
+        whenTrue = parseExpression()
+        expectToken(":")
+        whenFalse = parseExpression()
+        return {kind: "Ternary", condition: condition, whenTrue: whenTrue, whenFalse: whenFalse, span: spanOf(token)}
+    end
+    return condition
+end
+function parseAdditive()
+    left = parseMultiplicative()
+    while true
+    if not (checkToken("+") or checkToken("-"))
+        break
+    end
+    token = advance()
+    op = "+"
+    if token.get("value", "") == "-"
+        op = "-"
+    end
+    left = binaryNode(op, left, parseMultiplicative(), spanOf(token))
+end
+return left
+end
+function parseMultiplicative()
+    left = parseUnary()
+    while true
+    text = peekText()
+    op = ""
+    if peekType() == "Op" and contains(["*", "/", "%", "//"], text)
+        op = text
+    else if peekType() == "Ident" and text == "div"
+        op = "//"
+    end
+    if op == ""
+        break
+    end
+    token = advance()
+    left = binaryNode(op, left, parseUnary(), spanOf(token))
+end
+return left
+end
+function parsePrimary()
+    token = peekTok()
+    text = toString(token.get("value", ""))
+    type = token.get("type", "")
+    if type == "Number"
+        advance()
+        return numberNode(token.get("value", 0))
+    end
+    if type == "String"
+        advance()
+        return stringNode(text)
+    end
+    if type == "Interpolated"
+        advance()
+        return parseInterpolated(token.get("value", []), spanOf(token))
+    end
+    if type == "Ident"
+        advance()
+        if text == "true"
+            return {kind: "Bool", value: true}
+        end
+        if text == "false"
+            return {kind: "Bool", value: false}
+        end
+        if text == "null"
+            return {kind: "Null"}
+        end
+        return {kind: "Variable", name: text}
+    end
+    if type == "Op" and text == "("
+        advance()
+        expr = parseExpression()
+        expectToken(")")
+        return expr
+    end
+    if type == "Op" and text == "["
+        return parseArrayLiteral()
+    end
+    if type == "Op" and text == "\{"
+        return parseObjectLiteral()
+    end
+    assert(false, "Unexpected token '" + text + "' at line " + toString(token.get("line", 0)))
+    return null
+end
+function parse(source)
+    TOKENS = lex(source)
+    POS = 0
+    statements = []
+    skipNewlines()
+    while peekType() != "Eof"
+    statements.add(parseStatement())
+    skipNewlines()
+end
+return {version: 1, statements: statements}
+end
+paths = []
+for argument in args()
+    if fs.exists(argument) and argument.endsWith(".enm")
+        paths.add(argument)
+    end
+end
+if len(paths) < 2
+    say("Usage: em run selfhost/emit.enm <source.enm>")
+else
+    say(emit(parse(fs.read(paths[len(paths) - 1]))))
+end
