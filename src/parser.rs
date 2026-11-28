@@ -148,6 +148,7 @@ impl Parser {
                     Ok(Stmt::Return(Some(expr), span))
                 }
             }
+            Token::Repeat if self.repeat_is_call() => self.parse_assign_or_expr(),
             Token::Repeat => self.parse_repeat(),
             Token::While => self.parse_while(),
             Token::For => self.parse_for(),
@@ -221,6 +222,35 @@ impl Parser {
         };
         self.advance();
         Ok(name)
+    }
+
+    /// `repeat` is both a loop keyword and a global builtin. At statement
+    /// level, a parenthesised argument list containing a top-level comma can
+    /// only be the call form, so treat it as an expression instead of a loop.
+    fn repeat_is_call(&self) -> bool {
+        if !matches!(self.peek(), Token::Repeat)
+            || !self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|next| matches!(next.token, Token::LParen))
+        {
+            return false;
+        }
+        let mut depth = 0usize;
+        for spanned in &self.tokens[self.pos + 1..] {
+            match &spanned.token {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                Token::Comma if depth == 1 => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn parse_block_until(&mut self, terminators: &[Token]) -> Result<Vec<Stmt>, EmError> {
@@ -749,7 +779,7 @@ impl Parser {
         if !self.check(&Token::RBrace) {
             loop {
                 self.skip_newlines();
-                let key = self.expect_identifier("as object key")?;
+                let key = self.expect_member_name("as object key")?;
                 self.expect(Token::Colon, "after object key")?;
                 self.skip_newlines();
                 let value = self.parse_expression()?;
@@ -1026,5 +1056,26 @@ mod tests {
         let left = parse_src("x = a and b or not c\n");
         let right = parse_src("x = a && b || !c\n");
         assert_eq!(without_spans(&left), without_spans(&right));
+    }
+
+    #[test]
+    fn repeat_call_and_loop_are_distinguished() {
+        let call = parse_src("repeat(\"ab\", 2)\n");
+        assert!(matches!(call.as_slice(), [Stmt::ExprStmt(Expr::Call(_, _), _)]));
+        let loop_stmt = parse_src("repeat(3)\n    say(\"hi\")\nend\n");
+        assert!(matches!(loop_stmt.as_slice(), [Stmt::Repeat(_, _, _)]));
+        let space_loop = parse_src("repeat (3)\n    say(\"hi\")\nend\n");
+        assert!(matches!(space_loop.as_slice(), [Stmt::Repeat(_, _, _)]));
+    }
+
+    #[test]
+    fn keyword_names_work_as_object_keys() {
+        let stmts = parse_src("obj = {end: 7, repeat: \"again\"}\n");
+        let Stmt::Assign(_, Expr::Object(fields), _) = &stmts[0] else {
+            panic!("expected object literal");
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].0, "end");
+        assert_eq!(fields[1].0, "repeat");
     }
 }

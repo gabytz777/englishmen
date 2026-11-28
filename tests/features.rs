@@ -80,6 +80,16 @@ fn agree(name: &str, source: &str) -> String {
         vm.stdout, interpreted.stdout,
         "backends disagree for {name}"
     );
+    assert!(
+        status_text(&vm).is_empty(),
+        "VM wrote diagnostics for {name}: {}",
+        status_text(&vm)
+    );
+    assert!(
+        status_text(&interpreted).is_empty(),
+        "interpreter wrote diagnostics for {name}: {}",
+        status_text(&interpreted)
+    );
     let stdout = output_text(&vm);
     let _ = fs::remove_dir_all(&dir);
     stdout
@@ -443,7 +453,7 @@ fn formatter_keeps_keyword_named_calls_hugged() {
     let file = dir.join("program.enm");
     fs::write(
         &file,
-        "say(repeat(\"ab\", 2))\ntext = \"ha\"\nsay(text.repeat(2))\nflag = true\nsay(flag.and(false))\n",
+        "say(repeat(\"ab\", 2))\nrepeat(\"ab\", 2)\ntext = \"ha\"\nsay(text.repeat(2))\nflag = true\nsay(flag.and(false))\nrepeat (2)\n    say(1)\nend\n",
     )
     .unwrap();
     let path = file.to_str().unwrap();
@@ -454,7 +464,8 @@ fn formatter_keeps_keyword_named_calls_hugged() {
     assert!(source.contains("repeat(\"ab\", 2)"), "{source}");
     assert!(source.contains("text.repeat(2)"), "{source}");
     assert!(source.contains("flag.and(false)"), "{source}");
-    assert!(!source.contains("repeat ("), "{source}");
+    assert!(!source.contains("repeat (\"ab\""), "{source}");
+    assert!(source.contains("repeat (2)"), "{source}");
 
     let check = run(&["fmt", path, "--check"], Some(&dir));
     assert!(check.status.success(), "{}", status_text(&check));
@@ -463,8 +474,29 @@ fn formatter_keeps_keyword_named_calls_hugged() {
 
 #[test]
 fn bundled_feature_examples_agree_across_backends() {
-    let names = ["strings", "arrays", "objects-api", "files", "json"];
-    for name in names {
+    let expected = [
+        (
+            "strings",
+            "Hello, Alex!\nALEX\n1\nhahaha\n***hi\none | two | three\nx-b-x\ntrimmed\n[\"line1\", \"line2\"]\n",
+        ),
+        (
+            "arrays",
+            "[9, 4, 1, 2, 3, 4, 5, 7]\n8\n6\n2\n[1, 2, 3]\n4-1-2-3-4-5-7\n[1, 2, 2, 3]\n[3, 2, 1]\n[[1, \"a\"], [2, \"b\"]]\n[1, 2, 3, 4]\n",
+        ),
+        (
+            "objects-api",
+            "Alex\n[\"age\", \"city\", \"name\", \"tags\"]\n[18, \"London\", \"Alex\", [\"dev\", \"em\"]]\ntrue\nunknown\n4\nfalse\nage: 18\ncity: London\nname: Alex\ntags: [\"dev\", \"em\"]\n10\nfalse\n",
+        ),
+        (
+            "files",
+            "true\n[\"first line\", \"second line\"]\n23\n23\ntrue\nfalse\ntrue\ntrue\ntrue\n",
+        ),
+        (
+            "json",
+            "{\"active\":true,\"name\":\"Alex\",\"scores\":[9,7,10]}\ntrue\nfalse\nAlex\n7\n[9, 8, 10]\n{\n  \"items\": [\n    1,\n    2\n  ],\n  \"ok\": true\n}\n",
+        ),
+    ];
+    for (name, expected_output) in expected {
         let dir = scratch(&format!("example_{name}"));
         let file = dir.join(format!("{name}.enm"));
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -485,9 +517,42 @@ fn bundled_feature_examples_agree_across_backends() {
             status_text(&interpreted)
         );
         assert_eq!(vm.stdout, interpreted.stdout, "examples disagree for {name}");
-        assert!(!vm.stdout.is_empty(), "example {name} printed nothing");
+        assert_eq!(
+            output_text(&vm),
+            expected_output,
+            "example {name} produced unexpected output"
+        );
+        assert!(
+            status_text(&vm).is_empty(),
+            "VM wrote diagnostics for {name}: {}",
+            status_text(&vm)
+        );
+        assert!(
+            status_text(&interpreted).is_empty(),
+            "interpreter wrote diagnostics for {name}: {}",
+            status_text(&interpreted)
+        );
         let _ = fs::remove_dir_all(&dir);
     }
+}
+
+fn registered_builtin_count() -> usize {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/builtins.rs");
+    let source = fs::read_to_string(path).unwrap();
+    let block = source
+        .split("const EXPECTED_BUILTINS: &[&str] = &[")
+        .nth(1)
+        .expect("builtin catalogue not found")
+        .split("];")
+        .next()
+        .unwrap();
+    block
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            line.starts_with('"') && line.ends_with("\",")
+        })
+        .count()
 }
 
 #[test]
@@ -501,7 +566,22 @@ fn doc_reference_lists_the_current_catalogue() {
     ] {
         assert!(stdout.contains(name), "em doc is missing module '{name}'");
     }
-    for text in ["while / break / continue", "69 global builtins", "**", "//", "??"] {
+    let count = registered_builtin_count();
+    for text in [
+        "while / break / continue",
+        &format!("{count} global builtins"),
+        "**",
+        "//",
+        "??",
+    ] {
         assert!(stdout.contains(text), "em doc is missing '{text}'");
     }
+    let guide = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/guides/10-builtins.md"),
+    )
+    .unwrap();
+    assert!(
+        guide.contains(&format!("all {count} registered functions")),
+        "builtins guide has a stale catalogue count"
+    );
 }

@@ -1,6 +1,6 @@
 # Arrays
 
-Arrays are ordered lists. Indexing is zero-based and out-of-range reads return `null`.
+Arrays are ordered lists. Indexing is zero-based; out-of-range `xs[i]` reads are errors, while the query methods below use softer fallbacks.
 
 ```text
 xs = [10, 20, 30]
@@ -36,7 +36,7 @@ say(xs.length()) $- 4 -$
 | `unique()` | Remove duplicates |
 | `flatten()` | Flatten one or more nested array levels |
 
-Indices count characters for strings and elements for arrays. Methods return `null` or an empty result for out-of-range positions rather than panicking.
+Indices count elements for arrays and characters for strings. Most query methods return `null` or an empty result for out-of-range positions; `insert()` clamps to the array bounds and `swap()` returns `false` for invalid indices.
 
 Global array builtins complement the methods:
 

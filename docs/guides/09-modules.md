@@ -46,4 +46,4 @@ say(loaded.name)
 
 Some names exist both as global builtins and module functions. Globals are convenient for one-off scripts; modules group related operations and are preferred for larger programs. Where semantics differ, the module form follows the behaviour documented in its guide (for example, `string.pad` alignment names and JSON cycle errors).
 
-`import gfx` also powers the bundled 3D renderer examples in `renderer/render.enm` and `renderer/render_ascii.enm`.
+`import gfx` powers the bundled 3D renderer in `renderer/render.enm`. `renderer/render_ascii.enm` instead uses a character framebuffer with `math` and needs no `gfx` import.

@@ -43,4 +43,4 @@ The module also provides `abs`, `floor`, `ceil`, `round`, `min`, `max`, `log`, `
 
 ## Global numeric builtins
 
-`range`, `sum`, `average`, `min`, `max`, `abs`, `clamp`, `pow`, `sqrt`, `floor`, `ceil`, `round`, `sign`, `parseInt`, `parseFloat`, and `toNumber` are available without an import. Conversion builtins reject non-finite tokens such as `NaN` and `inf`.
+`range`, `sum`, `average`, `min`, `max`, `abs`, `clamp`, `pow`, `sqrt`, `floor`, `ceil`, `round`, `sign`, `parseInt`, `parseFloat`, and `toNumber` are available without an import. `toNumber` rejects non-finite tokens such as `NaN` and `inf` when parsing strings; `parseFloat` accepts Rust's non-finite spellings.

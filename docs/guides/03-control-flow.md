@@ -32,7 +32,7 @@ repeat 3
 end
 ```
 
-`repeat` takes a non-negative whole number. It can be nested inside `if` and other loops.
+`repeat` takes a non-negative number; fractional counts are truncated. It can be nested inside `if` and other loops.
 
 ## For loops
 

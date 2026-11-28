@@ -19,13 +19,13 @@ say(type(scores))    $- array -$
 
 | Type | Example | Notes |
 | --- | --- | --- |
-| number | `3`, `3.5`, `-2` | IEEE-754 doubles; `NaN`/infinite values are rejected by conversion builtins |
+| number | `3`, `3.5`, `-2` | IEEE-754 doubles; `toNumber` rejects non-finite strings, while `parseFloat` accepts `NaN`/`inf` spellings |
 | string | `"hello"` | Double quoted, UTF-8, supports interpolation and escapes |
 | boolean | `true`, `false` | `and`, `or`, `not` work on booleans |
 | null | `null` | Absence of a value |
 | array | `[1, 2, 3]` | Indexable with `[0]`; grows with `.add()` |
 | object | `{name: "Alex"}` | Dot access and nested objects supported |
-| function/native | `add`, `say` | First-class callable values |
+| function/native | `len`, `pow` | First-class callable values; `say(...)` is a statement |
 
 ## Conversion builtins
 

@@ -16,7 +16,7 @@ say(parseInt("ff", 16))  $- 255 -$
 
 `len`, `input`, `print`, `format`, `trim`, `upper`, `lower`, `split`, `join`, `replace`, `startsWith`, `endsWith`, `repeat`, `indexOf`, `contains`.
 
-`say(...)` is a language statement rather than a global function; it adds a newline. `input()` reads a line from stdin, `print` writes without a trailing newline, and `format` builds a string from a template and values.
+`say(...)` is a language statement rather than a global function; it adds a newline. `input()` reads a line from stdin, `print` writes its joined arguments with a trailing newline, and `format` builds a string from a template and values.
 
 ## Collections
 
@@ -32,7 +32,7 @@ say(keys({a: 1, b: 2}))      $- ["a", "b"] -$
 
 `pow`, `sqrt`, `floor`, `ceil`, `round`, `sign`, `random`, `randomInt`, `seed`, `randomChoice`, `shuffle`.
 
-`seed(n)` makes interpreter and VM runs reproducible. `random.uuid()` uses OS entropy and is intentionally unaffected by `seed`.
+`seed(n)` makes interpreter and VM runs reproducible. `random.uuid()` prefers OS entropy, with a seeded-PRNG fallback when entropy is unavailable.
 
 ## Files, environment, and time
 
@@ -52,4 +52,4 @@ assert(3 > 2, "math still works")
 
 ## Error behaviour
 
-Builtins return errors rather than panicking. Notable guards include bounded `repeat`, finite-only `toNumber`, Unicode-correct string `indexOf`, and poison-safe random state.
+Builtins return errors rather than panicking. Notable guards include bounded `repeat`, finite-only string parsing in `toNumber`, Unicode-correct string `indexOf`, and poison-safe random state. `parseFloat` accepts Rust's non-finite spellings (`NaN`, `inf`).

@@ -137,54 +137,40 @@ short notice, and only `em update` changes the executable.
 An installed `em` checks for updates at most once every 24 hours. The result is
 cached in the platform configuration directory (or `$EM_HOME/config` when
 `EM_HOME` is set), so normal commands do not make a network request every time.
-When a newer stable release exists, the next command prints a notification on
-stderr:
+When a newer stable release exists, the next command prints a one-line notice
+on stdout:
 
 ```text
-A new Englishmen version is available!
-
-Installed: v1.5.1
-Latest:    v1.6.0
-
-Run 'em update' to install.
+Update available: v1.6.0 (you have v1.5.1). Run 'em update' to install.
 ```
 
 Automatic checks are quiet, bounded by a short timeout, and never fail a
-command if the network is unavailable. They are skipped for `em update`, when
-`--quiet`/`-q` or `ENGLISHMEN_QUIET` is set, in CI, and when notifications are
-disabled. Deprecated and prerelease tags (such as `v1.6.0-beta`) are ignored,
-and an older release is never installed over a newer build.
+command if the network is unavailable. They run only when stdout is a terminal,
+so scripts and CI stay clean; set `EM_UPDATE_CHECK_FORCE=1` to opt in. They are
+also skipped for `update`, `install`, `uninstall`, `repair`, `--help`/`-h`, and
+`--version`/`-v`, and when notifications are disabled. Deprecated and
+prerelease tags (such as `v1.6.0-beta`) are ignored, and an older release is
+never installed over a newer build.
 
 ### Manual updates
 
 ```bash
 em update                       # install the latest stable release
 em update --check               # check without installing
-em update --ignore              # dismiss notifications for 24 hours
-em update --later               # snooze notifications for 7 days
-em update --disable-notifications
-em update --enable-notifications
-em update --quiet               # suppress progress messages
+em update --notifications off   # or 'on' to re-enable startup notices
 em update --help
 ```
 
-`--check` refreshes the cached release information but does not change your
-notification preferences or snooze schedule. `--ignore` and `--later` only
-affect when the next automatic notice appears. Turning notifications off also
-stops automatic network checks; manual `em update` and `em update --check`
-still work.
+`--check` always contacts GitHub Releases and never changes your notification
+preference or installs anything. Turning notifications off also stops automatic
+network checks; manual `em update` and `em update --check` still work.
 
 ### Environment variables
 
 | Variable | Effect |
 | --- | --- |
-| `ENGLISHMEN_NO_UPDATE_CHECK=1` | Disable automatic checks only. Manual checks still work. |
-| `ENGLISHMEN_NO_UPDATES=1` | Disable the updater completely, including `em update`. |
-| `ENGLISHMEN_UPDATE_CONFIG=<path>` | Use a custom updater state file. |
-| `ENGLISHMEN_QUIET=1` | Suppress automatic notifications. |
-
-`EM_NO_UPDATES=1` and `EM_UPDATE_CONFIG=<path>` are also accepted as short
-aliases.
+| `EM_NO_UPDATE_CHECK=1` | Disable automatic checks only. Manual checks still work. |
+| `EM_UPDATE_CHECK_FORCE=1` | Run an automatic check even when stdout is not a terminal. |
 
 ### How installation is verified
 
@@ -342,6 +328,7 @@ em hello.enm --interpret
 ## Developer commands
 
 ```bash
+em run hello.enm            # Same as `em hello.enm`; accepts .enm or .emb
 em check hello.enm          # Report syntax/compiler errors without writing files
 em fmt hello.enm            # Format in place; --check only reports differences
 em eval '1 + 2'             # Compile and run a one-line program
@@ -425,7 +412,7 @@ Englishmen REPL
 18
 ```
 
-Multiline constructs (`if`/`function`/`repeat`/`while`/`for` ... `end`) are
+Multiline constructs (`if`/`function`/`repeat`/`for` ... `end`) are
 buffered until they're complete. Each completed snippet is compiled and run on
 the same VM as a program file, so the REPL and `em file.enm` behave identically;
 the variables you define stay in the VM between inputs.
@@ -603,14 +590,14 @@ say(random.int(1, 6))
 
 Twelve modules ship inside the binary:
 
-- **math** — `sqrt`, `pow`, trigonometry, rounding, GCD/LCM, primes, constants
-- **time** — `now`, `sleep`, date/time parts, `format`, `iso`, `millis`, `elapsed`
+- **math** — trigonometry, powers, rounding, GCD/LCM, primes, constants
+- **time** — `now`, `sleep`, date/time parts, `format`, `iso`, `isoUtc`, `millis`, `elapsed`
 - **qrc** — `make(text, path)` generates a QR-code PNG (no external binaries)
-- **cowsay** — `say(message)` prints ASCII-art cow speech (no external `cowsay` required)
-- **string** — case, padding, splitting, joining, predicates, repeat/trim helpers
-- **json** — `encode`, `decode`, `pretty`, `isValid`, dotted `get`/`set`
-- **fs** — `read`, `write`, `append`, `list`, `mkdir`, `copy`, `move`, `metadata`
-- **os** — `name`, `arch`, `platform`, `args`, `env`, `cwd`, `homeDir`, `pid`
+- **cowsay** — `say(text)` prints ASCII-art speech (no external `cowsay` required)
+- **string** — case, `pad`, splitting, joining, predicates, repeat/trim helpers
+- **json** — `encode`, `decode`, `pretty`, `isValid`, `get`, `set`
+- **fs** — `read`, `write`, `append`, `exists`, `list`, `mkdir`, `remove`, `copy`, `move`, `metadata`, `size`
+- **os** — `name`, `arch`, `platform`, `args`, `env`, `cwd`, `tempDir`, `homeDir`, `pid`, `version`
 - **random** — `float`, `int`, `choice`, `sample`, `shuffle`, `seed`, `uuid`
 - **collections** — sorting, ranges, sums, zip/enumerate/chunk, object helpers
 - **gfx** — `canvas(width, height)` with `set`, `get`, `clear`, `text`, `save(path)`
@@ -619,32 +606,6 @@ Twelve modules ship inside the binary:
 All standard libraries are implemented in Rust and ship inside the `em`
 binary — no Python, Node, or other external runtimes required. See
 [the modules guide](docs/guides/09-modules.md) for signatures and examples.
-
-## Updating Englishmen
-
-```text
-em update                Check for and install the latest version
-em update --check        Check only — never downloads or installs
-em update --notifications off
-                         Turn off the automatic startup notice (on by default)
-```
-
-`em update --check` always contacts GitHub Releases and shows whether your
-installed version is current:
-
-```text
-Checking for Englishmen updates...
-
-Update available!
-
-Installed: v1.2.0
-Latest:    v1.3.0
-
-Run 'em update' to install.
-```
-
-Automatic checks run at most once every 24 hours, only print a notice when a
-newer version exists, and never install anything.
 
 ## Feature catalogue and guides
 

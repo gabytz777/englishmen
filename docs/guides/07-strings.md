@@ -30,7 +30,7 @@ Comments can live inside an interpolation: `say("value={$- debug -$ x}")`. `em f
 | `padLeft(width, fill)`, `padRight(width, fill)` | Padding |
 | `reverse()` | Character reversal |
 | `toNumber()` | Number or `null` on failure |
-| `isDigit()`, `isAlpha()` | Character-class checks |
+| `isDigit()`, `isAlpha()` | True only when every character is a digit/alphabetic; false on empty strings |
 
 ## Global string builtins
 

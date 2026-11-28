@@ -15,7 +15,7 @@ person.address = {postcode: "NW1"}
 say(person.address.postcode)
 ```
 
-Missing fields read as `null`.
+Missing fields raise an `Unknown property` error; use `obj.get(key)` or `obj.get(key, fallback)` for `null`/default behavior.
 
 ## Object methods
 

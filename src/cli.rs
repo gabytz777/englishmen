@@ -880,14 +880,15 @@ Methods
     boolean (5)              toggle, toString, and, or, xor
 
 Standard modules (import <name> first)
-    math    sqrt, pow, sin/cos/tan, round, gcd, pi, e
-    time    now, sleep, format, iso, millis, elapsed
+    math    sqrt, pow, sin/cos/tan, round, gcd, isPrime, pi, e
+    time    now, sleep, format, iso, isoUtc, millis, elapsed
     qrc     make(text, path) — write a QR code PNG
-    cowsay  say(message) — ASCII-art speech
+    cowsay  say(text) — ASCII-art speech
     string  upper, lower, trim, pad, split, join, predicates
     json    encode, decode, pretty, isValid, get, set
-    fs      read, write, append, list, mkdir, copy, move
-    os      name, arch, args, env, cwd, homeDir, pid
+    fs      read, write, append, exists, list, mkdir, remove, copy, move,
+            metadata, size
+    os      name, arch, platform, args, env, cwd, tempDir, homeDir, pid, version
     random  float, int, choice, sample, shuffle, seed, uuid
     collections
             sorted, range, sum, zip, chunk, get, set
@@ -899,8 +900,9 @@ Comments
        comment -$
 
 Numbers, strings, booleans, arrays and objects are the value types. Operators:
-+ - * / % ** //, == != > < >= <=, and/or/not/&&/||/!, & | ^ ~ << >>,
-?: (ternary), ?? (null coalescing), += -= *= /= %= **= //= ++ --.
++ - * / % ** // (or div), == != > < >= <=, and/or/not/&&/||/!,
+& | ^ ~ << >>, ?: (ternary), ?? (null coalescing),
++= -= *= /= %= **= //= &= |= ^= <<= >>= ++ --.
 Run 'em --help' for CLI commands.
 "#;
 
@@ -1376,6 +1378,40 @@ fn prefix_position(previous: Option<&Token>) -> bool {
     }
 }
 
+/// Does the parenthesised list starting at `lparen` contain a top-level
+/// comma? That distinguishes `repeat(text, count)` from `repeat (count)`.
+fn paren_call_has_comma(tokens: &[Token], lparen: usize) -> bool {
+    let Some(rest) = tokens.get(lparen..) else {
+        return false;
+    };
+    let mut depth = 0usize;
+    for token in rest {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return false;
+                }
+            }
+            Token::Comma if depth == 1 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn repeat_line_is_call(line: &[SpannedToken]) -> bool {
+    if !line
+        .first()
+        .is_some_and(|first| matches!(first.token, Token::Repeat))
+    {
+        return false;
+    }
+    let tokens: Vec<Token> = line.iter().map(|spanned| spanned.token.clone()).collect();
+    tokens.get(1).is_some_and(|t| matches!(t, Token::LParen)) && paren_call_has_comma(&tokens, 1)
+}
+
 fn needs_space(tokens: &[Token], i: usize) -> bool {
     if i == 0 {
         return false;
@@ -1411,29 +1447,33 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
     // double as call names (`repeat(...)`, `text.repeat(...)`) must hug too,
     // but a keyword at statement level still keeps its separating space.
     if matches!(token, Token::LParen | Token::LBracket) {
-        let keyword_call = matches!(
-            prev,
-            Token::True
-                | Token::False
-                | Token::Null
-                | Token::If
-                | Token::Else
-                | Token::End
-                | Token::Function
-                | Token::Return
-                | Token::Repeat
-                | Token::While
-                | Token::For
-                | Token::In
-                | Token::Import
-                | Token::And
-                | Token::Or
-                | Token::Not
-                | Token::Break
-                | Token::Continue
-                | Token::Div
-        ) && (matches!(before, Some(Token::Dot)) || matches!(prev, Token::Repeat));
-        if keyword_call {
+        let keyword_member_call = matches!(before, Some(Token::Dot))
+            && matches!(
+                prev,
+                Token::True
+                    | Token::False
+                    | Token::Null
+                    | Token::If
+                    | Token::Else
+                    | Token::End
+                    | Token::Function
+                    | Token::Return
+                    | Token::Repeat
+                    | Token::While
+                    | Token::For
+                    | Token::In
+                    | Token::Import
+                    | Token::And
+                    | Token::Or
+                    | Token::Not
+                    | Token::Break
+                    | Token::Continue
+                    | Token::Div
+            );
+        let repeat_call = matches!(token, Token::LParen)
+            && matches!(prev, Token::Repeat)
+            && paren_call_has_comma(tokens, i);
+        if keyword_member_call || repeat_call {
             return false;
         }
         return !matches!(
@@ -1743,10 +1783,9 @@ fn render_format(
             // keeps the indent of the `if` that started it.
         } else if plain_else {
             indent = level + 1;
-        } else if matches!(
-            first_token,
-            Token::If | Token::Function | Token::Repeat | Token::For
-        ) {
+        } else if matches!(first_token, Token::If | Token::Function | Token::For)
+            || (matches!(first_token, Token::Repeat) && !repeat_line_is_call(&line.tokens))
+        {
             indent += 1;
         }
         pending_else = plain_else;
@@ -2069,5 +2108,14 @@ mod tests {
             format_source(source).unwrap(),
             "x = -1\nsay(-x)\nfunction f(a, b)\n    return a - b\nend\n"
         );
+    }
+
+    #[test]
+    fn formatter_distinguishes_repeat_call_from_loop() {
+        let source = "repeat(\"ab\",2)\nrepeat (3)\n say(1)\nend\n";
+        let expected = "repeat(\"ab\", 2)\nrepeat (3)\n    say(1)\nend\n";
+        let formatted = format_source(source).unwrap();
+        assert_eq!(formatted, expected);
+        assert_eq!(format_source(&formatted).unwrap(), expected);
     }
 }

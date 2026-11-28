@@ -43,7 +43,7 @@ say(twice(inc, 5))  $- 7 -$
 
 ## Builtins and module functions
 
-Global builtins such as `len`, `range`, `say`, `jsonEncode`, and `math`-style helpers are available in every scope. Module functions are accessed with dot notation:
+Global builtins such as `len`, `range`, `pow`, and `jsonEncode` are available in every scope. `say(...)` is a statement, not a callable value. Module functions are accessed with dot notation:
 
 ```text
 import math
