@@ -1,0 +1,996 @@
+$- Pure Englishmen implementations of the native `math` and `text` modules.
+
+   Self-contained by design: no local `.enm` imports exist, so every globally
+   visible helper is prefixed with `pmt`. `pmtMathModule()` and
+   `pmtTextModule()` return ordinary objects whose keys are the native member
+   names and whose values are Englishmen functions. `pmtAllModules()` bundles
+   both objects for an import bridge.
+
+   Implementations use global builtins only. The native `math` and `text`
+   modules are imported solely in the guarded parity test at the bottom,
+   where they act as reference oracles.
+-$
+import os
+$- ---------------------------------------------------------------------------
+   Shared argument and value helpers
+   --------------------------------------------------------------------------- -$
+function pmtFinite(value)
+    if type(value) != "number"
+        return false
+    end
+    if isNaN(value)
+        return false
+    end
+    return abs(value) <= 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+end
+function pmtNumberArg(value, context)
+    assert(type(value) == "number", "Expected a number " + context)
+    return value
+end
+function pmtStringArg(value, context)
+    assert(type(value) == "string", "Expected a string " + context)
+    return value
+end
+function pmtWhole(value)
+    if not pmtFinite(value)
+        return false
+    end
+    if floor(value) != value
+        return false
+    end
+    return value >= -9223372036854776000 and value <= 9223372036854776000
+end
+function pmtWholeArg(value, context)
+    assert(pmtWhole(value), "Expected a whole number " + context)
+    return value
+end
+function pmtWidthArg(value, context)
+    assert(pmtFinite(value) and floor(value) == value and value >= 0 and value <= 18446744073709552000, "Expected a non-negative whole number " + context)
+    return value
+end
+function pmtNaN()
+    return pow(-1, 0.5)
+end
+function pmtInfinity()
+    return pow(10, 1000)
+end
+function pmtChars(text)
+    return split(text, "")
+end
+function pmtMin2(left, right)
+    if isNaN(left)
+        return right
+    end
+    if isNaN(right)
+        return left
+    end
+    if right < left
+        return right
+    end
+    return left
+end
+function pmtMax2(left, right)
+    if isNaN(left)
+        return right
+    end
+    if isNaN(right)
+        return left
+    end
+    if right > left
+        return right
+    end
+    return left
+end
+$- ---------------------------------------------------------------------------
+   Math internals
+   --------------------------------------------------------------------------- -$
+function pmtLn(value)
+    if isNaN(value)
+        return pmtNaN()
+    end
+    if not pmtFinite(value)
+        return pmtInfinity()
+    end
+    return log10(value) * 2.302585092994046
+end
+function pmtReduceAngle(value)
+    return value - floor(value / 6.283185307179586) * 6.283185307179586
+end
+function pmtSinSmall(value)
+    pmtSinSmall_squared = value * value
+    pmtSinSmall_term = value
+    pmtSinSmall_sum = value
+    pmtSinSmall_i = 1
+    while pmtSinSmall_i <= 20
+    pmtSinSmall_term = (0 - pmtSinSmall_term) * pmtSinSmall_squared / ((2 * pmtSinSmall_i) * (2 * pmtSinSmall_i + 1))
+    pmtSinSmall_sum += pmtSinSmall_term
+    pmtSinSmall_i += 1
+end
+return pmtSinSmall_sum
+end
+function pmtCosSmall(value)
+    pmtCosSmall_squared = value * value
+    pmtCosSmall_term = 1
+    pmtCosSmall_sum = 1
+    pmtCosSmall_i = 1
+    while pmtCosSmall_i <= 20
+    pmtCosSmall_term = (0 - pmtCosSmall_term) * pmtCosSmall_squared / ((2 * pmtCosSmall_i - 1) * (2 * pmtCosSmall_i))
+    pmtCosSmall_sum += pmtCosSmall_term
+    pmtCosSmall_i += 1
+end
+return pmtCosSmall_sum
+end
+function pmtTanSmall(value)
+    return pmtSinSmall(value) / pmtCosSmall(value)
+end
+function pmtSin(value)
+    pmtSin_angle = pmtReduceAngle(value)
+    if pmtSin_angle > 3.141592653589793
+        return 0 - pmtSinSmall(6.283185307179586 - pmtSin_angle)
+    end
+    if pmtSin_angle > 1.5707963267948966
+        return pmtSinSmall(3.141592653589793 - pmtSin_angle)
+    end
+    return pmtSinSmall(pmtSin_angle)
+end
+function pmtCos(value)
+    pmtCos_angle = pmtReduceAngle(value)
+    if pmtCos_angle > 3.141592653589793
+        return pmtCosSmall(6.283185307179586 - pmtCos_angle)
+    end
+    if pmtCos_angle > 1.5707963267948966
+        return 0 - pmtCosSmall(3.141592653589793 - pmtCos_angle)
+    end
+    return pmtCosSmall(pmtCos_angle)
+end
+function pmtTan(value)
+$- Reduce modulo pi into [-pi/2, pi/2]; tan repeats every pi. -$
+    pmtTan_quotient = value / 3.141592653589793
+    pmtTan_periods = floor(pmtTan_quotient)
+    pmtTan_remainder = pmtTan_quotient - pmtTan_periods
+    if pmtTan_remainder > 0.5 or (pmtTan_remainder == 0.5 and value < 0)
+        pmtTan_periods += 1
+    end
+    pmtTan_angle = value - pmtTan_periods * 3.141592653589793
+$- Near a pole the f64 pi/2 constant is short by cos(pi/2). -$
+    pmtTan_epsilon = 0.00000000000000006123233995736766
+    if pmtTan_angle > 0 and 1.5707963267948966 - pmtTan_angle <= 0.000000000001
+        return 1 / (1.5707963267948966 - pmtTan_angle + pmtTan_epsilon)
+    end
+    if pmtTan_angle < 0 and pmtTan_angle + 1.5707963267948966 <= 0.000000000001
+        return 0 - 1 / (pmtTan_angle + 1.5707963267948966 + pmtTan_epsilon)
+    end
+    return pmtTanSmall(pmtTan_angle)
+end
+function pmtRadix(value, base, width)
+    pmtRadix_digits = "0123456789abcdef"
+    if base == 2
+        pmtRadix_digits = "01"
+    end
+$- Rust's float-to-i64 cast saturates at both ends. -$
+    if value >= 9223372036854776000
+        pmtRadix_out = ""
+        pmtRadix_top = base / 2 - 1
+        pmtRadix_i = 0
+        pmtRadix_limit = width
+        if pmtRadix_top > 0
+            pmtRadix_out = pmtRadix_digits[pmtRadix_top]
+            pmtRadix_i = 1
+        else
+            pmtRadix_limit = width - 1
+        end
+        while pmtRadix_i < pmtRadix_limit
+        pmtRadix_out += pmtRadix_digits[base - 1]
+        pmtRadix_i += 1
+    end
+    return pmtRadix_out
+end
+if value == 0 - 9223372036854776000
+    pmtRadix_out = pmtRadix_digits[base / 2]
+    pmtRadix_i = 1
+    while pmtRadix_i < width
+    pmtRadix_out += pmtRadix_digits[0]
+    pmtRadix_i += 1
+end
+return pmtRadix_out
+end
+if value >= 0
+    pmtRadix_rest = value
+    pmtRadix_out = ""
+    if pmtRadix_rest == 0
+        return "0"
+    end
+    while pmtRadix_rest > 0
+    pmtRadix_digit = floor(pmtRadix_rest % base)
+    pmtRadix_out = pmtRadix_digits[pmtRadix_digit] + pmtRadix_out
+    pmtRadix_rest = floor(pmtRadix_rest / base)
+end
+return pmtRadix_out
+end
+$- Negative i64 values use the same two's-complement digits as Rust. -$
+pmtRadix_rest = -value - 1
+pmtRadix_out = ""
+pmtRadix_i = 0
+while pmtRadix_i < width
+pmtRadix_digit = floor(pmtRadix_rest % base)
+pmtRadix_out = pmtRadix_digits[base - 1 - pmtRadix_digit] + pmtRadix_out
+pmtRadix_rest = floor(pmtRadix_rest / base)
+pmtRadix_i += 1
+end
+return pmtRadix_out
+end
+function pmtGcdValues(left, right)
+    pmtGcdValues_x = abs(left)
+    pmtGcdValues_y = abs(right)
+    while pmtGcdValues_y != 0
+    pmtGcdValues_next = pmtGcdValues_x % pmtGcdValues_y
+    pmtGcdValues_x = pmtGcdValues_y
+    pmtGcdValues_y = pmtGcdValues_next
+end
+return pmtGcdValues_x
+end
+$- ---------------------------------------------------------------------------
+   Math module functions
+   --------------------------------------------------------------------------- -$
+function pmtMathSqrt(n)
+    pmtNumberArg(n, "for math.sqrt")
+    if n < 0
+        assert(false, "Cannot take the square root of a negative number")
+    end
+    return sqrt(n)
+end
+function pmtMathAbs(n)
+    return abs(pmtNumberArg(n, "for math.abs"))
+end
+function pmtMathFloor(n)
+    return floor(pmtNumberArg(n, "for math.floor"))
+end
+function pmtMathCeil(n)
+    return ceil(pmtNumberArg(n, "for math.ceil"))
+end
+function pmtMathRound(n)
+    return round(pmtNumberArg(n, "for math.round"))
+end
+function pmtMathPow(base, exponent)
+    pmtNumberArg(base, "as the base for math.pow")
+    pmtNumberArg(exponent, "as the exponent for math.pow")
+    return pow(base, exponent)
+end
+function pmtMathMin(left, right)
+    pmtNumberArg(left, "for math.min")
+    pmtNumberArg(right, "for math.min")
+    return pmtMin2(left, right)
+end
+function pmtMathMax(left, right)
+    pmtNumberArg(left, "for math.max")
+    pmtNumberArg(right, "for math.max")
+    return pmtMax2(left, right)
+end
+function pmtMathLog(value, base)
+    pmtNumberArg(value, "for math.log")
+    pmtNumberArg(base, "as the base for math.log")
+    if value <= 0 or base <= 0 or base == 1
+        assert(false, "math.log requires a positive value and a positive base other than 1")
+    end
+    return pmtLn(value) / pmtLn(base)
+end
+function pmtMathLn(n)
+    pmtNumberArg(n, "for math.ln")
+    if n <= 0 and not isNaN(n)
+        assert(false, "math.ln requires a positive number")
+    end
+    return pmtLn(n)
+end
+function pmtMathExp(n)
+    pmtNumberArg(n, "for math.exp")
+    if isNaN(n)
+        return pmtNaN()
+    end
+    if not pmtFinite(n)
+        if n > 0
+            return pmtInfinity()
+        end
+        return 0
+    end
+    return pow(2.718281828459045, n)
+end
+function pmtMathSin(n)
+    return pmtSin(pmtNumberArg(n, "for trigonometry"))
+end
+function pmtMathCos(n)
+    return pmtCos(pmtNumberArg(n, "for trigonometry"))
+end
+function pmtMathTan(n)
+    return pmtTan(pmtNumberArg(n, "for trigonometry"))
+end
+function pmtMathHypot(left, right)
+    pmtNumberArg(left, "for math.hypot")
+    pmtNumberArg(right, "for math.hypot")
+    if isNaN(left) or isNaN(right)
+        return pmtNaN()
+    end
+    pmtMathHypot_x = abs(left)
+    pmtMathHypot_y = abs(right)
+    if not pmtFinite(left) or not pmtFinite(right)
+        return pmtInfinity()
+    end
+    pmtMathHypot_scale = pmtMathHypot_x
+    if pmtMathHypot_y > pmtMathHypot_scale
+        pmtMathHypot_scale = pmtMathHypot_y
+    end
+    if pmtMathHypot_scale == 0
+        return 0
+    end
+    if pmtMathHypot_scale <= 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        return sqrt(pmtMathHypot_x * pmtMathHypot_x + pmtMathHypot_y * pmtMathHypot_y)
+    end
+    pmtMathHypot_a = pmtMathHypot_x / pmtMathHypot_scale
+    pmtMathHypot_b = pmtMathHypot_y / pmtMathHypot_scale
+    return pmtMathHypot_scale * sqrt(pmtMathHypot_a * pmtMathHypot_a + pmtMathHypot_b * pmtMathHypot_b)
+end
+function pmtMathSign(n)
+    pmtNumberArg(n, "for math.sign")
+    if isNaN(n)
+        assert(false, "math.sign cannot be applied to NaN")
+    end
+    return sign(n)
+end
+function pmtMathGcd(left, right)
+    pmtWholeArg(left, "for math.gcd")
+    pmtWholeArg(right, "for math.gcd")
+    return pmtGcdValues(left, right)
+end
+function pmtMathLcm(left, right)
+    pmtWholeArg(left, "for math.lcm")
+    pmtWholeArg(right, "for math.lcm")
+    pmtMathLcm_a = abs(left)
+    pmtMathLcm_b = abs(right)
+    if pmtMathLcm_a == 0 or pmtMathLcm_b == 0
+        return 0
+    end
+    return (pmtMathLcm_a / pmtGcdValues(left, right)) * pmtMathLcm_b
+end
+function pmtMathClamp(value, lower, upper)
+    pmtNumberArg(value, "for math.clamp")
+    pmtNumberArg(lower, "as the lower bound for math.clamp")
+    pmtNumberArg(upper, "as the upper bound for math.clamp")
+    if lower > upper
+        assert(false, "math.clamp lower bound cannot exceed the upper bound")
+    end
+    if value < lower
+        return lower
+    end
+    if value > upper
+        return upper
+    end
+    return value
+end
+function pmtMathDegrees(radians)
+    pmtNumberArg(radians, "for math.degrees")
+    if isNaN(radians)
+        return pmtNaN()
+    end
+    if not pmtFinite(radians)
+        if radians > 0
+            return pmtInfinity()
+        end
+        return 0 - pmtInfinity()
+    end
+    return toDegrees(radians)
+end
+function pmtMathRadians(degrees)
+    pmtNumberArg(degrees, "for math.radians")
+    if isNaN(degrees)
+        return pmtNaN()
+    end
+    if not pmtFinite(degrees)
+        if degrees > 0
+            return pmtInfinity()
+        end
+        return 0 - pmtInfinity()
+    end
+    return toRadians(degrees)
+end
+function pmtMathIsPrime(n)
+    pmtWholeArg(n, "for math.isPrime")
+    if n < 2
+        return false
+    end
+    if n == 2
+        return true
+    end
+    if n % 2 == 0
+        return false
+    end
+    pmtMathIsPrime_divisor = 3
+    while pmtMathIsPrime_divisor <= n / pmtMathIsPrime_divisor
+    if n % pmtMathIsPrime_divisor == 0
+        return false
+    end
+    pmtMathIsPrime_divisor += 2
+end
+return true
+end
+function pmtMathTrunc(n)
+    pmtNumberArg(n, "for math.trunc")
+    if n >= 0
+        return floor(n)
+    end
+    return ceil(n)
+end
+function pmtMathRoundTo(value, places)
+    pmtNumberArg(value, "for math.roundTo")
+    pmtWholeArg(places, "as the number of decimal places for math.roundTo")
+    if places < -12 or places > 12
+        assert(false, "math.roundTo expects between -12 and 12 decimal places")
+    end
+    pmtMathRoundTo_factor = pow(10, places)
+    return round(value * pmtMathRoundTo_factor) / pmtMathRoundTo_factor
+end
+function pmtMathFactorial(n)
+    pmtWholeArg(n, "for math.factorial")
+    if n < 0 or n > 170
+        assert(false, "math.factorial expects a whole number between 0 and 170")
+    end
+    pmtMathFactorial_result = 1
+    pmtMathFactorial_i = 2
+    while pmtMathFactorial_i <= n
+    pmtMathFactorial_result *= pmtMathFactorial_i
+    pmtMathFactorial_i += 1
+end
+return pmtMathFactorial_result
+end
+function pmtMathToHex(n)
+    pmtWholeArg(n, "for math.toHex")
+    return pmtRadix(n, 16, 16)
+end
+function pmtMathToBinary(n)
+    pmtWholeArg(n, "for math.toBinary")
+    return pmtRadix(n, 2, 64)
+end
+function pmtMathModule()
+    return {abs: pmtMathAbs, ceil: pmtMathCeil, clamp: pmtMathClamp, cos: pmtMathCos, degrees: pmtMathDegrees, e: 2.718281828459045, exp: pmtMathExp, factorial: pmtMathFactorial, floor: pmtMathFloor, gcd: pmtMathGcd, hypot: pmtMathHypot, isPrime: pmtMathIsPrime, lcm: pmtMathLcm, ln: pmtMathLn, log: pmtMathLog, max: pmtMathMax, min: pmtMathMin, pi: 3.141592653589793, pow: pmtMathPow, radians: pmtMathRadians, round: pmtMathRound, roundTo: pmtMathRoundTo, sign: pmtMathSign, sin: pmtMathSin, sqrt: pmtMathSqrt, tan: pmtMathTan, toBinary: pmtMathToBinary, toHex: pmtMathToHex, trunc: pmtMathTrunc}
+end
+$- ---------------------------------------------------------------------------
+   Text internals
+   --------------------------------------------------------------------------- -$
+function pmtIsUpperChar(ch)
+    return ch == upper(ch) and lower(ch) != ch
+end
+function pmtIsLowerChar(ch)
+    return ch == lower(ch) and upper(ch) != ch
+end
+function pmtIsAlphaNum(ch)
+    return ch.isAlpha() or ch.isDigit()
+end
+function pmtCasefoldChar(ch)
+    if ch == "ß"
+        return "ss"
+    end
+    if ch == "ẛ"
+        return "ṡ"
+    end
+    if ch == "ﬀ"
+        return "ff"
+    end
+    if ch == "ﬁ"
+        return "fi"
+    end
+    if ch == "ﬂ"
+        return "fl"
+    end
+    if ch == "ﬃ"
+        return "ffi"
+    end
+    if ch == "ﬄ"
+        return "ffl"
+    end
+    if ch == "ﬅ" or ch == "ﬆ"
+        return "st"
+    end
+    if ch == "ς"
+        return "σ"
+    end
+    return lower(ch)
+end
+function pmtCapitalizeWord(word)
+    if word == ""
+        return ""
+    end
+    pmtCapitalizeWord_chars = pmtChars(word)
+    return upper(pmtCapitalizeWord_chars[0]) + lower(slice(word, 1, len(pmtCapitalizeWord_chars)))
+end
+function pmtWords(text)
+    pmtWords_chars = pmtChars(text)
+    pmtWords_out = []
+    pmtWords_current = ""
+    pmtWords_i = 0
+    while pmtWords_i < len(pmtWords_chars)
+    pmtWords_ch = pmtWords_chars[pmtWords_i]
+    if pmtWords_ch.isBlank()
+        if pmtWords_current != ""
+            pmtWords_out.add(pmtWords_current)
+            pmtWords_current = ""
+        end
+    else
+        pmtWords_current += pmtWords_ch
+    end
+    pmtWords_i += 1
+end
+if pmtWords_current != ""
+    pmtWords_out.add(pmtWords_current)
+end
+return pmtWords_out
+end
+function pmtIdentifierWords(text)
+    pmtIdentifierWords_chars = pmtChars(text)
+    pmtIdentifierWords_out = []
+    pmtIdentifierWords_current = ""
+    pmtIdentifierWords_i = 0
+    while pmtIdentifierWords_i < len(pmtIdentifierWords_chars)
+    pmtIdentifierWords_ch = pmtIdentifierWords_chars[pmtIdentifierWords_i]
+    if not pmtIsAlphaNum(pmtIdentifierWords_ch)
+        if pmtIdentifierWords_current != ""
+            pmtIdentifierWords_out.add(lower(pmtIdentifierWords_current))
+            pmtIdentifierWords_current = ""
+        end
+        pmtIdentifierWords_i += 1
+        continue
+    end
+    if pmtIsUpperChar(pmtIdentifierWords_ch) and pmtIdentifierWords_current != ""
+        pmtIdentifierWords_previous = pmtIdentifierWords_chars[pmtIdentifierWords_i - 1]
+        pmtIdentifierWords_nextLower = false
+        if pmtIdentifierWords_i + 1 < len(pmtIdentifierWords_chars)
+            pmtIdentifierWords_nextLower = pmtIsLowerChar(pmtIdentifierWords_chars[pmtIdentifierWords_i + 1])
+        end
+        pmtIdentifierWords_boundary = pmtIsLowerChar(pmtIdentifierWords_previous) or pmtIdentifierWords_previous.isDigit() or (pmtIsUpperChar(pmtIdentifierWords_previous) and pmtIdentifierWords_nextLower)
+        if pmtIdentifierWords_boundary
+            pmtIdentifierWords_out.add(lower(pmtIdentifierWords_current))
+            pmtIdentifierWords_current = ""
+        end
+    end
+    pmtIdentifierWords_current += pmtIdentifierWords_ch
+    pmtIdentifierWords_i += 1
+end
+if pmtIdentifierWords_current != ""
+    pmtIdentifierWords_out.add(lower(pmtIdentifierWords_current))
+end
+return pmtIdentifierWords_out
+end
+function pmtTrimDashes(text)
+    pmtTrimDashes_out = text
+    while pmtTrimDashes_out.startsWith("-")
+    pmtTrimDashes_out = slice(pmtTrimDashes_out, 1, len(pmtTrimDashes_out))
+end
+while pmtTrimDashes_out.endsWith("-")
+pmtTrimDashes_out = slice(pmtTrimDashes_out, 0, len(pmtTrimDashes_out) - 1)
+end
+return pmtTrimDashes_out
+end
+function pmtSplitInclusive(text)
+    pmtSplitInclusive_chars = pmtChars(text)
+    pmtSplitInclusive_out = []
+    pmtSplitInclusive_start = 0
+    pmtSplitInclusive_i = 0
+    while pmtSplitInclusive_i < len(pmtSplitInclusive_chars)
+    if pmtSplitInclusive_chars[pmtSplitInclusive_i] == "\n"
+        pmtSplitInclusive_out.add(slice(text, pmtSplitInclusive_start, pmtSplitInclusive_i + 1))
+        pmtSplitInclusive_start = pmtSplitInclusive_i + 1
+    end
+    pmtSplitInclusive_i += 1
+end
+if pmtSplitInclusive_start < len(pmtSplitInclusive_chars)
+    pmtSplitInclusive_out.add(slice(text, pmtSplitInclusive_start, len(pmtSplitInclusive_chars)))
+end
+return pmtSplitInclusive_out
+end
+function pmtSplitLineEnding(segment)
+    if not segment.endsWith("\n")
+        return [segment, ""]
+    end
+    pmtSplitLineEnding_body = slice(segment, 0, len(segment) - 1)
+    if pmtSplitLineEnding_body.endsWith("")
+        return [slice(pmtSplitLineEnding_body, 0, len(pmtSplitLineEnding_body) - 1), "\n"]
+    end
+    return [pmtSplitLineEnding_body, "\n"]
+end
+function pmtLeadingIndent(body)
+    pmtLeadingIndent_chars = pmtChars(body)
+    pmtLeadingIndent_i = 0
+    while pmtLeadingIndent_i < len(pmtLeadingIndent_chars)
+    if pmtLeadingIndent_chars[pmtLeadingIndent_i] != " " and pmtLeadingIndent_chars[pmtLeadingIndent_i] != "\t"
+        break
+    end
+    pmtLeadingIndent_i += 1
+end
+return pmtLeadingIndent_i
+end
+function pmtSubstringCount(text, needle)
+    pmtSubstringCount_chars = pmtChars(text)
+    pmtSubstringCount_needle = pmtChars(needle)
+    pmtSubstringCount_needleLen = len(pmtSubstringCount_needle)
+    pmtSubstringCount_count = 0
+    pmtSubstringCount_i = 0
+    while pmtSubstringCount_i + pmtSubstringCount_needleLen <= len(pmtSubstringCount_chars)
+    pmtSubstringCount_matches = true
+    pmtSubstringCount_j = 0
+    while pmtSubstringCount_j < pmtSubstringCount_needleLen
+    if pmtSubstringCount_chars[pmtSubstringCount_i + pmtSubstringCount_j] != pmtSubstringCount_needle[pmtSubstringCount_j]
+        pmtSubstringCount_matches = false
+        break
+    end
+    pmtSubstringCount_j += 1
+end
+if pmtSubstringCount_matches
+    pmtSubstringCount_count += 1
+    pmtSubstringCount_i += pmtSubstringCount_needleLen
+else
+    pmtSubstringCount_i += 1
+end
+end
+return pmtSubstringCount_count
+end
+$- ---------------------------------------------------------------------------
+   Text module functions
+   --------------------------------------------------------------------------- -$
+function pmtTextWords(text)
+    return pmtWords(pmtStringArg(text, "for text.words"))
+end
+function pmtTextTitle(text)
+    pmtTextTitle_words = pmtWords(pmtStringArg(text, "for text.title"))
+    pmtTextTitle_out = []
+    pmtTextTitle_i = 0
+    while pmtTextTitle_i < len(pmtTextTitle_words)
+    pmtTextTitle_out.add(pmtCapitalizeWord(pmtTextTitle_words[pmtTextTitle_i]))
+    pmtTextTitle_i += 1
+end
+return join(pmtTextTitle_out, " ")
+end
+function pmtTextCapitalize(text)
+    return pmtCapitalizeWord(pmtStringArg(text, "for text.capitalize"))
+end
+function pmtTextSwapCase(text)
+    pmtTextSwapCase_chars = pmtChars(pmtStringArg(text, "for text.swapCase"))
+    pmtTextSwapCase_out = ""
+    pmtTextSwapCase_i = 0
+    while pmtTextSwapCase_i < len(pmtTextSwapCase_chars)
+    pmtTextSwapCase_ch = pmtTextSwapCase_chars[pmtTextSwapCase_i]
+    if pmtIsUpperChar(pmtTextSwapCase_ch)
+        pmtTextSwapCase_out += lower(pmtTextSwapCase_ch)
+    else
+        pmtTextSwapCase_out += upper(pmtTextSwapCase_ch)
+    end
+    pmtTextSwapCase_i += 1
+end
+return pmtTextSwapCase_out
+end
+function pmtTextSnake(text)
+    return join(pmtIdentifierWords(pmtStringArg(text, "for text.snake")), "_")
+end
+function pmtTextKebab(text)
+    return join(pmtIdentifierWords(pmtStringArg(text, "for text.kebab")), "-")
+end
+function pmtTextCamel(text)
+    pmtTextCamel_words = pmtIdentifierWords(pmtStringArg(text, "for text.camel"))
+    pmtTextCamel_out = ""
+    pmtTextCamel_i = 0
+    while pmtTextCamel_i < len(pmtTextCamel_words)
+    if pmtTextCamel_i == 0
+        pmtTextCamel_out += pmtTextCamel_words[pmtTextCamel_i]
+    else
+        pmtTextCamel_out += pmtCapitalizeWord(pmtTextCamel_words[pmtTextCamel_i])
+    end
+    pmtTextCamel_i += 1
+end
+return pmtTextCamel_out
+end
+function pmtTextPascal(text)
+    pmtTextPascal_words = pmtIdentifierWords(pmtStringArg(text, "for text.pascal"))
+    pmtTextPascal_out = ""
+    pmtTextPascal_i = 0
+    while pmtTextPascal_i < len(pmtTextPascal_words)
+    pmtTextPascal_out += pmtCapitalizeWord(pmtTextPascal_words[pmtTextPascal_i])
+    pmtTextPascal_i += 1
+end
+return pmtTextPascal_out
+end
+function pmtTextSlug(text)
+    pmtTextSlug_chars = pmtChars(pmtStringArg(text, "for text.slug"))
+    pmtTextSlug_out = ""
+    pmtTextSlug_i = 0
+    while pmtTextSlug_i < len(pmtTextSlug_chars)
+    pmtTextSlug_ch = pmtTextSlug_chars[pmtTextSlug_i]
+    if pmtIsAlphaNum(pmtTextSlug_ch)
+        pmtTextSlug_out += lower(pmtTextSlug_ch)
+    else if not pmtTextSlug_out.endsWith("-")
+        pmtTextSlug_out += "-"
+    end
+    pmtTextSlug_i += 1
+end
+return pmtTrimDashes(pmtTextSlug_out)
+end
+function pmtTextCollapseWhitespace(text)
+    return join(pmtWords(pmtStringArg(text, "for text.collapseWhitespace")), " ")
+end
+function pmtTextCount(text, needle)
+    pmtTextCount_text = pmtStringArg(text, "for text.count")
+    pmtTextCount_needle = pmtStringArg(needle, "as the substring for text.count")
+    if pmtTextCount_needle == ""
+        assert(false, "text.count needs a non-empty substring")
+    end
+    return pmtSubstringCount(pmtTextCount_text, pmtTextCount_needle)
+end
+function pmtTextTruncate(text, width, suffix)
+    pmtTextTruncate_text = pmtStringArg(text, "for text.truncate")
+    pmtTextTruncate_width = pmtWidthArg(width, "as the width for text.truncate")
+    pmtTextTruncate_suffix = "..."
+    if suffix != null
+        pmtTextTruncate_suffix = pmtStringArg(suffix, "as the suffix for text.truncate")
+    end
+    pmtTextTruncate_chars = len(pmtTextTruncate_text)
+    if pmtTextTruncate_chars <= pmtTextTruncate_width
+        return pmtTextTruncate_text
+    end
+    pmtTextTruncate_suffixLen = len(pmtTextTruncate_suffix)
+    if pmtTextTruncate_suffixLen >= pmtTextTruncate_width
+        return slice(pmtTextTruncate_text, 0, pmtTextTruncate_width)
+    end
+    return slice(pmtTextTruncate_text, 0, pmtTextTruncate_width - pmtTextTruncate_suffixLen) + pmtTextTruncate_suffix
+end
+function pmtTextWrap(text, width)
+    pmtTextWrap_width = pmtWidthArg(width, "as the width for text.wrap")
+    if pmtTextWrap_width == 0
+        assert(false, "text.wrap width must be greater than zero")
+    end
+    pmtTextWrap_words = pmtWords(pmtStringArg(text, "for text.wrap"))
+    pmtTextWrap_lines = []
+    pmtTextWrap_current = ""
+    pmtTextWrap_i = 0
+    while pmtTextWrap_i < len(pmtTextWrap_words)
+    pmtTextWrap_word = pmtTextWrap_words[pmtTextWrap_i]
+    if pmtTextWrap_current == ""
+        pmtTextWrap_current = pmtTextWrap_word
+    else if len(pmtTextWrap_current) + 1 + len(pmtTextWrap_word) <= pmtTextWrap_width
+        pmtTextWrap_current += " " + pmtTextWrap_word
+    else
+        pmtTextWrap_lines.add(pmtTextWrap_current)
+        pmtTextWrap_current = pmtTextWrap_word
+    end
+    pmtTextWrap_i += 1
+end
+if pmtTextWrap_current != ""
+    pmtTextWrap_lines.add(pmtTextWrap_current)
+end
+return pmtTextWrap_lines
+end
+function pmtTextIndent(text, prefix)
+    pmtTextIndent_segments = pmtSplitInclusive(pmtStringArg(text, "for text.indent"))
+    pmtTextIndent_prefixText = pmtStringArg(prefix, "as the prefix for text.indent")
+    pmtTextIndent_out = ""
+    pmtTextIndent_i = 0
+    while pmtTextIndent_i < len(pmtTextIndent_segments)
+    pmtTextIndent_out += pmtTextIndent_prefixText + pmtTextIndent_segments[pmtTextIndent_i]
+    pmtTextIndent_i += 1
+end
+return pmtTextIndent_out
+end
+function pmtTextDedent(text)
+    pmtTextDedent_segments = pmtSplitInclusive(pmtStringArg(text, "for text.dedent"))
+    pmtTextDedent_common = null
+    pmtTextDedent_i = 0
+    while pmtTextDedent_i < len(pmtTextDedent_segments)
+    pmtTextDedent_parts = pmtSplitLineEnding(pmtTextDedent_segments[pmtTextDedent_i])
+    pmtTextDedent_body = pmtTextDedent_parts[0]
+    if trim(pmtTextDedent_body) != ""
+        pmtTextDedent_indent = pmtLeadingIndent(pmtTextDedent_body)
+        if pmtTextDedent_common == null or pmtTextDedent_indent < pmtTextDedent_common
+            pmtTextDedent_common = pmtTextDedent_indent
+        end
+    end
+    pmtTextDedent_i += 1
+end
+if pmtTextDedent_common == null
+    pmtTextDedent_common = 0
+end
+pmtTextDedent_out = ""
+pmtTextDedent_i = 0
+while pmtTextDedent_i < len(pmtTextDedent_segments)
+pmtTextDedent_parts = pmtSplitLineEnding(pmtTextDedent_segments[pmtTextDedent_i])
+pmtTextDedent_body = pmtTextDedent_parts[0]
+pmtTextDedent_out += slice(pmtTextDedent_body, pmtTextDedent_common, len(pmtTextDedent_body)) + pmtTextDedent_parts[1]
+pmtTextDedent_i += 1
+end
+return pmtTextDedent_out
+end
+function pmtTextReverseWords(text)
+    return join(reversed(pmtWords(pmtStringArg(text, "for text.reverseWords"))), " ")
+end
+function pmtTextInitials(text)
+    pmtTextInitials_words = pmtWords(pmtStringArg(text, "for text.initials"))
+    pmtTextInitials_out = ""
+    pmtTextInitials_i = 0
+    while pmtTextInitials_i < len(pmtTextInitials_words)
+    pmtTextInitials_out += upper(first(pmtTextInitials_words[pmtTextInitials_i]))
+    pmtTextInitials_i += 1
+end
+return pmtTextInitials_out
+end
+function pmtTextIsPalindrome(text)
+    pmtTextIsPalindrome_chars = pmtChars(pmtStringArg(text, "for text.isPalindrome"))
+    pmtTextIsPalindrome_folded = ""
+    pmtTextIsPalindrome_i = 0
+    while pmtTextIsPalindrome_i < len(pmtTextIsPalindrome_chars)
+    pmtTextIsPalindrome_ch = pmtTextIsPalindrome_chars[pmtTextIsPalindrome_i]
+    if pmtIsAlphaNum(pmtTextIsPalindrome_ch)
+        pmtTextIsPalindrome_folded += pmtCasefoldChar(pmtTextIsPalindrome_ch)
+    end
+    pmtTextIsPalindrome_i += 1
+end
+pmtTextIsPalindrome_normalized = pmtChars(pmtTextIsPalindrome_folded)
+pmtTextIsPalindrome_left = 0
+pmtTextIsPalindrome_right = len(pmtTextIsPalindrome_normalized) - 1
+while pmtTextIsPalindrome_left < pmtTextIsPalindrome_right
+if pmtTextIsPalindrome_normalized[pmtTextIsPalindrome_left] != pmtTextIsPalindrome_normalized[pmtTextIsPalindrome_right]
+    return false
+end
+pmtTextIsPalindrome_left += 1
+pmtTextIsPalindrome_right -= 1
+end
+return true
+end
+function pmtTextLevenshtein(left, right)
+    pmtTextLevenshtein_a = pmtChars(pmtStringArg(left, "for text.levenshtein"))
+    pmtTextLevenshtein_b = pmtChars(pmtStringArg(right, "as the second string for text.levenshtein"))
+    pmtTextLevenshtein_aLen = len(pmtTextLevenshtein_a)
+    pmtTextLevenshtein_bLen = len(pmtTextLevenshtein_b)
+    if pmtTextLevenshtein_aLen == 0
+        return pmtTextLevenshtein_bLen
+    end
+    if pmtTextLevenshtein_bLen == 0
+        return pmtTextLevenshtein_aLen
+    end
+    if pmtTextLevenshtein_aLen * pmtTextLevenshtein_bLen > 1000000
+        assert(false, "text.levenshtein inputs are too long")
+    end
+    pmtTextLevenshtein_previous = []
+    pmtTextLevenshtein_j = 0
+    while pmtTextLevenshtein_j <= pmtTextLevenshtein_bLen
+    pmtTextLevenshtein_previous.add(pmtTextLevenshtein_j)
+    pmtTextLevenshtein_j += 1
+end
+pmtTextLevenshtein_i = 0
+while pmtTextLevenshtein_i < pmtTextLevenshtein_aLen
+pmtTextLevenshtein_current = []
+pmtTextLevenshtein_j = 0
+while pmtTextLevenshtein_j <= pmtTextLevenshtein_bLen
+pmtTextLevenshtein_current.add(0)
+pmtTextLevenshtein_j += 1
+end
+pmtTextLevenshtein_current[0] = pmtTextLevenshtein_i + 1
+pmtTextLevenshtein_j = 0
+while pmtTextLevenshtein_j < pmtTextLevenshtein_bLen
+pmtTextLevenshtein_cost = 0
+if pmtTextLevenshtein_a[pmtTextLevenshtein_i] != pmtTextLevenshtein_b[pmtTextLevenshtein_j]
+    pmtTextLevenshtein_cost = 1
+end
+pmtTextLevenshtein_delete = pmtTextLevenshtein_previous[pmtTextLevenshtein_j + 1] + 1
+pmtTextLevenshtein_insert = pmtTextLevenshtein_current[pmtTextLevenshtein_j] + 1
+pmtTextLevenshtein_replace = pmtTextLevenshtein_previous[pmtTextLevenshtein_j] + pmtTextLevenshtein_cost
+pmtTextLevenshtein_current[pmtTextLevenshtein_j + 1] = min(pmtTextLevenshtein_delete, pmtTextLevenshtein_insert, pmtTextLevenshtein_replace)
+pmtTextLevenshtein_j += 1
+end
+pmtTextLevenshtein_previous = pmtTextLevenshtein_current
+pmtTextLevenshtein_i += 1
+end
+return pmtTextLevenshtein_previous[pmtTextLevenshtein_bLen]
+end
+function pmtTextModule()
+    return {camel: pmtTextCamel, capitalize: pmtTextCapitalize, collapseWhitespace: pmtTextCollapseWhitespace, count: pmtTextCount, dedent: pmtTextDedent, indent: pmtTextIndent, initials: pmtTextInitials, isPalindrome: pmtTextIsPalindrome, kebab: pmtTextKebab, levenshtein: pmtTextLevenshtein, pascal: pmtTextPascal, reverseWords: pmtTextReverseWords, slug: pmtTextSlug, snake: pmtTextSnake, swapCase: pmtTextSwapCase, title: pmtTextTitle, truncate: pmtTextTruncate, words: pmtTextWords, wrap: pmtTextWrap}
+end
+function pmtAllModules()
+    return {math: pmtMathModule(), text: pmtTextModule()}
+end
+$- ---------------------------------------------------------------------------
+   Self-tests: native modules are oracles only below this point.
+   --------------------------------------------------------------------------- -$
+if os.env("EM_SELFTEST", "") == "1"
+    import math
+    import text
+    function pmtSelfEqual(actual, expected, label)
+        assert(actual == expected, "self-test failed: " + label + " expected " + toString(expected) + " got " + toString(actual))
+    end
+    function pmtSelfClose(actual, expected, label, tolerance)
+        pmtSelfClose_diff = abs(actual - expected)
+        pmtSelfClose_scale = abs(expected)
+        if pmtSelfClose_scale < 1
+            pmtSelfClose_scale = 1
+        end
+        assert(pmtSelfClose_diff <= tolerance * pmtSelfClose_scale, "self-test failed: " + label + " expected " + toString(expected) + " got " + toString(actual))
+    end
+    function pmtSelfSameArray(actual, expected, label)
+        assert(type(actual) == "array" and type(expected) == "array", "self-test failed: " + label + " is not an array")
+        assert(len(actual) == len(expected), "self-test failed: " + label + " length")
+        pmtSelfSameArray_i = 0
+        while pmtSelfSameArray_i < len(actual)
+        pmtSelfEqual(actual[pmtSelfSameArray_i], expected[pmtSelfSameArray_i], label + "[" + toString(pmtSelfSameArray_i) + "]")
+        pmtSelfSameArray_i += 1
+    end
+end
+pmtSelfMath = pmtMathModule()
+pmtSelfTextModule = pmtTextModule()
+pmtSelfSameArray(keys(pmtSelfMath), ["abs", "ceil", "clamp", "cos", "degrees", "e", "exp", "factorial", "floor", "gcd", "hypot", "isPrime", "lcm", "ln", "log", "max", "min", "pi", "pow", "radians", "round", "roundTo", "sign", "sin", "sqrt", "tan", "toBinary", "toHex", "trunc"], "math keys")
+pmtSelfSameArray(keys(pmtSelfTextModule), ["camel", "capitalize", "collapseWhitespace", "count", "dedent", "indent", "initials", "isPalindrome", "kebab", "levenshtein", "pascal", "reverseWords", "slug", "snake", "swapCase", "title", "truncate", "words", "wrap"], "text keys")
+pmtSelfSameArray(keys(pmtAllModules()), ["math", "text"], "pmtAllModules keys")
+pmtSelfClose(pmtSelfMath.pi, math.pi, "math.pi", 0.000000000000001)
+pmtSelfClose(pmtSelfMath.e, math.e, "math.e", 0.000000000000001)
+pmtSelfExactNumbers = [-10, -2.9, -0.5, 0, 0.5, 2.5, 3.2, 3.5, 3.7, 12, 100]
+for pmtSelfN in pmtSelfExactNumbers
+    for pmtSelfName in ["abs", "ceil", "floor", "round", "sign", "trunc"]
+        pmtSelfEqual(pmtSelfMath.get(pmtSelfName)(pmtSelfN), math.get(pmtSelfName)(pmtSelfN), "math." + pmtSelfName + " " + toString(pmtSelfN))
+    end
+end
+for pmtSelfN in [0, 0.25, 2, 4, 9, 25, 100]
+    pmtSelfEqual(pmtSelfMath.sqrt(pmtSelfN), math.sqrt(pmtSelfN), "math.sqrt " + toString(pmtSelfN))
+end
+pmtSelfPairs = [[2, 8], [-3, 4], [12, 18], [-12, 18], [4, 6], [0, 7]]
+for pmtSelfPair in pmtSelfPairs
+    pmtSelfA = pmtSelfPair[0]
+    pmtSelfB = pmtSelfPair[1]
+    for pmtSelfName in ["pow", "min", "max", "gcd", "lcm", "hypot"]
+        pmtSelfEqual(pmtSelfMath.get(pmtSelfName)(pmtSelfA, pmtSelfB), math.get(pmtSelfName)(pmtSelfA, pmtSelfB), "math." + pmtSelfName + " " + toString(pmtSelfA) + "," + toString(pmtSelfB))
+    end
+end
+pmtSelfEqual(pmtSelfMath.clamp(15, 0, 10), math.clamp(15, 0, 10), "math.clamp high")
+pmtSelfEqual(pmtSelfMath.clamp(-3, 0, 10), math.clamp(-3, 0, 10), "math.clamp low")
+pmtSelfEqual(pmtSelfMath.clamp(4, 0, 10), math.clamp(4, 0, 10), "math.clamp inside")
+pmtSelfEqual(pmtSelfMath.roundTo(1.23456, 2), math.roundTo(1.23456, 2), "math.roundTo positive")
+pmtSelfEqual(pmtSelfMath.roundTo(1234, -2), math.roundTo(1234, -2), "math.roundTo negative places")
+pmtSelfEqual(pmtSelfMath.factorial(0), math.factorial(0), "math.factorial zero")
+pmtSelfEqual(pmtSelfMath.factorial(5), math.factorial(5), "math.factorial five")
+pmtSelfEqual(pmtSelfMath.factorial(170), math.factorial(170), "math.factorial 170")
+for pmtSelfN in [-1, 0, 10, 255, 4096, 9223372036854776000, -9223372036854776000]
+    pmtSelfEqual(pmtSelfMath.toHex(pmtSelfN), math.toHex(pmtSelfN), "math.toHex " + toString(pmtSelfN))
+    pmtSelfEqual(pmtSelfMath.toBinary(pmtSelfN), math.toBinary(pmtSelfN), "math.toBinary " + toString(pmtSelfN))
+end
+for pmtSelfN in [2, 3, 7, 97, 101, -3, 0, 1, 4, 9, 100]
+    pmtSelfEqual(pmtSelfMath.isPrime(pmtSelfN), math.isPrime(pmtSelfN), "math.isPrime " + toString(pmtSelfN))
+end
+pmtSelfClose(pmtSelfMath.log(8, 2), math.log(8, 2), "math.log 8 base 2", 0.000000000001)
+pmtSelfClose(pmtSelfMath.log(100, 10), math.log(100, 10), "math.log 100 base 10", 0.000000000001)
+pmtSelfClose(pmtSelfMath.ln(2), math.ln(2), "math.ln 2", 0.000000000001)
+pmtSelfClose(pmtSelfMath.ln(0.1), math.ln(0.1), "math.ln 0.1", 0.000000000001)
+pmtSelfClose(pmtSelfMath.exp(0), math.exp(0), "math.exp 0", 0.000000000001)
+pmtSelfClose(pmtSelfMath.exp(1), math.exp(1), "math.exp 1", 0.000000000001)
+pmtSelfClose(pmtSelfMath.exp(-2.5), math.exp(-2.5), "math.exp -2.5", 0.000000000001)
+pmtSelfClose(pmtSelfMath.degrees(3.141592653589793), math.degrees(3.141592653589793), "math.degrees pi", 0.000000000001)
+pmtSelfClose(pmtSelfMath.radians(180), math.radians(180), "math.radians 180", 0.000000000001)
+pmtSelfAngles = [-7, -3.141592653589793, -1.5707963267948966, -0.5, 0, 0.5, 1, 1.5707963267948966, 2, 3.141592653589793, 7]
+for pmtSelfAngle in pmtSelfAngles
+    pmtSelfClose(pmtSelfMath.sin(pmtSelfAngle), math.sin(pmtSelfAngle), "math.sin " + toString(pmtSelfAngle), 0.000000001)
+    pmtSelfClose(pmtSelfMath.cos(pmtSelfAngle), math.cos(pmtSelfAngle), "math.cos " + toString(pmtSelfAngle), 0.000000001)
+    pmtSelfClose(pmtSelfMath.tan(pmtSelfAngle), math.tan(pmtSelfAngle), "math.tan " + toString(pmtSelfAngle), 0.000000001)
+end
+pmtSelfTexts = ["", "  hello\twide\nworld ", "hELLO world", "Hello, World!", "héLLO", "HTTP Server-response", "userID", "XMLHttpRequest", "  Hello, World!  ", "a___b---c", "a \t\n b   c", "aaaa", "héllo world", "the quick brown fox", "supercalifragilistic", "a\n\nb", "a\nb", "    a\n      b\n    c", "  a\n  b\n", "A man, a plan, a canal: Panama!", "ßSS", "kitten", "café"]
+for pmtSelfCase in pmtSelfTexts
+    for pmtSelfName in ["title", "capitalize", "swapCase", "snake", "kebab", "camel", "pascal", "slug", "collapseWhitespace", "reverseWords", "initials", "isPalindrome", "dedent"]
+        pmtSelfEqual(pmtSelfTextModule.get(pmtSelfName)(pmtSelfCase), text.get(pmtSelfName)(pmtSelfCase), "text." + pmtSelfName + " " + toString(pmtSelfCase))
+    end
+    pmtSelfSameArray(pmtSelfTextModule.words(pmtSelfCase), text.words(pmtSelfCase), "text.words " + toString(pmtSelfCase))
+    pmtSelfSameArray(pmtSelfTextModule.wrap(pmtSelfCase, 9), text.wrap(pmtSelfCase, 9), "text.wrap " + toString(pmtSelfCase))
+    pmtSelfEqual(pmtSelfTextModule.indent(pmtSelfCase, "> "), text.indent(pmtSelfCase, "> "), "text.indent " + toString(pmtSelfCase))
+    pmtSelfEqual(pmtSelfTextModule.truncate(pmtSelfCase, 4, null), text.truncate(pmtSelfCase, 4), "text.truncate " + toString(pmtSelfCase))
+    pmtSelfEqual(pmtSelfTextModule.count(pmtSelfCase, "a"), text.count(pmtSelfCase, "a"), "text.count " + toString(pmtSelfCase))
+    pmtSelfEqual(pmtSelfTextModule.levenshtein(pmtSelfCase, "sitting"), text.levenshtein(pmtSelfCase, "sitting"), "text.levenshtein " + toString(pmtSelfCase))
+end
+pmtSelfEqual(pmtSelfTextModule.count("aaaa", "aa"), text.count("aaaa", "aa"), "text.count non-overlapping")
+pmtSelfEqual(pmtSelfTextModule.count("banana", "ana"), text.count("banana", "ana"), "text.count overlapping")
+pmtSelfEqual(pmtSelfTextModule.truncate("héllo world", 8, null), text.truncate("héllo world", 8), "text.truncate unicode")
+pmtSelfEqual(pmtSelfTextModule.truncate("hello world", 4, "~~"), text.truncate("hello world", 4, "~~"), "text.truncate suffix")
+pmtSelfEqual(pmtSelfTextModule.truncate("hello", 2, "..."), text.truncate("hello", 2, "..."), "text.truncate wide suffix")
+pmtSelfSameArray(pmtSelfTextModule.wrap("the quick brown fox", 9), text.wrap("the quick brown fox", 9), "text.wrap greedy")
+pmtSelfSameArray(pmtSelfTextModule.wrap("supercalifragilistic", 4), text.wrap("supercalifragilistic", 4), "text.wrap long word")
+pmtSelfEqual(pmtSelfTextModule.levenshtein("kitten", "sitting"), text.levenshtein("kitten", "sitting"), "text.levenshtein kitten")
+pmtSelfEqual(pmtSelfTextModule.levenshtein("café", "cafe"), text.levenshtein("café", "cafe"), "text.levenshtein unicode")
+pmtSelfEqual(pmtSelfTextModule.levenshtein("", "abc"), text.levenshtein("", "abc"), "text.levenshtein empty")
+say("ok")
+end
