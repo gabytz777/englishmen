@@ -1,0 +1,17 @@
+$- Objects: literals, dot access and the object API -$
+person = {name: "Alex", age: 18, tags: ["dev", "em"]}
+say(person.name)
+person.city = "London"
+say(person.keys())
+say(person.values())
+say(person.has("city"))
+say(person.get("missing", "unknown"))
+say(person.length())
+say(person.isEmpty())
+for key in person.keys()
+    say("{key}: {person.get(key)}")
+end
+copy = person.copy().merge({score: 10})
+say(copy.score)
+person.delete("city")
+say(person.has("city"))

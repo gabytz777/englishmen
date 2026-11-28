@@ -1,0 +1,16 @@
+$- Files: write, append, read and metadata -$
+import fs
+fs.write("notes.txt", "first line\n")
+fs.append("notes.txt", "second line\n")
+say(fs.exists("notes.txt"))
+say(fs.read("notes.txt").lines())
+say(fs.size("notes.txt"))
+info = fs.metadata("notes.txt")
+say(info.size)
+say(info.isFile)
+say(info.isDir)
+fs.copy("notes.txt", "notes-copy.txt")
+fs.move("notes-copy.txt", "notes-moved.txt")
+say(fs.exists("notes-moved.txt"))
+say(fs.remove("notes.txt"))
+say(fs.remove("notes-moved.txt"))

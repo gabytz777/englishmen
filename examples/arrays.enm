@@ -1,0 +1,17 @@
+$- Arrays: indexing, updates, queries and transforms -$
+xs = range(6)
+xs[0] = 9
+xs.add(7)
+xs.insert(1, 4)
+say(xs)
+say(xs.length())
+say(xs.indexOf(5))
+say(xs.count(4))
+xs.removeAt(0)
+say(xs.slice(1, 4))
+say(xs.join("-"))
+say(sorted([3, 1, 2, 2]))
+say(reversed([1, 2, 3]))
+say(zip([1, 2], ["a", "b"]))
+nested = [[1, 2], [3, [4]]]
+say(nested.flatten())

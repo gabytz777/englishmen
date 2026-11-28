@@ -31,9 +31,12 @@ pub fn run() -> ExitCode {
     // The automatic update check belongs to everyday use (REPL, running and
     // building programs). Update-related commands check by themselves, and
     // help output stays clean.
-    let auto_check_due = !args
-        .first()
-        .is_some_and(|arg| matches!(arg.as_str(), "update" | "install" | "uninstall" | "repair" | "--help" | "-h" | "--version" | "-v"));
+    let auto_check_due = !args.first().is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "update" | "install" | "uninstall" | "repair" | "--help" | "-h" | "--version" | "-v"
+        )
+    });
     if auto_check_due {
         updater::auto_check();
     }
@@ -827,24 +830,35 @@ const LANGUAGE_DOC: &str = r#"Englishmen quick reference
 
 Keywords
     if / else / end          Conditional branches
-    function ... end         Function definition
-    return [value]           Return from a function
+    while / break / continue Conditional loops and loop control
     repeat <count> ... end   Counted loop
     for <name> in <list> ... end
                              Loop over the items of an array
+    function ... end         Function definition
+    return [value]           Return from a function
     import <module>          Load a standard module
-    and / or / not           Boolean operators
+    and / or / not           Boolean operators (also &&, ||, !)
     true / false / null      Literal values
 
 Statement forms
     name = expression                     Assignment creates a variable
     object.property = expression          Dot notation / objects
     array[index] = expression             Indexed assignment
+    x += 1 / x -= 1 / x++ / x--           In-place updates
     function add(a, b)                    Function definition
         return a + b
     end
     if age >= 18                          Condition (else if / else supported)
         say("Adult")
+    end
+    while n < 10                          Condition loop
+        n += 1
+        if n == 3
+            continue
+        end
+        if n == 8
+            break
+        end
     end
     repeat 3                              Counted loop
         say("Hello")
@@ -859,12 +873,31 @@ Builtins
     array.add(value)         Append an item
     array.remove(value)      Remove the first matching item
     "a{n}b"                  String interpolation
+    83 global builtins       Conversions, collections, strings, math, files, JSON
+
+Methods
+    array (29)               add, push, rotate, indexesOf, interleave, ...
+    object (13)              keys, values, pick, omit, entries, ...
+    string (29)              upper, lower, swapCase, isBlank, truncate, ...
+    number (17)              isEven, toFixed, toOctal, toDegrees, ...
+    boolean (7)              toggle, toString, and, or, xor, implies, nand
 
 Standard modules (import <name> first)
-    math    sqrt, abs, floor, ceil, round, pow, min, max, pi, e
-    time    now, sleep, year, month, day, hour, minute, second
+    math    sqrt, pow, sin/cos/tan, round, gcd, isPrime, pi, e
+    time    now, sleep, format, iso, isoUtc, millis, elapsed
     qrc     make(text, path) — write a QR code PNG
-    cowsay  say(message) — ASCII-art speech
+    cowsay  say(text) — ASCII-art speech
+    string  upper, lower, trim, pad, split, join, predicates
+    json    encode, decode, pretty, isValid, get, set
+    fs      read, write, append, exists, list, mkdir, remove, copy, move,
+            metadata, size
+    os      name, arch, platform, args, env, cwd, tempDir, homeDir, pid, version
+    random  float, int, choice, sample, shuffle, seed, uuid
+    collections
+            sorted, range, sum, zip, chunk, get, set
+    gfx     canvas(w, h) with set/get/clear/text/save
+    text    words, title, snake, kebab, camel, pascal, slug, indent, dedent,
+            isPalindrome, levenshtein
 
 Comments
     $- single-line comment -$
@@ -872,7 +905,10 @@ Comments
        comment -$
 
 Numbers, strings, booleans, arrays and objects are the value types. Operators:
-+ - * / %, == != > < >= <=, and/or/not. Run 'em --help' for CLI commands.
++ - * / % ** // (or div), == != > < >= <=, and/or/not/&&/||/!,
+& | ^ ~ << >>, ?: (ternary), ?? (null coalescing),
++= -= *= /= %= **= //= &= |= ^= <<= >>= ++ --.
+Run 'em --help' for CLI commands.
 "#;
 
 fn cmd_doc(args: &[String]) -> ExitCode {
@@ -1347,6 +1383,40 @@ fn prefix_position(previous: Option<&Token>) -> bool {
     }
 }
 
+/// Does the parenthesised list starting at `lparen` contain a top-level
+/// comma? That distinguishes `repeat(text, count)` from `repeat (count)`.
+fn paren_call_has_comma(tokens: &[Token], lparen: usize) -> bool {
+    let Some(rest) = tokens.get(lparen..) else {
+        return false;
+    };
+    let mut depth = 0usize;
+    for token in rest {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return false;
+                }
+            }
+            Token::Comma if depth == 1 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn repeat_line_is_call(line: &[SpannedToken]) -> bool {
+    if !line
+        .first()
+        .is_some_and(|first| matches!(first.token, Token::Repeat))
+    {
+        return false;
+    }
+    let tokens: Vec<Token> = line.iter().map(|spanned| spanned.token.clone()).collect();
+    tokens.get(1).is_some_and(|t| matches!(t, Token::LParen)) && paren_call_has_comma(&tokens, 1)
+}
+
 fn needs_space(tokens: &[Token], i: usize) -> bool {
     if i == 0 {
         return false;
@@ -1370,7 +1440,10 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
         return false;
     }
     // An opening delimiter never has a space after it.
-    if matches!(prev, Token::LParen | Token::LBracket | Token::LBrace | Token::Dot) {
+    if matches!(
+        prev,
+        Token::LParen | Token::LBracket | Token::LBrace | Token::Dot
+    ) {
         return false;
     }
     // A prefix minus binds to its operand: `-1`, not `- 1`.
@@ -1378,8 +1451,39 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
         return false;
     }
     // Calls and indexing hug the name/value they follow; `if (...)` and
-    // `= [ ... ]` (an array literal) keep their space.
+    // `= [ ... ]` (an array literal) keep their space. Keyword tokens that
+    // double as call names (`repeat(...)`, `text.repeat(...)`) must hug too,
+    // but a keyword at statement level still keeps its separating space.
     if matches!(token, Token::LParen | Token::LBracket) {
+        let keyword_member_call = matches!(before, Some(Token::Dot))
+            && matches!(
+                prev,
+                Token::True
+                    | Token::False
+                    | Token::Null
+                    | Token::If
+                    | Token::Else
+                    | Token::End
+                    | Token::Function
+                    | Token::Return
+                    | Token::Repeat
+                    | Token::While
+                    | Token::For
+                    | Token::In
+                    | Token::Import
+                    | Token::And
+                    | Token::Or
+                    | Token::Not
+                    | Token::Break
+                    | Token::Continue
+                    | Token::Div
+            );
+        let repeat_call = matches!(token, Token::LParen)
+            && matches!(prev, Token::Repeat)
+            && paren_call_has_comma(tokens, i);
+        if keyword_member_call || repeat_call {
+            return false;
+        }
         return !matches!(
             prev,
             Token::Identifier(_)
@@ -1507,8 +1611,7 @@ fn string_literal_end(chars: &[char], start: Span) -> (usize, usize) {
 }
 
 fn comment_in_span(comment: &FormatComment, start: Span, end: (usize, usize)) -> bool {
-    (comment.line, comment.col) >= (start.line, start.col)
-        && (comment.line, comment.col) < end
+    (comment.line, comment.col) >= (start.line, start.col) && (comment.line, comment.col) < end
 }
 
 /// Render one logical line, placing comments from intermediate physical lines
@@ -1538,9 +1641,7 @@ fn render_line_tokens(
             let interpolation_comments: Vec<usize> = comments
                 .iter()
                 .enumerate()
-                .filter(|(j, c)| {
-                    !consumed[*j] && c.inside_interp && comment_in_span(c, span, end)
-                })
+                .filter(|(j, c)| !consumed[*j] && c.inside_interp && comment_in_span(c, span, end))
                 .map(|(j, _)| j)
                 .collect();
             if !interpolation_comments.is_empty() {
@@ -1558,10 +1659,7 @@ fn render_line_tokens(
         out.push_str(&token_text(token));
 
         let token_pos = (line.tokens[i].span.line, line.tokens[i].span.col);
-        let next_pos = line
-            .tokens
-            .get(i + 1)
-            .map(|t| (t.span.line, t.span.col));
+        let next_pos = line.tokens.get(i + 1).map(|t| (t.span.line, t.span.col));
         for (j, comment) in comments.iter().enumerate() {
             if consumed[j] || comment.inside_interp || comment_trailing(comment, line) {
                 continue;
@@ -1687,10 +1785,9 @@ fn render_format(
             // keeps the indent of the `if` that started it.
         } else if plain_else {
             indent = level + 1;
-        } else if matches!(
-            first_token,
-            Token::If | Token::Function | Token::Repeat | Token::For
-        ) {
+        } else if matches!(first_token, Token::If | Token::Function | Token::For)
+            || (matches!(first_token, Token::Repeat) && !repeat_line_is_call(&line.tokens))
+        {
             indent += 1;
         }
         pending_else = plain_else;
@@ -1786,24 +1883,26 @@ fn cmd_update(args: &[String]) -> ExitCode {
                 check_only = true;
                 i += 1;
             }
-            "--notifications" => match args.get(i + 1).map(|s| s.as_str()) {
-                Some("on") => {
-                    notifications = Some(true);
-                    i += 2;
+            "--notifications" => {
+                match args.get(i + 1).map(|s| s.as_str()) {
+                    Some("on") => {
+                        notifications = Some(true);
+                        i += 2;
+                    }
+                    Some("off") => {
+                        notifications = Some(false);
+                        i += 2;
+                    }
+                    Some(other) => {
+                        eprintln!("Error: Unknown notifications setting '{other}' (expected 'on' or 'off')");
+                        return ExitCode::FAILURE;
+                    }
+                    None => {
+                        eprintln!("Error: '--notifications' needs a value ('on' or 'off')");
+                        return ExitCode::FAILURE;
+                    }
                 }
-                Some("off") => {
-                    notifications = Some(false);
-                    i += 2;
-                }
-                Some(other) => {
-                    eprintln!("Error: Unknown notifications setting '{other}' (expected 'on' or 'off')");
-                    return ExitCode::FAILURE;
-                }
-                None => {
-                    eprintln!("Error: '--notifications' needs a value ('on' or 'off')");
-                    return ExitCode::FAILURE;
-                }
-            },
+            }
             "--help" | "-h" => {
                 print_update_help();
                 return ExitCode::SUCCESS;
@@ -1990,10 +2089,7 @@ mod tests {
     fn formatter_preserves_string_and_interpolation_text() {
         let source = "say(  \"a{b}c\"  )\nsay(\"$- literal -$\")\n";
         let formatted = format_source(source).unwrap();
-        assert_eq!(
-            formatted,
-            "say(\"a{b}c\")\nsay(\"$- literal -$\")\n"
-        );
+        assert_eq!(formatted, "say(\"a{b}c\")\nsay(\"$- literal -$\")\n");
         assert_eq!(format_source(&formatted).unwrap(), formatted);
     }
 
@@ -2013,5 +2109,14 @@ mod tests {
             format_source(source).unwrap(),
             "x = -1\nsay(-x)\nfunction f(a, b)\n    return a - b\nend\n"
         );
+    }
+
+    #[test]
+    fn formatter_distinguishes_repeat_call_from_loop() {
+        let source = "repeat(\"ab\",2)\nrepeat (3)\n say(1)\nend\n";
+        let expected = "repeat(\"ab\", 2)\nrepeat (3)\n    say(1)\nend\n";
+        let formatted = format_source(source).unwrap();
+        assert_eq!(formatted, expected);
+        assert_eq!(format_source(&formatted).unwrap(), expected);
     }
 }

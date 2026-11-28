@@ -21,10 +21,13 @@ em hello.enm
 - [Updating Englishmen](#updating-englishmen)
 - [Standalone executables](#standalone-executables)
 - [Running programs](#running-programs)
+- [Developer commands](#developer-commands)
 - [Language tour](#language-tour)
+- [Feature catalogue and guides](#feature-catalogue-and-guides)
 - [Project structure](#project-structure)
 - [Examples](#examples)
 - [Compiler](#compiler)
+- [Self-hosting roadmap](#self-hosting-roadmap)
 - [License](#license)
 
 ## Why Englishmen exists
@@ -51,7 +54,7 @@ there.
 ### Requirements
 
 Running `em` needs nothing beyond the binary itself: the standard library and
-all six modules ship inside it. Building from source instead — either
+all eleven modules ship inside it. Building from source instead — either
 `install.sh --from-source` or a local `cargo build --release` — needs a Rust
 toolchain from https://rustup.rs.
 
@@ -134,54 +137,40 @@ short notice, and only `em update` changes the executable.
 An installed `em` checks for updates at most once every 24 hours. The result is
 cached in the platform configuration directory (or `$EM_HOME/config` when
 `EM_HOME` is set), so normal commands do not make a network request every time.
-When a newer stable release exists, the next command prints a notification on
-stderr:
+When a newer stable release exists, the next command prints a one-line notice
+on stdout:
 
 ```text
-A new Englishmen version is available!
-
-Installed: v1.5.1
-Latest:    v1.6.0
-
-Run 'em update' to install.
+Update available: v1.6.0 (you have v1.5.1). Run 'em update' to install.
 ```
 
 Automatic checks are quiet, bounded by a short timeout, and never fail a
-command if the network is unavailable. They are skipped for `em update`, when
-`--quiet`/`-q` or `ENGLISHMEN_QUIET` is set, in CI, and when notifications are
-disabled. Deprecated and prerelease tags (such as `v1.6.0-beta`) are ignored,
-and an older release is never installed over a newer build.
+command if the network is unavailable. They run only when stdout is a terminal,
+so scripts and CI stay clean; set `EM_UPDATE_CHECK_FORCE=1` to opt in. They are
+also skipped for `update`, `install`, `uninstall`, `repair`, `--help`/`-h`, and
+`--version`/`-v`, and when notifications are disabled. Deprecated and
+prerelease tags (such as `v1.6.0-beta`) are ignored, and an older release is
+never installed over a newer build.
 
 ### Manual updates
 
 ```bash
 em update                       # install the latest stable release
 em update --check               # check without installing
-em update --ignore              # dismiss notifications for 24 hours
-em update --later               # snooze notifications for 7 days
-em update --disable-notifications
-em update --enable-notifications
-em update --quiet               # suppress progress messages
+em update --notifications off   # or 'on' to re-enable startup notices
 em update --help
 ```
 
-`--check` refreshes the cached release information but does not change your
-notification preferences or snooze schedule. `--ignore` and `--later` only
-affect when the next automatic notice appears. Turning notifications off also
-stops automatic network checks; manual `em update` and `em update --check`
-still work.
+`--check` always contacts GitHub Releases and never changes your notification
+preference or installs anything. Turning notifications off also stops automatic
+network checks; manual `em update` and `em update --check` still work.
 
 ### Environment variables
 
 | Variable | Effect |
 | --- | --- |
-| `ENGLISHMEN_NO_UPDATE_CHECK=1` | Disable automatic checks only. Manual checks still work. |
-| `ENGLISHMEN_NO_UPDATES=1` | Disable the updater completely, including `em update`. |
-| `ENGLISHMEN_UPDATE_CONFIG=<path>` | Use a custom updater state file. |
-| `ENGLISHMEN_QUIET=1` | Suppress automatic notifications. |
-
-`EM_NO_UPDATES=1` and `EM_UPDATE_CONFIG=<path>` are also accepted as short
-aliases.
+| `EM_NO_UPDATE_CHECK=1` | Disable automatic checks only. Manual checks still work. |
+| `EM_UPDATE_CHECK_FORCE=1` | Run an automatic check even when stdout is not a terminal. |
 
 ### How installation is verified
 
@@ -334,6 +323,30 @@ To run it on the original tree-walking interpreter instead:
 em hello.enm --interpret
 ```
 
+`--time` prints elapsed wall-clock time to stderr for either backend.
+
+## Developer commands
+
+```bash
+em run hello.enm            # Same as `em hello.enm`; accepts .enm or .emb
+em check hello.enm          # Report syntax/compiler errors without writing files
+em fmt hello.enm            # Format in place; --check only reports differences
+em eval '1 + 2'             # Compile and run a one-line program
+em doc                      # Print the built-in language quick reference
+```
+
+`em build` can show intermediate representations instead of writing bytecode:
+
+```bash
+em build hello.enm --emit ast   # Print the parsed AST
+em build hello.enm --emit asm   # Print the VM instruction stream
+em build hello.enm --stats      # Print code statistics
+em build hello.enm --run        # Save bytecode, then run it
+```
+
+Conflicting build modes are rejected with a clear error: `--emit` and `--stats`
+cannot be combined with each other or with `--run`, `--exe`, or `--appimage`.
+
 ## `em new`
 
 Creates a new Englishmen project (an `englishmen.emc` plus a starter
@@ -399,10 +412,31 @@ Englishmen REPL
 18
 ```
 
-Multiline constructs (`if`/`function`/`repeat`/`for` ... `end`) are buffered
-until they're complete. Each completed snippet is compiled and run on the same
-VM as a program file, so the REPL and `em file.enm` behave identically; the
-variables you define stay in the VM between inputs.
+Multiline constructs (`if`/`function`/`repeat`/`for` ... `end`) are
+buffered until they're complete. Each completed snippet is compiled and run on
+the same VM as a program file, so the REPL and `em file.enm` behave identically;
+the variables you define stay in the VM between inputs.
+
+REPL meta commands:
+
+| Command | Effect |
+| --- | --- |
+| `:help` | Show the command list |
+| `:vars` | List globals with values and types |
+| `:clear` | Clear all globals and start a fresh VM |
+| `:history` | Show commands entered in this session |
+| `:load <file>` | Load and run a `.enm` file in this VM |
+| `:save <file>` | Write entered session source to a `.enm` file |
+| `:time <expr>` | Run and time a single expression |
+| `:about` | Show version and language information |
+| `:echo <text>` | Print a line of text |
+| `:source` | Show numbered source entered in this session |
+| `:again` | Re-run the most recent source snippet |
+| `:eval <expr>` | Evaluate an expression and show its value |
+| `:type <expr>` | Show an expression's value and type |
+| `:repeat <n> <src>` | Run one source statement `n` times |
+| `:reset` | Clear globals, history, source and prompt state |
+| `:quit`, `:exit` | Leave the REPL (`quit` also works) |
 
 ## Editing in VS Code
 
@@ -502,6 +536,35 @@ end
 for person in people
     say(person)
 end
+
+n = 0
+while n < 10
+    n += 1
+    if n == 3
+        continue
+    end
+    if n == 8
+        break
+    end
+    say(n)
+end
+```
+
+`break` and `continue` work in `repeat`, `for ... in`, and `while` loops.
+
+### Operators
+
+Alongside `+ - * / %`, equality/comparison, `and`/`or`/`not`, Englishmen also
+supports `**` (power), `//` or `div` (floor division), bitwise `& | ^ ~ << >>`,
+`&&`/`||`, `!`, `+=`/`-=`/`*=`/`/=`/`%=`/`**=`/`//=`, `++`/`--`, ternary
+`condition ? yes : no`, and `??` (null coalescing). Hex (`0xff`), binary
+(`0b1010`), and exponent (`1.5e3`) numeric literals are accepted.
+
+```text
+say(2 ** 8)                         $- 256 -$
+say(7 // 2)                         $- 3 -$
+say(score > 50 ? "pass" : "retry")  $- ternary -$
+say(name ?? "anonymous")            $- null coalescing -$
 ```
 
 ### Comments
@@ -519,58 +582,67 @@ comment
 
 ```text
 import math
-import time
-import qrc
-import cowsay
-import gfx
+import json
+import fs
+import random
 
 say(math.sqrt(25))
 say(math.pow(2, 8))
 
-cowsay.say("Moo from Englishmen!")
-
-qrc.make("https://example.com", "code.png")
-
-canvas = gfx.canvas(64, 64)
-canvas.set(10, 10, 255, 0, 0)
-canvas.save("red-dot.png")
+data = {name: "Alex", scores: [9, 7, 10]}
+fs.write("data.json", json.encode(data))
+say(json.decode(fs.read("data.json")).name)
+say(random.int(1, 6))
 ```
 
-- **math** — `sqrt`, `abs`, `floor`, `ceil`, `round`, `pow`, `min`, `max`, `sin`, `cos`, `tan`, `pi`, `e`
-- **time** — `now`, `sleep`, `year`, `month`, `day`, `hour`, `minute`, `second`
-- **qrc** — `make(text, path)` generates a QR code PNG (no external binaries)
-- **cowsay** — `say(message)` prints ASCII-art cow speech (implemented natively, no `cowsay` executable required)
-- **gfx** — `canvas(width, height)` creates an RGB framebuffer with `set`, `get`, `clear`, `text` and `save(path)` methods, for drawing images from Englishmen code
-- **text** — `words`, `title`, `capitalize`, `swapCase`, `snake`, `kebab`, `camel`, `pascal`, `slug`, `collapseWhitespace`, `count`, `truncate`, `wrap`, `indent`, `dedent`, `reverseWords`, `initials`, `isPalindrome` and `levenshtein` for whole-text processing, identifier case conversion and small string algorithms
+Twelve modules ship inside the binary:
+
+- **math** — trigonometry, powers, rounding, GCD/LCM, primes, constants
+- **time** — `now`, `sleep`, date/time parts, `format`, `iso`, `isoUtc`, `millis`, `elapsed`
+- **qrc** — `make(text, path)` generates a QR-code PNG (no external binaries)
+- **cowsay** — `say(text)` prints ASCII-art speech (no external `cowsay` required)
+- **string** — case, `pad`, splitting, joining, predicates, repeat/trim helpers
+- **json** — `encode`, `decode`, `pretty`, `isValid`, `get`, `set`
+- **fs** — `read`, `write`, `append`, `exists`, `list`, `mkdir`, `remove`, `copy`, `move`, `metadata`, `size`
+- **os** — `name`, `arch`, `platform`, `args`, `env`, `cwd`, `tempDir`, `homeDir`, `pid`, `version`
+- **random** — `float`, `int`, `choice`, `sample`, `shuffle`, `seed`, `uuid`
+- **collections** — sorting, ranges, sums, zip/enumerate/chunk, object helpers
+- **gfx** — `canvas(width, height)` with `set`, `get`, `clear`, `text`, `save(path)`
+- **text** — `words`, `title`, `capitalize`, `swapCase`, `snake`, `kebab`, `camel`, `pascal`, `slug`, `collapseWhitespace`, `count`, `truncate`, `wrap`, `indent`, `dedent`, `reverseWords`, `initials`, `isPalindrome`, `levenshtein`
 
 All standard libraries are implemented in Rust and ship inside the `em`
-binary — no Python, Node, or other external runtimes required.
+binary — no Python, Node, or other external runtimes required. See
+[the modules guide](docs/guides/09-modules.md) for signatures and examples.
 
-## Updating Englishmen
+## Feature catalogue and guides
 
-```text
-em update                Check for and install the latest version
-em update --check        Check only — never downloads or installs
-em update --notifications off
-                         Turn off the automatic startup notice (on by default)
-```
+The current language surface has **224 named language features** across five
+groups, before counting developer tooling:
 
-`em update --check` always contacts GitHub Releases and shows whether your
-installed version is current:
+| Group | Count | What it covers |
+| --- | --- | --- |
+| Global builtins | 83 | Conversions, collections, strings, math, files, JSON, assertions |
+| Runtime methods | 95 | Array (29), object (13), string (29), number (17), boolean (7) |
+| Syntax and operator features | 18 | Loops, loop control, compound assignment, bitwise/ternary/coalescing operators, literals, interpolation |
+| Standard modules | 12 | `math` through `gfx`, plus `text`, all bundled into `em` |
+| REPL meta-commands | 16 | Help, variables, history, loading/saving, timing, inspection, repetition, exit |
 
-```text
-Checking for Englishmen updates...
+On top of that are developer commands (`check`, `fmt`, `eval`, `doc`,
+`--emit`, `--stats`, `--run`), structured diagnostics with source spans and
+hints, and the Englishmen-written 3D renderer under `renderer/`.
 
-Update available!
+Step-by-step guides:
 
-Installed: v1.2.0
-Latest:    v1.3.0
-
-Run 'em update' to install.
-```
-
-Automatic checks run at most once every 24 hours, only print a notice when a
-newer version exists, and never install anything.
+1. [Getting started](docs/guides/01-getting-started.md)
+2. [Variables and types](docs/guides/02-variables-and-types.md)
+3. [Control flow and operators](docs/guides/03-control-flow.md)
+4. [Functions](docs/guides/04-functions.md)
+5. [Arrays](docs/guides/05-arrays.md)
+6. [Objects](docs/guides/06-objects.md)
+7. [Strings](docs/guides/07-strings.md)
+8. [Numbers and math](docs/guides/08-numbers-and-math.md)
+9. [Modules](docs/guides/09-modules.md)
+10. [Global builtins](docs/guides/10-builtins.md)
 
 ## Project structure
 
@@ -589,8 +661,11 @@ deleted and rebuilt at any time with `em build`.
 ## Examples
 
 See [`examples/`](examples/) for runnable programs: `hello.enm`,
-`conditions.enm`, `objects.enm`, `libraries.enm`, and the canonical
-`example.enm`.
+`conditions.enm`, `objects.enm`, `libraries.enm`, the canonical `example.enm`,
+plus `strings.enm`, `arrays.enm`, `objects-api.enm`, `files.enm`, and
+`json.enm`. Every example runs on both the VM and `--interpret`. The
+[`renderer/`](renderer/) directory contains a framebuffer demo and a 3D
+renderer written in Englishmen.
 
 ## Compiler
 
@@ -640,7 +715,12 @@ machines that have the same `em` version.
 | `em build hello.enm --exe` | Build a standalone executable (see [Standalone executables](#standalone-executables)) |
 | `em build hello.enm --exe --appimage` | Package a Linux AppImage (see [Linux AppImages](#linux-appimages)) |
 | `em build hello.enm --emit asm` | Print the disassembly, write nothing |
+| `em build hello.enm --emit ast` | Print the parsed AST, write nothing |
+| `em build hello.enm --stats` | Print code statistics, write nothing |
 | `em build` | Compile the `main` of the `englishmen.emc` in this directory |
+
+`--emit` and `--stats` are mutually exclusive and cannot be combined with
+`--run`, `--exe`, or `--appimage`.
 
 `--emit asm` prints the instruction stream, which is the readable form of
 exactly what the VM executes:
@@ -690,6 +770,15 @@ number now and a string later, so `a + b` cannot become a CPU `add`
 instruction. Native code would have to call back into a runtime that checks
 the types anyway. This is the same reason Python, Ruby, Java, and C# all ship
 bytecode and a VM.
+
+## Self-hosting roadmap
+
+Englishmen is not self-hosted yet: the lexer, parser, compiler, VM, and standard
+library are written in Rust. The language can now express its own control flow
+and data manipulation, and the bundled renderer is written in `.enm`, but a
+compiler written in Englishmen itself is still a roadmap item. See
+[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the current plan and the
+capabilities that remain before the language can compile itself.
 
 ## License
 

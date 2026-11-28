@@ -2,6 +2,35 @@ use crate::ast::{expr_to_assignable, BinOp, Expr, Stmt, UnOp};
 use crate::error::{EmError, Span};
 use crate::lexer::{InterpPart, SpannedToken, Token};
 
+/// Keyword tokens that are also legal names after a dot or before a call.
+/// The lexer cannot know from one token whether `repeat` starts a loop or calls
+/// the global `repeat(text, count)` builtin, so the parser disambiguates by
+/// position instead.
+fn keyword_name(token: &Token) -> Option<&'static str> {
+    match token {
+        Token::True => Some("true"),
+        Token::False => Some("false"),
+        Token::Null => Some("null"),
+        Token::If => Some("if"),
+        Token::Else => Some("else"),
+        Token::End => Some("end"),
+        Token::Function => Some("function"),
+        Token::Return => Some("return"),
+        Token::Repeat => Some("repeat"),
+        Token::While => Some("while"),
+        Token::For => Some("for"),
+        Token::In => Some("in"),
+        Token::Import => Some("import"),
+        Token::And => Some("and"),
+        Token::Or => Some("or"),
+        Token::Not => Some("not"),
+        Token::Break => Some("break"),
+        Token::Continue => Some("continue"),
+        Token::Div => Some("div"),
+        _ => None,
+    }
+}
+
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
@@ -119,6 +148,7 @@ impl Parser {
                     Ok(Stmt::Return(Some(expr), span))
                 }
             }
+            Token::Repeat if self.repeat_is_call() => self.parse_assign_or_expr(),
             Token::Repeat => self.parse_repeat(),
             Token::While => self.parse_while(),
             Token::For => self.parse_for(),
@@ -170,6 +200,57 @@ impl Parser {
                 .with_span(span))
             }
         }
+    }
+
+    /// After a dot, keyword tokens are legal member names: several runtime
+    /// methods (`repeat`, `and`, `toString`-style names) collide with language
+    /// keywords, but the lexer cannot know that from a single token.
+    fn expect_member_name(&mut self, context: &str) -> Result<String, EmError> {
+        let name = match self.peek() {
+            Token::Identifier(name) => name.clone(),
+            other => match keyword_name(other) {
+                Some(name) => name.to_string(),
+                None => {
+                    let span = self.peek_span();
+                    return Err(EmError::syntax(format!(
+                        "Expected member name {context}, found {}",
+                        other.describe()
+                    ))
+                    .with_span(span));
+                }
+            },
+        };
+        self.advance();
+        Ok(name)
+    }
+
+    /// `repeat` is both a loop keyword and a global builtin. At statement
+    /// level, a parenthesised argument list containing a top-level comma can
+    /// only be the call form, so treat it as an expression instead of a loop.
+    fn repeat_is_call(&self) -> bool {
+        if !matches!(self.peek(), Token::Repeat)
+            || !self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|next| matches!(next.token, Token::LParen))
+        {
+            return false;
+        }
+        let mut depth = 0usize;
+        for spanned in &self.tokens[self.pos + 1..] {
+            match &spanned.token {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                Token::Comma if depth == 1 => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn parse_block_until(&mut self, terminators: &[Token]) -> Result<Vec<Stmt>, EmError> {
@@ -519,7 +600,7 @@ impl Parser {
         let mut expr = self.parse_primary()?;
         loop {
             if self.matches(&Token::Dot) {
-                let name = self.expect_identifier("after '.'")?;
+                let name = self.expect_member_name("after '.'")?;
                 if self.check(&Token::LParen) {
                     let args = self.parse_call_args()?;
                     expr = Expr::MethodCall(Box::new(expr), name, args);
@@ -566,6 +647,10 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expr, EmError> {
         let span = self.peek_span();
+        let next_is_call = self
+            .tokens
+            .get(self.pos + 1)
+            .is_some_and(|next| matches!(next.token, Token::LParen));
         match self.peek().clone() {
             Token::Number(n) => {
                 self.advance();
@@ -605,6 +690,11 @@ impl Parser {
             }
             Token::LBracket => self.parse_array_literal(),
             Token::LBrace => self.parse_object_literal(),
+            other if next_is_call && keyword_name(&other).is_some() => {
+                let name = keyword_name(&other).unwrap().to_string();
+                self.advance();
+                Ok(Expr::Variable(name))
+            }
             other => {
                 Err(EmError::syntax(format!("Unexpected token {}", other.describe())).with_span(span))
             }
@@ -689,7 +779,7 @@ impl Parser {
         if !self.check(&Token::RBrace) {
             loop {
                 self.skip_newlines();
-                let key = self.expect_identifier("as object key")?;
+                let key = self.expect_member_name("as object key")?;
                 self.expect(Token::Colon, "after object key")?;
                 self.skip_newlines();
                 let value = self.parse_expression()?;
@@ -966,5 +1056,26 @@ mod tests {
         let left = parse_src("x = a and b or not c\n");
         let right = parse_src("x = a && b || !c\n");
         assert_eq!(without_spans(&left), without_spans(&right));
+    }
+
+    #[test]
+    fn repeat_call_and_loop_are_distinguished() {
+        let call = parse_src("repeat(\"ab\", 2)\n");
+        assert!(matches!(call.as_slice(), [Stmt::ExprStmt(Expr::Call(_, _), _)]));
+        let loop_stmt = parse_src("repeat(3)\n    say(\"hi\")\nend\n");
+        assert!(matches!(loop_stmt.as_slice(), [Stmt::Repeat(_, _, _)]));
+        let space_loop = parse_src("repeat (3)\n    say(\"hi\")\nend\n");
+        assert!(matches!(space_loop.as_slice(), [Stmt::Repeat(_, _, _)]));
+    }
+
+    #[test]
+    fn keyword_names_work_as_object_keys() {
+        let stmts = parse_src("obj = {end: 7, repeat: \"again\"}\n");
+        let Stmt::Assign(_, Expr::Object(fields), _) = &stmts[0] else {
+            panic!("expected object literal");
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].0, "end");
+        assert_eq!(fields[1].0, "repeat");
     }
 }
