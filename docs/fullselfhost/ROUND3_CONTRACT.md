@@ -48,9 +48,10 @@ can be saved without a UTF-8 conversion.
 ### Combined driver (B2)
 
 `selfhost/full.enm` gains an optional `--write-emb <path>` flag. After
-`ieEncode(irFull)` it calls `emb.writeBytes(path, encodedFull)`. The driver also
-builds an import table from the pure `bt*`/`pj*`/`lm*` wrappers plus the host
-`fs`/`os`/`emb` objects and calls `vmRunWithImports(irFull, table)`.
+`ieEncode(irFull)` it calls `emb.writeBytes(path, encodedFull)`. Keep the
+existing `vmRunWithRuntime(irFull)` call unchanged: the parent wires the import
+table and switches to `vmRunWithImports` after A1/A2 land, so this PR stays
+independent and testable.
 
 ### Compile-only source (C1)
 
