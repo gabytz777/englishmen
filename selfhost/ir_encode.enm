@@ -5,12 +5,11 @@ $-!
     docs/selfhost/EMB_AND_MANIFEST.md.  `ieEncode(ir)` returns the exact byte
     array that native `emb.encode(ir)` / bytecode::serialize would produce.
 
-    There are no local .enm imports, so every helper is self-contained and
-    prefixed with `ie`.  `emb` is imported only for the guarded self-tests at
-    the bottom; the encoder itself uses no native module.
+    Every helper is self-contained and prefixed with `ie`; the encoder itself
+    uses no native module.  Native `emb` is imported only inside the guarded
+    self-tests at the bottom.  The guard uses the global `env` builtin so no
+    native module is needed merely to detect EM_SELFTEST.
 !-$
-import emb
-import os
 $- Name -> [tag, operand shape].  Shape 0 means both operands are zeroed,
    shape 1 keeps `a`, and shape 2 keeps `a` and `b`.  This mirrors the table in
    src/modules/emb.rs and bytecode::encode_op. -$
@@ -233,13 +232,14 @@ function ieEncode(ir)
     return out
 end
 $- ---------------------------------------------------------------- self-tests -$
-function ieCheckFixture(label, ir)
-    expected = jsonEncode(emb.encode(ir))
-    actual = jsonEncode(ieEncode(ir))
-    assert(actual == expected, "ieEncode mismatch in " + label + "\n" + actual + "\n" + expected)
-    return true
-end
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
+    import emb
+    function ieCheckFixture(label, ir)
+        expected = jsonEncode(emb.encode(ir))
+        actual = jsonEncode(ieEncode(ir))
+        assert(actual == expected, "ieEncode mismatch in " + label + "\n" + actual + "\n" + expected)
+        return true
+    end
     ieCheckFixture("empty", {version: 2, constants: [], functions: [], code: []})
     ieCheckFixture("hello", {version: 2, constants: [{tag: "string", value: "hello from emb"}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "Say", a: 1}, {op: "ReturnNull"}]})
     ieCheckFixture("constants", {version: 2, constants: [{tag: "number", value: 0}, {tag: "number", value: -0}, {tag: "number", value: 1}, {tag: "number", value: -1}, {tag: "number", value: 1.5}, {tag: "number", value: -3.25}, {tag: "number", value: 3.141592653589793}, {tag: "number", value: 9007199254740991}, {tag: "number", value: parseFloat("5e-324")}, {tag: "number", value: parseFloat("2.2250738585072014e-308")}, {tag: "number", value: parseFloat("1e308")}, {tag: "number", value: parseFloat("inf")}, {tag: "number", value: -parseFloat("inf")}, {tag: "number", value: parseFloat("NaN")}, {tag: "string", value: ""}, {tag: "string", value: "héllo 😀"}, {tag: "string", value: "line\nquote\"tab\t\\"}, {tag: "bool", value: true}, {tag: "bool", value: false}, {tag: "null"}], functions: [], code: []})
