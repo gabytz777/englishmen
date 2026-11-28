@@ -93,14 +93,22 @@ typedef struct {
     uint32_t col;
 } EmInstr;
 
+#ifndef EM_BOOTSTRAP_CHUNK_DECLARED
+#define EM_BOOTSTRAP_CHUNK_DECLARED
 typedef struct EmChunk EmChunk;
+#endif
 
-typedef struct {
+#ifndef EM_BOOTSTRAP_FUNCTION_PROTO_DECLARED
+#define EM_BOOTSTRAP_FUNCTION_PROTO_DECLARED
+typedef struct EmFunctionProto EmFunctionProto;
+#endif
+
+struct EmFunctionProto {
     char *name;
     char **params;
     size_t nparams;
     EmChunk *chunk;
-} EmFunctionProto;
+};
 
 struct EmChunk {
     EmConst *constants;

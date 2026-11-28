@@ -10,14 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* value.h forward-declares EmFunctionProto as a tagged struct while emb.h
- * typedefs an anonymous struct under the same name. Rename the emb.h typedef
- * for this translation unit so the shared headers can be included together;
- * the parent-owned headers themselves are left untouched. */
-#define EmFunctionProto EmEmbFunctionProto
 #include "emb.h"
-#undef EmFunctionProto
-
 #include "builtins.h"
 #include "host.h"
 #include "value.h"

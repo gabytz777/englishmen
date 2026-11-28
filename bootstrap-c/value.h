@@ -18,8 +18,16 @@ typedef enum {
 typedef struct EmValue EmValue;
 typedef struct EmVm EmVm;
 typedef struct EmEnv EmEnv;
+
+#ifndef EM_BOOTSTRAP_CHUNK_DECLARED
+#define EM_BOOTSTRAP_CHUNK_DECLARED
 typedef struct EmChunk EmChunk;
+#endif
+
+#ifndef EM_BOOTSTRAP_FUNCTION_PROTO_DECLARED
+#define EM_BOOTSTRAP_FUNCTION_PROTO_DECLARED
 typedef struct EmFunctionProto EmFunctionProto;
+#endif
 
 typedef EmValue *(*EmNativeFn)(EmVm *vm, EmValue **args, size_t argc, char **err);
 
