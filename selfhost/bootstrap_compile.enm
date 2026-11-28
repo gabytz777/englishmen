@@ -5,8 +5,6 @@ $- Self-contained bootstrap compiler for Englishmen.
    json.encode handle key ordering, escaping and number formatting, which makes
    the output byte-identical to `em build <file> --emit ast-json`.
 -$
-import fs
-import json
 $- ---------------------------------------------------------------------------
    Lexer state and helpers. Token objects mirror src/lexer.rs:
    {type: RustTokenVariant, value: ..., line: n, col: n} with an extra `op`
@@ -1395,10 +1393,9 @@ $- ---------------------------------------------------------------------------
    --------------------------------------------------------------------------- -$
 $- === inlined selfhost/codegen_ir.enm === -$
 $- Pure-Englishmen AST -> emb IR code generator.
-   Self-contained: no local .enm imports. The native `os` and `emb` modules are
-   used only by the self-test guard at the bottom, never by the generator. -$
-import os
-import emb
+   Self-contained: no local .enm imports and no native module imports in the
+   generator.  The native `emb` oracle is imported only inside the guarded
+   self-tests at the bottom; the guard uses the global `env` builtin. -$
 $- A compilation context is one chunk. Functions get a fresh context so their
    constant pools, jumps and nested prototypes stay independent. -$
 function cgCtx()
@@ -2060,12 +2057,11 @@ $-!
     docs/selfhost/EMB_AND_MANIFEST.md.  `ieEncode(ir)` returns the exact byte
     array that native `emb.encode(ir)` / bytecode::serialize would produce.
 
-    There are no local .enm imports, so every helper is self-contained and
-    prefixed with `ie`.  `emb` is imported only for the guarded self-tests at
-    the bottom; the encoder itself uses no native module.
+    Every helper is self-contained and prefixed with `ie`; the encoder itself
+    uses no native module.  Native `emb` is imported only inside the guarded
+    self-tests at the bottom.  The guard uses the global `env` builtin so no
+    native module is needed merely to detect EM_SELFTEST.
 !-$
-import emb
-import os
 $- Name -> [tag, operand shape].  Shape 0 means both operands are zeroed,
    shape 1 keeps `a`, and shape 2 keeps `a` and `b`.  This mirrors the table in
    src/modules/emb.rs and bytecode::encode_op. -$
@@ -2288,12 +2284,6 @@ function ieEncode(ir)
     return out
 end
 $- ---------------------------------------------------------------- self-tests -$
-function ieCheckFixture(label, ir)
-    expected = jsonEncode(emb.encode(ir))
-    actual = jsonEncode(ieEncode(ir))
-    assert(actual == expected, "ieEncode mismatch in " + label + "\n" + actual + "\n" + expected)
-    return true
-end
 $- === inlined selfhost/lib_bytes.enm === -$
 $- Pure Englishmen implementation of the native `bytes` module.
 
@@ -2313,7 +2303,6 @@ $- Pure Englishmen implementation of the native `bytes` module.
    btSlice(buffer, start, end) uses `null` for `end` to mean "to the end",
    matching a native call that omits the third argument.
 -$
-import os
 $- ---------------------------------------------------------------------------
    Argument validation
    --------------------------------------------------------------------------- -$
@@ -2770,7 +2759,6 @@ $- Pure Englishmen implementation of the native `project` manifest API.
    every helper is global and prefixed with `pj` to survive concatenation into
    `selfhost/full.enm`. The native `project` module is imported only inside the
    self-test guard, where it acts as an oracle. -$
-import os
 $- Return the value of one hexadecimal digit, or -1 for anything else. -$
 function pjHexDigit(pjHexDigit_c)
     pjHexDigit_n = charCode(pjHexDigit_c)
@@ -3122,7 +3110,6 @@ $- Pure Englishmen implementations of the native `string` and `json` modules.
    Native `string` and `json` modules are imported only inside the self-test
    guard at the bottom, where they act as reference oracles.
 -$
-import os
 $- ---------------------------------------------------------------------------
    Shared argument helpers
    --------------------------------------------------------------------------- -$
@@ -4301,7 +4288,6 @@ $- Pure-Englishmen core of the Englishmen bytecode VM.
    vmImportHook(name)                 -> value or structured error
    All globals and helper functions use the `vm` prefix so this file can be
    concatenated into a combined self-hosted program. -$
-import os
 vmError = null
 vmOutput = []
 vmStack = []
@@ -5384,8 +5370,6 @@ $-!
           prints jsonEncode(outputArray)
     Test: EM_SELFTEST=1 em run selfhost/vm_runtime.enm   prints ok
 !-$
-import fs
-import os
 $- One VM at a time; every helper reaches the mutable state through rtVm. -$
 rtVm = null
 function rtError(message)
@@ -7425,7 +7409,7 @@ $- === compile-only bootstrap driver ===
    This script never invokes the self-hosted VM, so compiling and executing its
    IR cannot recurse.
 -$
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
     say("ok")
 else
     argvCompile = args()

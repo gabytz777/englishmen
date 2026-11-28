@@ -1,8 +1,7 @@
 $- Pure-Englishmen AST -> emb IR code generator.
-   Self-contained: no local .enm imports. The native `os` and `emb` modules are
-   used only by the self-test guard at the bottom, never by the generator. -$
-import os
-import emb
+   Self-contained: no local .enm imports and no native module imports in the
+   generator.  The native `emb` oracle is imported only inside the guarded
+   self-tests at the bottom; the guard uses the global `env` builtin. -$
 $- A compilation context is one chunk. Functions get a fresh context so their
    constant pools, jumps and nested prototypes stay independent. -$
 function cgCtx()
@@ -656,7 +655,8 @@ $- ---------------------------------------------------------------------------
    Inline self-tests. These build AST fixtures by hand and assert IR shape.
    Native `emb` is used only as an oracle that the generated IR is encodable.
    --------------------------------------------------------------------------- -$
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
+    import emb
     function cgTNum(cgTNum_n)
         return {kind: "Number", value: cgTNum_n}
     end
