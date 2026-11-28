@@ -7,7 +7,8 @@ $- Pure Englishmen implementation of the native `bytes` module.
 
    The native `bytes` module is imported only inside the self-test guard at
    the bottom, where it acts as a reference oracle. It is not used by any
-   function above that guard.
+   function above that guard; the guard itself uses the `env` builtin instead
+   of importing `os`.
 
    Englishmen functions have fixed arity, so the two variadic native helpers
    have array-shaped equivalents here:
@@ -16,7 +17,6 @@ $- Pure Englishmen implementation of the native `bytes` module.
    btSlice(buffer, start, end) uses `null` for `end` to mean "to the end",
    matching a native call that omits the third argument.
 -$
-import os
 $- ---------------------------------------------------------------------------
    Argument validation
    --------------------------------------------------------------------------- -$
@@ -467,7 +467,7 @@ end
 $- ---------------------------------------------------------------------------
    Self-tests: the native bytes module is an oracle only inside this guard.
    --------------------------------------------------------------------------- -$
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
     import bytes
     function btSameBuffer(btLeft_arg, btRight_arg)
         if type(btLeft_arg) != "array" or type(btRight_arg) != "array"

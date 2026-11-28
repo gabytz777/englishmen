@@ -4,8 +4,8 @@ $- Pure-Englishmen core of the Englishmen bytecode VM.
    executes the `emb` IR object described in docs/selfhost/EMB_IR.md without
    calling the native VM: constants, scopes, the operand stack, arithmetic and
    comparisons, jumps, calls/returns, arrays, objects and Say are all handled
-   here. Native modules are not used by the implementation; `os` is imported
-   only for the selftest guard at the bottom.
+   here. Native modules are not used by the implementation; the selftest guard
+   below uses the `env` builtin rather than importing `os`.
 
    `vmRun(ir)` returns an array containing one entry per `Say` argument. On an
    invalid IR or a runtime fault it returns a structured error object instead:
@@ -18,7 +18,6 @@ $- Pure-Englishmen core of the Englishmen bytecode VM.
    vmImportHook(name)                 -> value or structured error
    All globals and helper functions use the `vm` prefix so this file can be
    concatenated into a combined self-hosted program. -$
-import os
 vmError = null
 vmOutput = []
 vmStack = []
@@ -1201,7 +1200,7 @@ function vmTestErrors()
     vmTestError(vmTestIr([vmTestConst("number", 1)], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("GetProp", 0, 0)]), "name index", "name index")
     vmTestError({constants: [], functions: [], code: []}, "version", "missing version")
 end
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
     vmTestConstantsAndArithmetic()
     vmTestConditionals()
     vmTestGlobalsAndStrings()

@@ -10,9 +10,13 @@ $-!
     CLI:  em run selfhost/vm_runtime.enm <ir.json>
           prints jsonEncode(outputArray)
     Test: EM_SELFTEST=1 em run selfhost/vm_runtime.enm   prints ok
+
+    No native modules are imported. The CLI uses the global `args` and
+    `readFile` builtins, and selftests use the `env` builtin; the regenerator
+    can swap in the pure `pfo`/`pjs` helpers without changing the VM core.
+    Native modules appear only inside guarded self-test oracles; when
+    regenerating for the C host, strip those blocks or provide a global `env`.
 !-$
-import fs
-import os
 $- One VM at a time; every helper reaches the mutable state through rtVm. -$
 rtVm = null
 function rtError(message)
@@ -2112,17 +2116,18 @@ $- Capture rtError so a missing import can be checked without aborting the
     return null
 end
 function rtCli()
-    argv = os.args()
-$- os.args() begins with the `run` subcommand and the script path. -$
-    if len(argv) < 3
+    argv = args()
+$- The global args() includes the executable, so index 3 is the IR path where
+   os.args() used index 2. -$
+    if len(argv) < 4
         say("usage: em run selfhost/vm_runtime.enm <ir.json>")
         return null
     end
-    ir = jsonDecode(fs.read(argv[2]))
+    ir = jsonDecode(readFile(argv[3]))
     say(jsonEncode(vmRunWithRuntime(ir)))
     return null
 end
-if os.env("EM_SELFTEST", "") == "1"
+if env("EM_SELFTEST") == "1"
 $- rtVm is needed by the direct rtSay assertion; start from a fresh state. -$
     rtVm = {stack: [], frames: [], output: [], globals: rtGlobalEnv(), imports: {}}
     rtSelfTest()
