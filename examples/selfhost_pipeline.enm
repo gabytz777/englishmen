@@ -1,0 +1,43 @@
+$-!
+    Self-hosting pipeline smoke test.
+
+    Reads a source file, parses a tiny manifest with project.parse, packs a
+    little-endian header, and writes a minimal .emb containing one LoadConst
+    instruction. Run it with:
+
+        em run examples/selfhost_pipeline.enm <source.enm>
+        em run examples/selfhost_pipeline.enm <source.enm> --interpret
+
+    The source path is the last existing path in `args()`; global `args`
+    includes the em executable and the script itself before user arguments.
+!-$
+import bytes
+import emb
+import project
+import json
+import fs
+function sourcePath()
+    chosen = null
+    for entry in args()
+        if fs.exists(entry)
+            chosen = entry
+        end
+    end
+    return chosen
+end
+path = sourcePath()
+if isNull(path)
+    say("Usage: em run examples/selfhost_pipeline.enm <source.enm>")
+else
+    source = fs.read(path)
+    manifest = project.parse("name = \"pipeline\"\nversion = 2\nmain = \"selfhost_pipeline.enm\"\n")
+    name = project.name(manifest)
+    version = toNumber(toString(project.version(manifest))) ?? 1
+    header = bytes.concat(bytes.u32(version), bytes.u32(bytes.length(bytes.fromString(source))))
+    headerHex = bytes.toHex(header)
+    ir = {version: emb.version(), constants: [{tag: "string", value: name}, {tag: "number", value: version}], functions: [], code: [{op: "LoadConst", a: 0, b: 0, line: 1, col: 1}]}
+    fs.mkdir("target")
+    output = "target/selfhost_pipeline.emb"
+    emb.write(output, ir)
+    say(json.encode({name: name, version: version, header: headerHex, size: fs.size(output)}))
+end
