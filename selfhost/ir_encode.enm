@@ -65,17 +65,17 @@ $- IEEE-754 binary64, little-endian.  Scaling by powers of two is exact, so
    the recovered 52-bit fraction is bit-identical to f64::to_le_bytes. -$
 function ieAppendF64(out, number)
     assert(isNumber(number), "ieEncode: expected a number constant")
-    sign = 0
+    ieSign = 0
     if isNaN(number)
         if number.toFixed(1).startsWith("-")
-            sign = 1
+            ieSign = 1
         end
     else if number == 0
         if number.toFixed(1).startsWith("-")
-            sign = 1
+            ieSign = 1
         end
     else if number < 0
-        sign = 1
+        ieSign = 1
     end
     exponent = 0
     fraction = 0
@@ -128,7 +128,7 @@ $- Fraction bytes 0..5; the top four fraction bits share byte 6 with the
         fraction = floor(fraction / 256)
     end
     out.add((fraction % 16) + ((exponent % 16) * 16))
-    out.add(floor(exponent / 16) + (sign * 128))
+    out.add(floor(exponent / 16) + (ieSign * 128))
 end
 $- Validate and append a u32 operand; absent fields use the Rust defaults. -$
 function ieOperand(instruction, name, fallback)

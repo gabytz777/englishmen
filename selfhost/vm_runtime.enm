@@ -436,16 +436,16 @@ function rtStackDrain(count)
     if count < 0 or count > len(rtVm.stack)
         rtError("Corrupt bytecode: the value stack ran empty")
     end
-    reversed = []
+    rtDrainReversed = []
     i = 0
     while i < count
-    reversed.add(rtStackPop())
+    rtDrainReversed.add(rtStackPop())
     i += 1
 end
 out = []
-i = len(reversed) - 1
+i = len(rtDrainReversed) - 1
 while i >= 0
-out.add(reversed[i])
+out.add(rtDrainReversed[i])
 i -= 1
 end
 return out
@@ -543,16 +543,16 @@ function rtNumberMethod(value, method, args)
     return text
 end
 if method == "clamp"
-    lower = rtExpectNumber(rtArg(args, 0, null), "as a minimum")
-    upper = rtExpectNumber(rtArg(args, 1, null), "as a maximum")
-    if lower > upper
+    rtClampLower = rtExpectNumber(rtArg(args, 0, null), "as a minimum")
+    rtClampUpper = rtExpectNumber(rtArg(args, 1, null), "as a maximum")
+    if rtClampLower > rtClampUpper
         rtError("clamp() expects minimum <= maximum")
     end
-    if n < lower
-        return lower
+    if n < rtClampLower
+        return rtClampLower
     end
-    if n > upper
-        return upper
+    if n > rtClampUpper
+        return rtClampUpper
     end
     return n
 end
@@ -631,10 +631,10 @@ function rtStringChars(text)
 end
 function rtStringSlice(text, start, finish)
     chars = rtStringChars(text)
-    range = rtSliceRange(len(chars), start, finish)
+    rtSliceBounds = rtSliceRange(len(chars), start, finish)
     out = ""
-    i = range[0]
-    while i < range[1]
+    i = rtSliceBounds[0]
+    while i < rtSliceBounds[1]
     out += chars[i]
     i += 1
 end
@@ -1048,8 +1048,8 @@ if method == "sort"
     return rtArraySort(array)
 end
 if method == "slice"
-    range = rtSliceRange(len(array), rtArg(args, 0, 0), rtArg(args, 1, len(array)))
-    return rtArraySlice(array, range[0], range[1])
+    rtSliceBounds = rtSliceRange(len(array), rtArg(args, 0, 0), rtArg(args, 1, len(array)))
+    return rtArraySlice(array, rtSliceBounds[0], rtSliceBounds[1])
 end
 if method == "join"
     separator = rtExpectString(rtArg(args, 0, ","), "as a separator")
@@ -1143,15 +1143,15 @@ if method == "rotate"
     if shift < 0
         shift += len(array)
     end
-    split = len(array) - shift
+    rtSplitAt = len(array) - shift
     out = []
-    i = split
+    i = rtSplitAt
     while i < len(array)
     out.add(array[i])
     i += 1
 end
 i = 0
-while i < split
+while i < rtSplitAt
 out.add(array[i])
 i += 1
 end
@@ -1835,9 +1835,9 @@ if name == "Rotate"
     if len(rtVm.stack) < count
         rtError("Corrupt bytecode: the value stack ran empty")
     end
-    split = len(rtVm.stack) - count
+    rtSplitAt = len(rtVm.stack) - count
     top = rtStackPop()
-    rtArrayInsert(rtVm.stack, split, top)
+    rtArrayInsert(rtVm.stack, rtSplitAt, top)
     return null
 end
 if name == "Jump"

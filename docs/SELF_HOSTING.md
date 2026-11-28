@@ -1,9 +1,11 @@
 # Road to a self-hosting Englishmen compiler
 
-**Status: 5 of 5 bootstrap blockers complete.** A compiler front end written
-in Englishmen now produces the same AST JSON as the Rust compiler for every
-bundled example. The Rust VM and runtime remain the execution backend; making
-those self-hosted is a separate, larger project.
+**Status: 5 of 5 bootstrap blockers complete, plus a self-hosted codegen,
+encoder, VM, and runtime.** A compiler front end written in Englishmen produces
+the same AST JSON as the Rust compiler for every bundled example, and the
+combined `selfhost/full.enm` runs a source file end to end through the
+Englishmen implementations. A Rust-built `em` host is still needed to execute
+any `.enm` script. See [round-2 status](fullselfhost/STATUS.md).
 
 ## Why this is a useful goal
 
@@ -29,7 +31,9 @@ binary container. Those are useful language features in their own right.
 The five original blockers were: (1) byte buffers and LE packing, (2) an `.emb`
 writer, (3) an `.emc` manifest API, (4) a lexer/parser/AST emitter in
 Englishmen, and (5) bootstrap output parity. All five are implemented and
-tested.
+tested. A second round added `cgCodegen` (AST → IR), `ieEncode` (IR → bytes),
+pure-Englishmen `bytes`/`project` libraries, and a VM plus runtime, combined in
+`selfhost/full.enm`.
 
 ## How to verify
 
@@ -62,9 +66,11 @@ on every full test run.
 
 - Native machine code. Englishmen targets its own bytecode; that is a design
   decision, not a temporary limitation.
-- Replacing the Rust VM. A self-hosted *compiler* already meets the goal.
+- Replacing the Rust host executable. The VM and runtime logic also exist in
+  Englishmen now, but a Rust-built `em` is still needed to run any `.enm`.
 - Backwards compatibility with `.em` source files. That extension is retired.
 
-Further work could replace the inlined lexer/parser with local `.enm` imports
-once those exist, add a `.enm` bytecode writer, and add multi-error recovery.
-None of these are required for the current parity guarantee.
+Further work could replace the inlined pieces with local `.enm` imports once
+those exist, support native module imports inside the self-hosted VM, add
+binary file writing, and add multi-error recovery. None of these are required
+for the current parity guarantee.

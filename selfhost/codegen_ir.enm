@@ -414,7 +414,7 @@ if cgExpr_kind == "Object"
     cgExpr_field = cgExpr_fields[cgExpr_i]
     assert(type(cgExpr_field) == "object", "cgCodegen: expected an object field entry")
     cgExpr_key = cgExpectString(cgNeed(cgExpr_field, "name", "object field"), "object field name")
-    cgConst(cgExpr_ctx, "string", cgExpr_key)
+    cgEmit(cgExpr_ctx, "LoadConst", cgConst(cgExpr_ctx, "string", cgExpr_key), 0, cgExpr_span)
     cgExpr(cgExpr_ctx, cgNeed(cgExpr_field, "value", "object field"), cgExpr_span)
     cgExpr_i += 1
 end
