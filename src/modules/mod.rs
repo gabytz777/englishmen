@@ -9,6 +9,7 @@ pub mod qrc;
 pub mod random;
 pub mod string;
 pub mod support;
+pub mod text;
 pub mod time;
 
 use crate::value::Value;
@@ -26,6 +27,7 @@ pub const STD_MODULES: &[&str] = &[
     "random",
     "collections",
     "gfx",
+    "text",
 ];
 
 /// Resolve a standard module by name into its runtime value (an object of native functions).
@@ -42,6 +44,7 @@ pub fn load_module(name: &str) -> Option<Value> {
         "random" => Some(random::module()),
         "collections" => Some(collections::module()),
         "gfx" => Some(gfx::module()),
+        "text" => Some(text::module()),
         _ => None,
     }
 }
