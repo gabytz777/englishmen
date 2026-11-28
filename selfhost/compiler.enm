@@ -3,9 +3,11 @@ $- Self-contained bootstrap compiler for Englishmen.
    emitter are inlined here. The emitter builds Value objects/arrays and lets
    json.encode handle key ordering, escaping and number formatting, which makes
    the output byte-identical to `em build <file> --emit ast-json`.
+
+   Native module imports are replaced by pure module builders that the
+   regenerator inlines, so this source needs no host modules. The builders are
+   called at use sites because Englishmen does not hoist function definitions.
 -$
-import fs
-import json
 $- ---------------------------------------------------------------------------
    Lexer state and helpers. Token objects mirror src/lexer.rs:
    {type: RustTokenVariant, value: ..., line: n, col: n} with an extra `op`
@@ -1410,6 +1412,6 @@ if scriptIndex >= 0
         end
     end
 end
-source = fs.read(sourcePath)
+source = pfoFsModule().read(sourcePath)
 ast = parse(lex(source))
-say(json.encode(ast))
+say(pjsJsonModule().encode(ast))

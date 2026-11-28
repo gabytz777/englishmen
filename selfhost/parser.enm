@@ -1,7 +1,8 @@
 $- Englishmen self-hosted parser (contract v1). -$
 $- Englishmen cannot import local .enm files yet, so the lexer lives here too. -$
-import fs
-import json
+$- Native module imports are replaced by pure module builders that the
+   regenerator inlines, so this source needs no host modules. The builders are
+   called at use sites because Englishmen does not hoist function definitions. -$
 lexFailure = null
 parseState = {tokens: [], pos: 0, loopDepth: 0, err: null}
 function lx_token(lx, type, value, line, col)
@@ -1801,14 +1802,14 @@ return null
 end
 path = find_source_path()
 if path == null
-    say(json.encode({error: "Missing source file argument", line: 1, col: 1}))
+    say(pjsJsonModule().encode({error: "Missing source file argument", line: 1, col: 1}))
 else
-    source = fs.read(path)
+    source = pfoFsModule().read(path)
     tokens = lex(source)
     if lexFailure != null
-        say(json.encode(lexFailure))
+        say(pjsJsonModule().encode(lexFailure))
     else
         ast = parse(tokens)
-        say(json.encode(ast))
+        say(pjsJsonModule().encode(ast))
     end
 end
