@@ -12,9 +12,8 @@ $-!
     lexer/parser is inlined below; it covers the common statement and expression
     forms used by the bundled examples.
 
-    Native module imports are replaced by pure module builders that the
-    regenerator inlines, so this source needs no host modules. The builders are
-    called at use sites because Englishmen does not hoist function definitions.
+    Native module imports are replaced by global builtins, so this source runs
+    both standalone and inside the regenerated compiler image.
 !-$
 function hexDigit(n)
     return "0123456789abcdef".charAt(n)
@@ -83,7 +82,7 @@ end
 function canonicalJson(text)
 $- Englishmen objects are backed by sorted maps, so re-encoding through
        json.decode/json.encode gives the same key order as every other producer. -$
-    return pjsJsonModule().encode(pjsJsonModule().decode(text))
+    return jsonEncode(jsonDecode(text))
 end
 function emit(ast)
     if isArray(ast)
@@ -1128,12 +1127,12 @@ return {version: 1, statements: statements}
 end
 paths = []
 for argument in args()
-    if pfoFsModule().exists(argument) and argument.endsWith(".enm")
+    if fileExists(argument) and argument.endsWith(".enm")
         paths.add(argument)
     end
 end
 if len(paths) < 2
     say("Usage: em run selfhost/emit.enm <source.enm>")
 else
-    say(emit(parse(pfoFsModule().read(paths[len(paths) - 1]))))
+    say(emit(parse(readFile(paths[len(paths) - 1]))))
 end

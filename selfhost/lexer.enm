@@ -2,9 +2,8 @@ $- An Englishmen lexer for Englishmen.
    It mirrors src/lexer.rs: whitespace and comments, literals, keywords,
    operators and precise line/column tracking.
 
-   Native module imports are replaced by pure module builders that the
-   regenerator inlines, so this source needs no host modules. The builders are
-   called at use sites because Englishmen does not hoist function definitions. -$
+   Native module imports are replaced by global builtins, so this source runs
+   both standalone and inside the regenerated compiler image. -$
 function token(type, value, line, col)
     return {type: type, value: value, line: line, col: col}
 end
@@ -702,7 +701,7 @@ function sourcePath(argv)
         if arg == "run" or arg == "build" or arg == "eval" or arg == "--interpret" or arg == "--time"
             continue
         end
-        if pfoFsModule().exists(arg) and pfoFsModule().isFile(arg)
+        if fileExists(arg)
             files += 1
         end
     end
@@ -711,7 +710,7 @@ function sourcePath(argv)
         if arg == "run" or arg == "build" or arg == "eval" or arg == "--interpret" or arg == "--time"
             continue
         end
-        if not pfoFsModule().exists(arg) or not pfoFsModule().isFile(arg)
+        if not fileExists(arg)
             continue
         end
         seen += 1
@@ -722,12 +721,12 @@ function sourcePath(argv)
     end
     return null
 end
-argv = pfoOsModule().args()
+argv = args()
 path = sourcePath(argv)
 if path != null
-    source = pfoFsModule().read(path)
+    source = readFile(path)
     tokens = lex(source)
-    say(pjsJsonModule().encode(tokens))
+    say(jsonEncode(tokens))
 else
     say("Usage: em run selfhost/lexer.enm <file.enm>")
 end

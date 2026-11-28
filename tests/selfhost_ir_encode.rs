@@ -377,7 +377,11 @@ fn fixtures() -> Vec<Fixture> {
 }
 
 fn harness_source(fixtures: &[Fixture]) -> String {
-    let mut source = String::from(include_str!("../selfhost/ir_encode.enm"));
+    // The library source keeps native `emb` inside its EM_SELFTEST guard so it
+    // can be inlined into the import-free bootstrap image. This native-only
+    // comparison harness supplies the oracle import explicitly.
+    let mut source = String::from("import emb\n");
+    source.push_str(include_str!("../selfhost/ir_encode.enm"));
     source.push_str("\nieFixtures = [\n");
     for (index, fixture) in fixtures.iter().enumerate() {
         let comma = if index + 1 == fixtures.len() { "" } else { "," };

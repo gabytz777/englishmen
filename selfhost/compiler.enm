@@ -4,9 +4,8 @@ $- Self-contained bootstrap compiler for Englishmen.
    json.encode handle key ordering, escaping and number formatting, which makes
    the output byte-identical to `em build <file> --emit ast-json`.
 
-   Native module imports are replaced by pure module builders that the
-   regenerator inlines, so this source needs no host modules. The builders are
-   called at use sites because Englishmen does not hoist function definitions.
+   Native module imports are replaced by global builtins, so this source runs
+   both standalone and inside the regenerated compiler image.
 -$
 $- ---------------------------------------------------------------------------
    Lexer state and helpers. Token objects mirror src/lexer.rs:
@@ -1412,6 +1411,6 @@ if scriptIndex >= 0
         end
     end
 end
-source = pfoFsModule().read(sourcePath)
+source = readFile(sourcePath)
 ast = parse(lex(source))
-say(pjsJsonModule().encode(ast))
+say(jsonEncode(ast))
