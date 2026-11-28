@@ -434,7 +434,9 @@ pub fn call_array_method(
                 return Ok(Value::new_array(Vec::new()));
             }
             let len = items.len();
-            let shift = (amount as i64).rem_euclid(len as i64) as usize;
+            // Reduce in f64 first: casting a huge float to i64 saturates, which
+            // would turn a mathematically exact multiple of len into a shift.
+            let shift = amount.rem_euclid(len as f64) as usize;
             let split = len - shift;
             let mut rotated = Vec::with_capacity(len);
             rotated.extend_from_slice(&items[split..]);
@@ -442,7 +444,9 @@ pub fn call_array_method(
             Ok(Value::new_array(rotated))
         }
         "indexesOf" => {
-            let target = args.get(0).cloned().unwrap_or(Value::Null);
+            let target = args.get(0).cloned().ok_or_else(|| {
+                EmError::arity("indexesOf() expects a value to find").with_span(span)
+            })?;
             let indexes = array
                 .borrow()
                 .iter()
@@ -1605,6 +1609,13 @@ mod tests {
                 .display(),
             "[4, 1, 2, 3]"
         );
+        assert_eq!(
+            call_array_method(&a, "rotate", &[num(1e30)], Span::default())
+                .unwrap()
+                .display(),
+            "[1, 2, 3, 4]",
+            "a huge exact multiple of the length must not saturate into a shift"
+        );
         // Rotation returns a fresh array instead of mutating the receiver.
         assert_eq!(
             a.borrow().iter().map(Value::display).collect::<Vec<_>>(),
@@ -1631,6 +1642,12 @@ mod tests {
                 .unwrap()
                 .display(),
             "[]"
+        );
+        assert_eq!(
+            call_array_method(&words, "indexesOf", &[], Span::default())
+                .unwrap_err()
+                .kind,
+            ErrorKind::Arity
         );
 
         let left = arr(vec![num(1.0), num(2.0)]);
@@ -1841,41 +1858,62 @@ mod tests {
 
     #[test]
     fn unknown_method_errors_list_all_available_methods() {
+        // Literal expectations, independent of the constants used by dispatch.
         let cases: Vec<(String, Vec<&str>)> = vec![
             (
                 call_array_method(&arr(vec![]), "zzzz", &[], Span::default())
                     .unwrap_err()
                     .hint
                     .unwrap(),
-                ARRAY_METHODS.to_vec(),
+                vec![
+                    "add", "push", "remove", "removeAt", "length", "contains", "pop", "shift",
+                    "unshift", "insert", "clear", "reverse", "sort", "slice", "join", "indexOf",
+                    "lastIndexOf", "count", "first", "last", "concat", "copy", "isEmpty", "swap",
+                    "unique", "flatten", "rotate", "indexesOf", "interleave",
+                ],
             ),
             (
                 call_object_method(&Rc::new(RefCell::new(BTreeMap::new())), "zzzz", &[], Span::default())
                     .unwrap_err()
                     .hint
                     .unwrap(),
-                OBJECT_METHODS.to_vec(),
+                vec![
+                    "keys", "values", "has", "get", "set", "delete", "length", "merge", "copy",
+                    "isEmpty", "pick", "omit", "entries",
+                ],
             ),
             (
                 call_string_method("x", "zzzz", &[], Span::default())
                     .unwrap_err()
                     .hint
                     .unwrap(),
-                STRING_METHODS.to_vec(),
+                vec![
+                    "length", "upper", "lower", "trim", "split", "contains", "startsWith",
+                    "endsWith", "replace", "replaceAll", "slice", "substring", "indexOf",
+                    "lastIndexOf", "charAt", "toNumber", "capitalize", "titleCase", "reverse",
+                    "repeat", "padLeft", "padRight", "isDigit", "isAlpha", "lines", "chars",
+                    "swapCase", "isBlank", "truncate",
+                ],
             ),
             (
                 call_number_method(1.0, "zzzz", &[], Span::default())
                     .unwrap_err()
                     .hint
                     .unwrap(),
-                NUMBER_METHODS.to_vec(),
+                vec![
+                    "isEven", "isOdd", "isInteger", "isFinite", "toFixed", "clamp", "toHex",
+                    "toBinary", "sign", "abs", "floor", "ceil", "round", "sqrt", "toOctal",
+                    "toDegrees", "reciprocal",
+                ],
             ),
             (
                 call_bool_method(true, "zzzz", &[], Span::default())
                     .unwrap_err()
                     .hint
                     .unwrap(),
-                BOOL_METHODS.to_vec(),
+                vec![
+                    "toggle", "toString", "and", "or", "xor", "implies", "nand",
+                ],
             ),
         ];
         for (hint, methods) in cases {
