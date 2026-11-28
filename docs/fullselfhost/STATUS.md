@@ -28,7 +28,44 @@ em run selfhost/full.enm examples/objects.enm
 Verified to produce output identical to `em run <example>` for
 `hello.enm`, `conditions.enm`, `arrays.enm`, `example.enm`, `objects.enm`, and
 `objects-api.enm`. `cargo test --all-targets` passes with all round-2 parity
-tests enabled.
+tests enabled. Manual no-flag runs on `examples/hello.enm` and
+`examples/objects.enm` still print the same one-line JSON summaries.
+
+## Round 3 driver flags
+
+The driver now accepts two flags before reading the source:
+
+```sh
+em run selfhost/full.enm examples/hello.enm --write-emb /tmp/hello.emb
+em run selfhost/full.enm examples/hello.enm --write-emb /tmp/hello.emb -- user-arg
+```
+
+- `--write-emb <path>` writes the pure encoder's `encodedFull` byte array to
+  `<path>` with the native `bytes.write(path, encodedFull)` primitive. The JSON
+  summary format is unchanged: one line with `source`, `astStatements`,
+  `irInstructions`, `encodedBytes`, and `output`. No extra text is printed.
+- `--` stops driver parsing. The source is the first non-flag argument after
+  `full.enm` and before `--`; arguments after `--` are collected in
+  `programArgsFull` and left for the compiled program's future `args()` wiring.
+  Without `--`, source selection is exactly as before.
+- `vmRunWithRuntime(irFull)` is unchanged. Parent integration will switch to
+  `vmRunWithImports` once A1/A2 land.
+- The native `bytes` module is imported at the point of use, after `ieEncode`
+  has run, because the inlined encoder has a temporary variable with that
+  name. The existing inlined code is otherwise untouched.
+
+Binary writing now crosses the host boundary through a native primitive: the
+encoder stays pure, while `bytes.write` performs the file write. B1's
+`emb.writeBytes` alias is an equivalent host path, but the driver deliberately
+uses `bytes.write` as specified. An image written by `--write-emb` loads with
+`em run-fixed <path>` and prints the same lines as `em run <source>`.
+
+Caveat: the host CLI still rejects unknown dash-prefixed `run` arguments, so
+these flag runs fail at the CLI until parent integration adds pass-through for
+`--write-emb` and `--`. The flag-specific test assertions skip on that exact
+CLI error. Driver parsing and loadability were verified by building
+`selfhost/full.enm` with `em build --exe` and invoking the standalone binary,
+which receives its argv directly.
 
 ## What is still native
 
@@ -39,8 +76,8 @@ tests enabled.
   `emb`, …) cannot yet run through the self-hosted VM: `Import` deliberately
   fails. The native module implementations in this repository are used only
   as test oracles.
-- `ieEncode` returns a byte array. `fs.write` is UTF-8-only, so writing an
-  arbitrary binary `.emb` file still needs a native host call.
+- `ieEncode` returns a byte array. Saving it as an arbitrary binary `.emb` file
+  still needs a native host call; `--write-emb` uses `bytes.write` for that.
 - Englishmen cannot observe NaN sign or payload, so non-canonical NaNs are
   canonicalized to positive quiet NaN.
 - Some runtime details are not reproduced: source spans and suggestion hints

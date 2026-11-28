@@ -6303,6 +6303,12 @@ $- === combined full-self-hosting pipeline ===
    Reads an .enm source file, runs the Englishmen lexer/parser, generates
    emb IR in Englishmen, encodes it to bytes in Englishmen, and executes the
    IR on the Englishmen runtime. The host is still the Rust `em` VM.
+
+   Driver flags, parsed from the host argv before reading the source:
+     --write-emb <path>  write encodedFull to <path> with native bytes.write
+     --                  stop parsing driver flags; everything after this is
+                         left in programArgsFull for the compiled program's
+                         args(). Without `--`, argument handling is unchanged.
 -$
 argvFull = args()
 scriptIndexFull = -1
@@ -6312,19 +6318,65 @@ for i in range(len(argvFull))
         break
     end
 end
-sourcePathFull = argvFull[len(argvFull) - 1]
+scanStartFull = 0
 if scriptIndexFull >= 0
-    for i in range(scriptIndexFull + 1, len(argvFull))
-        candidateFull = argvFull[i]
-        if not candidateFull.startsWith("-") and candidateFull != ""
-            sourcePathFull = candidateFull
-            break
-        end
+    scanStartFull = scriptIndexFull + 1
+end
+separatorIndexFull = -1
+for i in range(scanStartFull, len(argvFull))
+    if argvFull[i] == "--"
+        separatorIndexFull = i
+        break
     end
+end
+scanEndFull = len(argvFull)
+if separatorIndexFull >= 0
+    scanEndFull = separatorIndexFull
+end
+programArgsFull = []
+if separatorIndexFull >= 0
+    for i in range(separatorIndexFull + 1, len(argvFull))
+        programArgsFull.add(argvFull[i])
+    end
+end
+writePathFull = null
+sourcePathFull = null
+skipPathFull = false
+for i in range(scanStartFull, scanEndFull)
+    if skipPathFull
+        skipPathFull = false
+        continue
+    end
+    candidateFull = argvFull[i]
+    if candidateFull == "--write-emb"
+        assert(i + 1 < scanEndFull, "--write-emb expects a path")
+        writePathFull = argvFull[i + 1]
+        skipPathFull = true
+        continue
+    end
+    if scriptIndexFull >= 0
+        if candidateFull != "" and not candidateFull.startsWith("-") and sourcePathFull == null
+            sourcePathFull = candidateFull
+        end
+    else
+$- Keep the original no-script fallback: the last argument wins. -$
+        sourcePathFull = candidateFull
+    end
+end
+if sourcePathFull == null
+    if separatorIndexFull >= 0
+        assert(false, "full.enm expects a source file before '--'")
+    end
+    sourcePathFull = argvFull[len(argvFull) - 1]
 end
 sourceFull = fs.read(sourcePathFull)
 astFull = parse(lex(sourceFull))
 irFull = cgCodegen(astFull)
 encodedFull = ieEncode(irFull)
+if writePathFull != null
+$- Import at the point of use: ieEncode has a temporary named `bytes`. -$
+    import bytes
+    bytes.write(writePathFull, encodedFull)
+end
 outputFull = vmRunWithRuntime(irFull)
 say(jsonEncode({source: sourcePathFull, astStatements: len(astFull.get("statements", [])), irInstructions: len(irFull.get("code", [])), encodedBytes: len(encodedFull), output: outputFull}))

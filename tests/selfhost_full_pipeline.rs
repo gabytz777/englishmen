@@ -51,6 +51,18 @@ fn stdout_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+fn stderr_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+/// The host CLI does not yet pass script flags through to `full.enm`. The
+/// parent integration adds that after this PR lands, so these tests skip their
+/// flag-specific assertions until then instead of failing on the CLI error.
+fn cli_rejects_script_flags(output: &Output) -> bool {
+    let stderr = stderr_text(output);
+    stderr.contains("Unknown option '--write-emb'") || stderr.contains("Unknown option '--'")
+}
+
 /// Mirror `json_escape` in `src/builtins.rs`; `say` always prints strings.
 fn json_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
@@ -130,4 +142,86 @@ fn combined_pipeline_matches_native_output_on_native_free_examples() {
             "output mismatch for {name}"
         );
     }
+}
+
+#[test]
+fn write_emb_flag_produces_a_loadable_image() {
+    for name in EXAMPLES {
+        let source = format!("examples/{name}");
+        let native = run(&["run", &source]);
+        assert!(
+            native.status.success(),
+            "native run failed for {name}: {}",
+            stderr_text(&native)
+        );
+
+        let emb_path = std::env::temp_dir().join(format!("em_full_pipeline_{name}.emb"));
+        let _ = std::fs::remove_file(&emb_path);
+        let path = emb_path.to_str().expect("utf-8 temp path");
+        let full = run(&["run", "selfhost/full.enm", &source, "--write-emb", path]);
+        if !full.status.success() && cli_rejects_script_flags(&full) {
+            eprintln!("skipping --write-emb loadability check for {name}: pending parent CLI pass-through");
+            let _ = std::fs::remove_file(&emb_path);
+            continue;
+        }
+        assert!(
+            full.status.success(),
+            "self-hosted run with --write-emb failed for {name}: {}",
+            stderr_text(&full)
+        );
+        assert!(
+            emb_path.exists(),
+            "--write-emb did not write an image for {name}"
+        );
+        assert!(
+            stdout_text(&full).contains(&format!("\"source\":\"{source}\"")),
+            "--write-emb changed source selection for {name}: {}",
+            stdout_text(&full)
+        );
+
+        let loaded = run(&["run-fixed", path]);
+        assert!(
+            loaded.status.success(),
+            "run-fixed rejected the self-hosted image for {name}: {}",
+            stderr_text(&loaded)
+        );
+
+        let native_stdout = stdout_text(&native);
+        let loaded_stdout = stdout_text(&loaded);
+        let expected_lines: Vec<&str> = native_stdout.lines().collect();
+        let actual_lines: Vec<&str> = loaded_stdout.lines().collect();
+        assert_eq!(
+            actual_lines, expected_lines,
+            "run-fixed output mismatch for {name}"
+        );
+        let _ = std::fs::remove_file(&emb_path);
+    }
+}
+
+#[test]
+fn separator_keeps_trailing_arguments_out_of_source_selection() {
+    let source = "examples/hello.enm";
+    let full = run(&[
+        "run",
+        "selfhost/full.enm",
+        source,
+        "--",
+        "program-arg",
+        "--write-emb",
+        "not-a-driver-path",
+    ]);
+    if !full.status.success() && cli_rejects_script_flags(&full) {
+        eprintln!("skipping -- separator check: pending parent CLI pass-through");
+        return;
+    }
+    assert!(
+        full.status.success(),
+        "-- separator run failed: {}",
+        stderr_text(&full)
+    );
+    assert!(
+        stdout_text(&full).contains(&format!("\"source\":\"{source}\"")),
+        "-- separator changed source selection: {}",
+        stdout_text(&full)
+    );
 }
