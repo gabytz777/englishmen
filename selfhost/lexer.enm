@@ -1,0 +1,732 @@
+$- An Englishmen lexer for Englishmen.
+   It mirrors src/lexer.rs: whitespace and comments, literals, keywords,
+   operators and precise line/column tracking. -$
+import fs
+import json
+import os
+function token(type, value, line, col)
+    return {type: type, value: value, line: line, col: col}
+end
+function compound(st, op, line, col)
+    tok = token("CompoundAssign", null, line, col)
+    tok.op = op
+    return tok
+end
+function fail(st, message, line, col)
+    if st.error == null
+        st.error = {error: message, line: line, col: col}
+    end
+    return null
+end
+function state(text, line, col)
+    chars = text.chars()
+    bom = fromCharCode(65279)
+    if chars.length() > 0 and chars[0] == bom
+        chars = chars.slice(1)
+    end
+    return {chars: chars, pos: 0, line: line, col: col, tokens: [], error: null}
+end
+function peek(st, offset)
+    index = st.pos + offset
+    if index < 0 or index >= st.chars.length()
+        return ""
+    end
+    return st.chars[index]
+end
+function advance(st)
+    c = peek(st, 0)
+    if c == ""
+        return ""
+    end
+    st.pos += 1
+    if c == "\n"
+        st.line += 1
+        st.col = 1
+    else
+        st.col += 1
+    end
+    return c
+end
+function isDigit(c)
+    return c != "" and c.length() == 1 and "0123456789".contains(c)
+end
+function isAlpha(c)
+    return c != "" and c.isAlpha()
+end
+function hexValue(c)
+    if c == "" or c.length() != 1
+        return -1
+    end
+    return "0123456789abcdef".indexOf(c.lower())
+end
+function endsExpression(type)
+    if type == "Number" or type == "String" or type == "Interpolated" or type == "Identifier"
+        return true
+    end
+    if type == "True" or type == "False" or type == "Null"
+        return true
+    end
+    if type == "RParen" or type == "RBracket" or type == "RBrace"
+        return true
+    end
+    if type == "PlusPlus" or type == "MinusMinus"
+        return true
+    end
+    return false
+end
+function skipToEndOfLine(st)
+    while true
+    c = peek(st, 0)
+    if c == "" or c == "\n"
+        return
+    end
+    advance(st)
+end
+end
+function skipWhitespace(st)
+    while true
+    c = peek(st, 0)
+    if c == " " or c == "\t" or c == ""
+        advance(st)
+    else if c == "$" and peek(st, 1) == "-"
+        startLine = st.line
+        startCol = st.col
+        advance(st)
+        advance(st)
+        closed = false
+        while true
+        next = peek(st, 0)
+        if next == ""
+            break
+        end
+        if next == "-" and peek(st, 1) == "$"
+            advance(st)
+            advance(st)
+            closed = true
+            break
+        end
+        advance(st)
+    end
+    if not closed
+        return fail(st, "Unterminated comment", startLine, startCol)
+    end
+else
+    return
+end
+end
+end
+function readNumber(st, line, col)
+    first = peek(st, 0)
+    prefix = peek(st, 1).lower()
+    if first == "0" and (prefix == "x" or prefix == "b" or prefix == "o")
+        radix = 16
+        if prefix == "b"
+            radix = 2
+        else if prefix == "o"
+            radix = 8
+        end
+        advance(st)
+        advance(st)
+        digits = ""
+        while true
+        c = peek(st, 0)
+        if c == ""
+            break
+        end
+        if c == "_"
+            advance(st)
+        else
+            d = hexValue(c)
+            if d >= 0 and d < radix
+                digits += c
+                advance(st)
+            else
+                break
+            end
+        end
+    end
+    if digits == ""
+        return fail(st, "Invalid numeric literal", st.line, st.col)
+    end
+    value = 0
+    for digit in digits.chars()
+        value = value * radix + hexValue(digit)
+    end
+    return token("Number", value, line, col)
+end
+s = ""
+lastWasDigit = false
+while true
+c = peek(st, 0)
+if isDigit(c)
+    s += c
+    advance(st)
+    lastWasDigit = true
+else if c == "_" and lastWasDigit and isDigit(peek(st, 1))
+    advance(st)
+    lastWasDigit = false
+else
+    break
+end
+end
+if peek(st, 0) == "." and isDigit(peek(st, 1))
+    s += "."
+    advance(st)
+    previous = "."
+    while true
+    c = peek(st, 0)
+    if isDigit(c)
+        s += c
+        advance(st)
+        previous = c
+    else if c == "_" and isDigit(previous) and isDigit(peek(st, 1))
+        advance(st)
+    else
+        break
+    end
+end
+end
+current = peek(st, 0)
+if current == "e" or current == "E"
+    exponentLine = st.line
+    exponentCol = st.col
+    advance(st)
+    exponent = ""
+    current = peek(st, 0)
+    if current == "+" or current == "-"
+        exponent += current
+        advance(st)
+    end
+    sawDigit = false
+    while true
+    c = peek(st, 0)
+    if isDigit(c)
+        exponent += c
+        advance(st)
+        sawDigit = true
+    else if c == "_" and sawDigit and isDigit(peek(st, 1))
+        advance(st)
+    else
+        break
+    end
+end
+if not sawDigit
+    return fail(st, "Invalid exponent in numeric literal", exponentLine, exponentCol)
+end
+s += "e"
+s += exponent
+end
+value = s.toNumber()
+if value == null
+    value = 0
+end
+return token("Number", value, line, col)
+end
+function readInterpolation(st, stringLine, stringCol, exprLine, exprCol)
+    raw = ""
+    depth = 0
+    while true
+    c = peek(st, 0)
+    if c == ""
+        return fail(st, "Unclosed interpolation", exprLine, exprCol)
+    end
+    if c == "\\"
+        raw += c
+        advance(st)
+        escaped = advance(st)
+        if escaped != ""
+            raw += escaped
+        end
+    else if c == "\""
+        raw += c
+        advance(st)
+        while true
+        quoted = advance(st)
+        if quoted == ""
+            return fail(st, "Unterminated string literal", stringLine, stringCol)
+        end
+        raw += quoted
+        if quoted == "\""
+            break
+        end
+        if quoted == "\\"
+            escaped = advance(st)
+            if escaped != ""
+                raw += escaped
+            end
+        end
+    end
+else if c == "$" and peek(st, 1) == "-"
+    raw += "$"
+    raw += "-"
+    advance(st)
+    advance(st)
+    while true
+    commented = advance(st)
+    if commented == ""
+        break
+    end
+    raw += commented
+    if commented == "-" and peek(st, 0) == "$"
+        raw += "$"
+        advance(st)
+        break
+    end
+end
+else if c == "\{"
+depth += 1
+raw += c
+advance(st)
+else if c == "\}"
+advance(st)
+if depth == 0
+    break
+end
+depth -= 1
+raw += "\}"
+else
+    raw += c
+    advance(st)
+end
+end
+fragment = state(raw, exprLine, exprCol)
+tokens = scan(fragment)
+if fragment.error != null
+    st.error = fragment.error
+    return null
+end
+return tokens
+end
+function readString(st, line, col)
+    advance(st)
+    literal = ""
+    parts = []
+    while true
+    c = advance(st)
+    if c == ""
+        return fail(st, "Unterminated string literal", line, col)
+    end
+    if c == "\""
+        break
+    end
+    if c == "\\"
+        escaped = advance(st)
+        if escaped == ""
+            return fail(st, "Unterminated string literal", line, col)
+        end
+        if escaped == "n"
+            literal += "\n"
+        else if escaped == "t"
+            literal += "\t"
+        else if escaped == "r"
+            literal += ""
+        else if escaped == "0"
+            literal += fromCharCode(0)
+        else if escaped == "u"
+            if peek(st, 0) != "\{"
+                return fail(st, "Invalid unicode escape", line, col)
+            end
+            advance(st)
+            hex = ""
+            closed = false
+            while true
+            h = advance(st)
+            if h == ""
+                break
+            end
+            if h == "\}"
+                closed = true
+                break
+            end
+            hex += h
+        end
+        code = -1
+        if hex != ""
+            code = 0
+            for h in hex.chars()
+                digit = hexValue(h)
+                if digit < 0
+                    code = -1
+                    break
+                end
+                code = code * 16 + digit
+            end
+        end
+        if not closed or code < 0 or code > 1114111
+            return fail(st, "Invalid unicode escape", line, col)
+        end
+        if code >= 55296 and code <= 57343
+            return fail(st, "Invalid unicode escape", line, col)
+        end
+        literal += fromCharCode(code)
+    else
+        literal += escaped
+    end
+else if c == "\{"
+    if peek(st, 0) == "\{"
+        advance(st)
+        literal += "\{"
+    else
+        if literal != ""
+        parts.add({type: "Literal", value: literal})
+        literal = ""
+    end
+    exprLine = st.line
+    exprCol = st.col
+    tokens = readInterpolation(st, line, col, exprLine, exprCol)
+    if st.error != null
+        return null
+    end
+    if tokens.length() == 0 or tokens[0].type == "Eof"
+        return fail(st, "Empty interpolation", exprLine, exprCol)
+    end
+    parts.add({type: "Expr", value: tokens})
+end
+else if c == "\}"
+if peek(st, 0) == "\}"
+    advance(st)
+end
+literal += "\}"
+else
+    literal += c
+end
+end
+if parts.length() == 0
+    return token("String", literal, line, col)
+end
+if literal != ""
+    parts.add({type: "Literal", value: literal})
+end
+return token("Interpolated", parts, line, col)
+end
+function readIdentifier(st, line, col)
+    name = ""
+    while true
+    c = peek(st, 0)
+    if c == "" or not (isAlpha(c) or isDigit(c) or c == "_")
+        break
+    end
+    name += c
+    advance(st)
+end
+if name == "if"
+    return token("If", null, line, col)
+else if name == "else"
+    return token("Else", null, line, col)
+else if name == "end"
+    return token("End", null, line, col)
+else if name == "function"
+    return token("Function", null, line, col)
+else if name == "return"
+    return token("Return", null, line, col)
+else if name == "repeat"
+    return token("Repeat", null, line, col)
+else if name == "while"
+    return token("While", null, line, col)
+else if name == "for"
+    return token("For", null, line, col)
+else if name == "in"
+    return token("In", null, line, col)
+else if name == "import"
+    return token("Import", null, line, col)
+else if name == "and"
+    return token("And", null, line, col)
+else if name == "or"
+    return token("Or", null, line, col)
+else if name == "not"
+    return token("Not", null, line, col)
+else if name == "break"
+    return token("Break", null, line, col)
+else if name == "continue"
+    return token("Continue", null, line, col)
+else if name == "div"
+    return token("Div", null, line, col)
+else if name == "true"
+    return token("True", null, line, col)
+else if name == "false"
+    return token("False", null, line, col)
+else if name == "null"
+    return token("Null", null, line, col)
+end
+return token("Identifier", name, line, col)
+end
+function readSymbol(st, line, col)
+    c = advance(st)
+    next = peek(st, 0)
+    after = peek(st, 1)
+    if c == "+"
+        if next == "+"
+            advance(st)
+            return token("PlusPlus", null, line, col)
+        end
+        if next == "="
+            advance(st)
+            return compound(st, "+", line, col)
+        end
+        return token("Plus", null, line, col)
+    end
+    if c == "-"
+        if next == "-"
+            advance(st)
+            return token("MinusMinus", null, line, col)
+        end
+        if next == "="
+            advance(st)
+            return compound(st, "-", line, col)
+        end
+        return token("Minus", null, line, col)
+    end
+    if c == "*"
+        if next == "*" and after == "="
+            advance(st)
+            advance(st)
+            return compound(st, "**", line, col)
+        end
+        if next == "*"
+            advance(st)
+            return token("Pow", null, line, col)
+        end
+        if next == "="
+            advance(st)
+            return compound(st, "*", line, col)
+        end
+        return token("Star", null, line, col)
+    end
+    if c == "/"
+        if next == "/" and after == "="
+            advance(st)
+            advance(st)
+            return compound(st, "//", line, col)
+        end
+        if next == "/"
+            advance(st)
+            return token("FloorDiv", null, line, col)
+        end
+        if next == "="
+            advance(st)
+            return compound(st, "/", line, col)
+        end
+        return token("Slash", null, line, col)
+    end
+    if c == "%"
+        if next == "="
+            advance(st)
+            return compound(st, "%", line, col)
+        end
+        return token("Percent", null, line, col)
+    end
+    if c == "("
+        return token("LParen", null, line, col)
+    end
+    if c == ")"
+        return token("RParen", null, line, col)
+    end
+    if c == "["
+        return token("LBracket", null, line, col)
+    end
+    if c == "]"
+        return token("RBracket", null, line, col)
+    end
+    if c == "\{"
+        return token("LBrace", null, line, col)
+    end
+    if c == "\}"
+        return token("RBrace", null, line, col)
+    end
+    if c == "."
+        return token("Dot", null, line, col)
+    end
+    if c == ","
+        return token("Comma", null, line, col)
+    end
+    if c == ":"
+        return token("Colon", null, line, col)
+    end
+    if c == "&"
+        if next == "&"
+            advance(st)
+            return token("AndAlso", null, line, col)
+        end
+        if next == "="
+            advance(st)
+            return compound(st, "&", line, col)
+        end
+        return token("BitAnd", null, line, col)
+    end
+    if c == "|"
+        if next == "|"
+            advance(st)
+            return token("OrElse", null, line, col)
+        end
+        if next == "="
+            advance(st)
+            return compound(st, "|", line, col)
+        end
+        return token("BitOr", null, line, col)
+    end
+    if c == "^"
+        if next == "="
+            advance(st)
+            return compound(st, "^", line, col)
+        end
+        return token("BitXor", null, line, col)
+    end
+    if c == "~"
+        return token("BitNot", null, line, col)
+    end
+    if c == "?"
+        if next == "?"
+            advance(st)
+            return token("NullCoalesce", null, line, col)
+        end
+        return token("Question", null, line, col)
+    end
+    if c == "="
+        if next == "="
+            advance(st)
+            return token("Eq", null, line, col)
+        end
+        return token("Assign", null, line, col)
+    end
+    if c == "!"
+        if next == "="
+            advance(st)
+            return token("NotEq", null, line, col)
+        end
+        return token("Bang", null, line, col)
+    end
+    if c == ">"
+        if next == "="
+            advance(st)
+            return token("GtEq", null, line, col)
+        end
+        if next == ">" and after == "="
+            advance(st)
+            advance(st)
+            return compound(st, ">>", line, col)
+        end
+        if next == ">"
+            advance(st)
+            return token("Shr", null, line, col)
+        end
+        return token("Gt", null, line, col)
+    end
+    if c == "<"
+        if next == "="
+            advance(st)
+            return token("LtEq", null, line, col)
+        end
+        if next == "<" and after == "="
+            advance(st)
+            advance(st)
+            return compound(st, "<<", line, col)
+        end
+        if next == "<"
+            advance(st)
+            return token("Shl", null, line, col)
+        end
+        return token("Lt", null, line, col)
+    end
+    return fail(st, "Unexpected character '" + c + "'", line, col)
+end
+function scan(st)
+    tokens = st.tokens
+    while true
+    skipWhitespace(st)
+    if st.error != null
+        return null
+    end
+    line = st.line
+    col = st.col
+    c = peek(st, 0)
+    if c == ""
+        tokens.add(token("Eof", null, line, col))
+        return tokens
+    end
+    if c == "\n"
+        advance(st)
+        tokens.add(token("Newline", null, line, col))
+    else if c == "#"
+        skipToEndOfLine(st)
+    else if c == "/" and peek(st, 1) == "/" and peek(st, 2) != "="
+        operator = false
+        if tokens.length() > 0
+            previous = tokens[tokens.length() - 1]
+            if endsExpression(previous.type) and previous.line == st.line
+                operator = true
+            end
+        end
+        if operator
+            slash = readSymbol(st, line, col)
+            if st.error != null
+                return null
+            end
+            tokens.add(slash)
+        else
+            skipToEndOfLine(st)
+        end
+    else
+        tok = null
+        if isDigit(c)
+            tok = readNumber(st, line, col)
+        else if c == "\""
+            tok = readString(st, line, col)
+        else if isAlpha(c) or c == "_"
+            tok = readIdentifier(st, line, col)
+        else
+            tok = readSymbol(st, line, col)
+        end
+        if st.error != null
+            return null
+        end
+        tokens.add(tok)
+    end
+end
+end
+function lex(source)
+    st = state(source, 1, 1)
+    tokens = scan(st)
+    if st.error != null
+        return st.error
+    end
+    return tokens
+end
+$- `em run selfhost/lexer.enm <file>` exposes the whole command line to
+   os.args(): the subcommand, this script and then the file. Accept both that
+   shape and a plain argv whose first item is the source file. -$
+function sourcePath(argv)
+    wrapped = argv.length() > 0 and (argv[0] == "run" or argv[0] == "build" or argv[0] == "eval")
+    files = 0
+    for arg in argv
+        if arg == "run" or arg == "build" or arg == "eval" or arg == "--interpret" or arg == "--time"
+            continue
+        end
+        if fs.exists(arg) and fs.isFile(arg)
+            files += 1
+        end
+    end
+    seen = 0
+    for arg in argv
+        if arg == "run" or arg == "build" or arg == "eval" or arg == "--interpret" or arg == "--time"
+            continue
+        end
+        if not fs.exists(arg) or not fs.isFile(arg)
+            continue
+        end
+        seen += 1
+        if files > 1 and seen == 1
+            continue
+        end
+        return arg
+    end
+    return null
+end
+argv = os.args()
+path = sourcePath(argv)
+if path != null
+    source = fs.read(path)
+    tokens = lex(source)
+    say(json.encode(tokens))
+else
+    say("Usage: em run selfhost/lexer.enm <file.enm>")
+end
