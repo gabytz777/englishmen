@@ -84,13 +84,18 @@ pub fn module() -> Value {
 }
 
 /// Serialize a runtime value as compact JSON text.
+const MAX_JSON_DEPTH: usize = 100;
+
 fn encode(value: &Value) -> Result<String, String> {
     let mut out = String::new();
-    write_json(value, &mut out)?;
+    write_json(value, &mut out, 0)?;
     Ok(out)
 }
 
-fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
+fn write_json(value: &Value, out: &mut String, depth: usize) -> Result<(), String> {
+    if depth > MAX_JSON_DEPTH {
+        return Err("JSON value is nested too deeply".to_string());
+    }
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -107,7 +112,7 @@ fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
                 if i > 0 {
                     out.push(',');
                 }
-                write_json(item, out)?;
+                write_json(item, out, depth + 1)?;
             }
             out.push(']');
         }
@@ -119,7 +124,7 @@ fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
                 }
                 write_string(key, out);
                 out.push(':');
-                write_json(item, out)?;
+                write_json(item, out, depth + 1)?;
             }
             out.push('}');
         }
@@ -153,6 +158,9 @@ fn write_string(text: &str, out: &mut String) {
 
 /// Serialize with two-space indentation for human-readable output.
 fn write_pretty(value: &Value, level: usize, out: &mut String) -> Result<(), String> {
+    if level > MAX_JSON_DEPTH {
+        return Err("JSON value is nested too deeply".to_string());
+    }
     match value {
         Value::Array(items) => {
             let items = items.borrow();
@@ -194,7 +202,7 @@ fn write_pretty(value: &Value, level: usize, out: &mut String) -> Result<(), Str
             out.push('}');
             Ok(())
         }
-        other => write_json(other, out),
+        other => write_json(other, out, level),
     }
 }
 
@@ -643,5 +651,20 @@ mod tests {
         assert_eq!(call("get", &[updated.clone(), Value::String("user.age".to_string())]).unwrap().display(), "36");
         assert_eq!(call("get", &[updated.clone(), Value::String("user.name".to_string())]).unwrap().display(), "Ada");
         assert!(call("set", &[Value::Null, Value::String("a.b".to_string()), Value::Bool(true)]).is_ok());
+    }
+
+    #[test]
+    fn cyclic_values_return_errors_instead_of_overflowing() {
+        let cycle = Value::new_array(vec![]);
+        let Value::Array(items) = &cycle else { unreachable!() };
+        items.borrow_mut().push(cycle.clone());
+
+        let encoded = call("encode", &[cycle.clone()]);
+        assert!(encoded.is_err());
+        assert!(encoded.unwrap_err().contains("nested too deeply"));
+
+        let pretty = call("pretty", &[cycle]);
+        assert!(pretty.is_err());
+        assert!(pretty.unwrap_err().contains("nested too deeply"));
     }
 }

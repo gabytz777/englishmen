@@ -178,10 +178,9 @@ pub fn module() -> Value {
     fields.insert(
         "uuid".to_string(),
         native("random.uuid", |_args| {
-            let mut bytes = [0u8; 16];
-            for chunk in bytes.chunks_mut(8) {
-                chunk.copy_from_slice(&next_u64().to_le_bytes());
-            }
+            // UUIDv4 must not be reproducible via random.seed, so prefer OS
+            // entropy and only fall back to the PRNG where no device exists.
+            let mut bytes = os_random_bytes();
             bytes[6] = (bytes[6] & 0x0f) | 0x40; // UUID version 4
             bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
             Ok(Value::String(format_uuid(&bytes)))
@@ -197,6 +196,24 @@ fn whole_number(value: &Value, context: &str) -> Result<i64, String> {
         return Err(format!("Expected a whole number {context}, found {n}"));
     }
     Ok(n as i64)
+}
+
+fn os_random_bytes() -> [u8; 16] {
+    #[cfg(unix)]
+    {
+        let mut bytes = [0u8; 16];
+        if let Ok(mut source) = std::fs::File::open("/dev/urandom") {
+            use std::io::Read;
+            if source.read_exact(&mut bytes).is_ok() {
+                return bytes;
+            }
+        }
+    }
+    let mut bytes = [0u8; 16];
+    for chunk in bytes.chunks_mut(8) {
+        chunk.copy_from_slice(&next_u64().to_le_bytes());
+    }
+    bytes
 }
 
 fn format_uuid(bytes: &[u8; 16]) -> String {
@@ -316,5 +333,8 @@ mod tests {
         assert_eq!(uuid.matches('-').count(), 4);
         assert_eq!(bytes[14], b'4');
         assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
+
+        let second = call("uuid", &[]).unwrap().display();
+        assert_ne!(uuid, second, "UUIDs must not repeat even after seeding");
     }
 }

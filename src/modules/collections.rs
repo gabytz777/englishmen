@@ -66,7 +66,7 @@ pub fn module() -> Value {
                 "for collections.flatten",
             )?;
             let mut result = Vec::new();
-            flatten_into(items, &mut result);
+            flatten_into(items, &mut result, 0)?;
             Ok(Value::new_array(result))
         }),
     );
@@ -417,13 +417,17 @@ fn copy_value(value: &Value) -> Value {
     }
 }
 
-fn flatten_into(items: Vec<Value>, out: &mut Vec<Value>) {
+fn flatten_into(items: Vec<Value>, out: &mut Vec<Value>, depth: usize) -> Result<(), String> {
+    if depth > 100 {
+        return Err("collections.flatten nesting is too deep".to_string());
+    }
     for item in items {
         match item {
-            Value::Array(nested) => flatten_into(nested.borrow().clone(), out),
+            Value::Array(nested) => flatten_into(nested.borrow().clone(), out, depth + 1)?,
             other => out.push(other),
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -608,5 +612,16 @@ mod tests {
         let copied = call("copy", &[merged.clone()]).unwrap();
         assert_eq!(copied.display(), merged.display());
         assert!(call("merge", &[Value::Number(1.0)]).is_err());
+    }
+
+    #[test]
+    fn flatten_rejects_cyclic_arrays() {
+        let cycle = Value::new_array(vec![]);
+        let Value::Array(items) = &cycle else { unreachable!() };
+        items.borrow_mut().push(cycle.clone());
+
+        let result = call("flatten", &[cycle]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("nesting is too deep"));
     }
 }

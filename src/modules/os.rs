@@ -24,9 +24,11 @@ pub fn module() -> Value {
     fields.insert(
         "args".to_string(),
         native("os.args", |_args| {
-            let args: Vec<Value> = std::env::args()
+            // `args_os` never panics on non-UTF-8 command-line arguments;
+            // lossy conversion keeps this builtin total on every platform.
+            let args: Vec<Value> = std::env::args_os()
                 .skip(1)
-                .map(|arg| Value::String(arg))
+                .map(arg_value)
                 .collect();
             Ok(Value::new_array(args))
         }),
@@ -97,6 +99,10 @@ pub fn module() -> Value {
     Value::new_object(fields)
 }
 
+fn arg_value(arg: std::ffi::OsString) -> Value {
+    Value::String(arg.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +154,17 @@ mod tests {
     #[test]
     fn args_is_an_array() {
         assert!(matches!(call("args", &[]).unwrap(), Value::Array(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_arguments_become_lossy_strings() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let raw = OsString::from_vec(vec![b'a', 0xff, b'b']);
+        let Value::String(text) = arg_value(raw) else { unreachable!() };
+        assert_eq!(text, "a\u{fffd}b");
     }
 
     #[test]

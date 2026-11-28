@@ -265,7 +265,8 @@ pub fn module() -> Value {
             }
             let missing = width - current;
             let left = match align.as_str() {
-                "right" | "both" | "center" => missing / 2 + if missing % 2 == 1 && align != "right" { 1 } else { 0 },
+                "right" => missing,
+                "both" | "center" => missing / 2 + if missing % 2 == 1 { 1 } else { 0 },
                 "left" => 0,
                 _ => return Err("string.pad alignment must be 'left', 'right' or 'center'".to_string()),
             };
@@ -494,6 +495,20 @@ mod tests {
             .unwrap()
             .display(),
             "**hi**"
+        );
+        assert_eq!(
+            call(
+                "pad",
+                &[
+                    Value::String("hi".to_string()),
+                    Value::Number(5.0),
+                    Value::String("*".to_string()),
+                    Value::String("right".to_string()),
+                ]
+            )
+            .unwrap()
+            .display(),
+            "***hi"
         );
     }
 

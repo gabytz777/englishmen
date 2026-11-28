@@ -1,5 +1,6 @@
 use crate::runtime::{expect_number, expect_string, native};
 use crate::value::Value;
+use chrono::format::{Item, StrftimeItems};
 use chrono::{Datelike, Local, TimeZone, Timelike, Utc, Weekday};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -144,7 +145,13 @@ pub fn module() -> Value {
             } else {
                 Local::now()
             };
-            Ok(Value::String(moment.format(&pattern).to_string()))
+            let items: Vec<_> = StrftimeItems::new(&pattern).collect();
+            if items.iter().any(|item| matches!(item, Item::Error)) {
+                return Err("time.format has an invalid format string".to_string());
+            }
+            Ok(Value::String(
+                moment.format_with_items(items.into_iter()).to_string(),
+            ))
         }),
     );
 
@@ -262,6 +269,11 @@ mod tests {
         .unwrap();
         assert_eq!(formatted.display().len(), 10);
         assert!(call("format", &[Value::Number(1.0)]).is_err());
+        assert!(
+            call("format", &[Value::String("%Q".to_string())])
+                .unwrap_err()
+                .contains("invalid format")
+        );
         assert!(call("elapsed", &[Value::String("now".to_string())]).is_err());
     }
 }
