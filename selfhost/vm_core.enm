@@ -1,0 +1,1214 @@
+$- Pure-Englishmen core of the Englishmen bytecode VM.
+
+   Englishmen has no local .enm imports, so this file is self-contained. It
+   executes the `emb` IR object described in docs/selfhost/EMB_IR.md without
+   calling the native VM: constants, scopes, the operand stack, arithmetic and
+   comparisons, jumps, calls/returns, arrays, objects and Say are all handled
+   here. Native modules are not used by the implementation; `os` is imported
+   only for the selftest guard at the bottom.
+
+   `vmRun(ir)` returns an array containing one entry per `Say` argument. On an
+   invalid IR or a runtime fault it returns a structured error object instead:
+   {__vmError: true, kind: "...", error: "...", op: "...", line: n, col: n}.
+   Use `vmIsError(value)` to distinguish it from a legitimate output object.
+
+   C2 can layer a runtime over this core by setting these optional hooks:
+   vmCallHook(callee, name, args)     -> value or structured error
+   vmMethodHook(receiver, name, args) -> value or structured error
+   vmImportHook(name)                 -> value or structured error
+   All globals and helper functions use the `vm` prefix so this file can be
+   concatenated into a combined self-hosted program. -$
+import os
+vmError = null
+vmOutput = []
+vmStack = []
+vmFrames = []
+vmCallHook = null
+vmMethodHook = null
+vmImportHook = null
+vmCallPushedFrame = false
+vmMaxFrames = 512
+function vmErr(vmErr_kind, vmErr_message, vmErr_op, vmErr_line, vmErr_col)
+    return {__vmError: true, kind: vmErr_kind, error: vmErr_message, op: vmErr_op, line: vmErr_line, col: vmErr_col}
+end
+function vmIsError(vmIsError_value)
+    return isObject(vmIsError_value) and vmIsError_value.get("__vmError", false) == true
+end
+function vmLastError()
+    return vmError
+end
+function vmRaise(vmRaise_kind, vmRaise_message, vmRaise_op, vmRaise_line, vmRaise_col)
+    vmError = vmErr(vmRaise_kind, vmRaise_message, vmRaise_op, vmRaise_line, vmRaise_col)
+    return null
+end
+function vmRaiseAt(vmRaiseAt_kind, vmRaiseAt_message, vmRaiseAt_instr)
+    return vmRaise(vmRaiseAt_kind, vmRaiseAt_message, vmRaiseAt_instr.get("op", ""), vmRaiseAt_instr.get("line", 1), vmRaiseAt_instr.get("col", 1))
+end
+function vmReset()
+    vmError = null
+    vmOutput = []
+    vmStack = []
+    vmFrames = []
+    vmCallPushedFrame = false
+end
+function vmIntegral(vmIntegral_value)
+    if not isNumber(vmIntegral_value)
+        return false
+    end
+    if isNaN(vmIntegral_value)
+        return false
+    end
+    return vmIntegral_value >= 0 and vmIntegral_value <= 4294967295 and floor(vmIntegral_value) == vmIntegral_value
+end
+function vmIsOp(vmIsOp_op, vmIsOp_names)
+    return vmIsOp_names.indexOf(vmIsOp_op) >= 0
+end
+function vmNameOperandKey(vmNameOperandKey_op)
+    if vmNameOperandKey_op == "Call"
+        return "b"
+    end
+    vmNameOperandKey_names = ["GetVar", "SetVar", "DefineVar", "GetProp", "SetProp", "GetVarOrObject", "GetPropOrObject", "GetPropKeep", "Import", "MethodCall", "IterNext"]
+    if vmIsOp(vmNameOperandKey_op, vmNameOperandKey_names)
+        return "a"
+    end
+    return ""
+end
+function vmJumpOperandKey(vmJumpOperandKey_op)
+    if vmJumpOperandKey_op == "IterNext"
+        return "b"
+    end
+    vmJumpOperandKey_names = ["Jump", "JumpIfFalse", "JumpIfFalsePeek", "JumpIfTruePeek", "JumpIfNullPeek", "RepeatNext"]
+    if vmIsOp(vmJumpOperandKey_op, vmJumpOperandKey_names)
+        return "a"
+    end
+    return ""
+end
+function vmSupportedOps()
+    return ["LoadConst", "Pop", "GetVar", "SetVar", "DefineVar", "GetProp", "SetProp", "GetVarOrObject", "GetPropOrObject", "GetIndex", "SetIndex", "MakeArray", "MakeObject", "MakeClosure", "Call", "MethodCall", "Say", "Add", "Sub", "Mul", "Div", "Mod", "FloorDiv", "Pow", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Eq", "NotEq", "Gt", "Lt", "GtEq", "LtEq", "Neg", "Not", "BitNot", "ToBool", "Jump", "JumpIfFalse", "JumpIfFalsePeek", "JumpIfTruePeek", "RepeatSetup", "RepeatNext", "IterSetup", "IterNext", "Return", "ReturnNull", "Import", "Dup", "Rotate", "GetPropKeep", "GetIndexKeep", "JumpIfNullPeek"]
+end
+function vmValidateOperand(vmValidateOperand_instr, vmValidateOperand_key, vmValidateOperand_op, vmValidateOperand_path)
+    vmValidateOperand_value = vmValidateOperand_instr.get(vmValidateOperand_key, 0)
+    if not vmIntegral(vmValidateOperand_value)
+        vmRaise("validation", vmValidateOperand_path + ": operand '" + vmValidateOperand_key + "' must be a non-negative integer", vmValidateOperand_op, vmValidateOperand_instr.get("line", 1), vmValidateOperand_instr.get("col", 1))
+        return false
+    end
+    return true
+end
+function vmValidateConstantIndex(vmValidateConstantIndex_chunk, vmValidateConstantIndex_index, vmValidateConstantIndex_instr, vmValidateConstantIndex_path)
+    vmValidateConstantIndex_constants = vmValidateConstantIndex_chunk.get("constants", [])
+    if vmValidateConstantIndex_index >= len(vmValidateConstantIndex_constants)
+        vmRaiseAt("validation", vmValidateConstantIndex_path + ": constant index " + toString(vmValidateConstantIndex_index) + " out of range", vmValidateConstantIndex_instr)
+        return false
+    end
+    return true
+end
+function vmValidateNameIndex(vmValidateNameIndex_chunk, vmValidateNameIndex_index, vmValidateNameIndex_instr, vmValidateNameIndex_path)
+    if not vmValidateConstantIndex(vmValidateNameIndex_chunk, vmValidateNameIndex_index, vmValidateNameIndex_instr, vmValidateNameIndex_path)
+        return false
+    end
+    vmValidateNameIndex_constant = vmValidateNameIndex_chunk.get("constants", [])[vmValidateNameIndex_index]
+    if not isString(vmValidateNameIndex_constant.get("tag", "")) or vmValidateNameIndex_constant.get("tag", "") != "string"
+        vmRaiseAt("validation", vmValidateNameIndex_path + ": name index " + toString(vmValidateNameIndex_index) + " is not a string constant", vmValidateNameIndex_instr)
+        return false
+    end
+    return true
+end
+function vmValidateFunctionIndex(vmValidateFunctionIndex_chunk, vmValidateFunctionIndex_index, vmValidateFunctionIndex_instr, vmValidateFunctionIndex_path)
+    vmValidateFunctionIndex_functions = vmValidateFunctionIndex_chunk.get("functions", [])
+    if vmValidateFunctionIndex_index >= len(vmValidateFunctionIndex_functions)
+        vmRaiseAt("validation", vmValidateFunctionIndex_path + ": function index " + toString(vmValidateFunctionIndex_index) + " out of range", vmValidateFunctionIndex_instr)
+        return false
+    end
+    return true
+end
+function vmValidateChunk(vmValidateChunk_chunk, vmValidateChunk_depth, vmValidateChunk_isRoot, vmValidateChunk_path)
+    if vmValidateChunk_depth > 32
+        vmRaise("validation", vmValidateChunk_path + ": functions are nested too deeply", "", 1, 1)
+        return false
+    end
+    if not isObject(vmValidateChunk_chunk)
+        vmRaise("validation", vmValidateChunk_path + " must be an object", "", 1, 1)
+        return false
+    end
+    if vmValidateChunk_isRoot and vmValidateChunk_chunk.get("version", null) != 2
+        vmRaise("validation", "IR version must be 2", "", 1, 1)
+        return false
+    end
+    vmValidateChunk_constants = vmValidateChunk_chunk.get("constants", null)
+    vmValidateChunk_functions = vmValidateChunk_chunk.get("functions", null)
+    vmValidateChunk_code = vmValidateChunk_chunk.get("code", null)
+    if not isArray(vmValidateChunk_constants)
+        vmRaise("validation", vmValidateChunk_path + ".constants must be an array", "", 1, 1)
+        return false
+    end
+    if not isArray(vmValidateChunk_functions)
+        vmRaise("validation", vmValidateChunk_path + ".functions must be an array", "", 1, 1)
+        return false
+    end
+    if not isArray(vmValidateChunk_code)
+        vmRaise("validation", vmValidateChunk_path + ".code must be an array", "", 1, 1)
+        return false
+    end
+    vmValidateChunk_i = 0
+    while vmValidateChunk_i < len(vmValidateChunk_constants)
+    vmValidateChunk_constant = vmValidateChunk_constants[vmValidateChunk_i]
+    if not isObject(vmValidateChunk_constant)
+        vmRaise("validation", vmValidateChunk_path + ".constants[" + toString(vmValidateChunk_i) + "] must be an object", "", 1, 1)
+        return false
+    end
+    vmValidateChunk_tag = vmValidateChunk_constant.get("tag", "")
+    if vmValidateChunk_tag == "number" and not isNumber(vmValidateChunk_constant.get("value", null))
+        vmRaise("validation", vmValidateChunk_path + ".constants[" + toString(vmValidateChunk_i) + "] needs a number value", "", 1, 1)
+        return false
+    end
+    if vmValidateChunk_tag == "string" and not isString(vmValidateChunk_constant.get("value", null))
+        vmRaise("validation", vmValidateChunk_path + ".constants[" + toString(vmValidateChunk_i) + "] needs a string value", "", 1, 1)
+        return false
+    end
+    if vmValidateChunk_tag == "bool" and not isBool(vmValidateChunk_constant.get("value", null))
+        vmRaise("validation", vmValidateChunk_path + ".constants[" + toString(vmValidateChunk_i) + "] needs a boolean value", "", 1, 1)
+        return false
+    end
+    if vmValidateChunk_tag != "number" and vmValidateChunk_tag != "string" and vmValidateChunk_tag != "bool" and vmValidateChunk_tag != "null"
+        vmRaise("validation", vmValidateChunk_path + ".constants[" + toString(vmValidateChunk_i) + "]: unknown constant tag '" + toString(vmValidateChunk_tag) + "'", "", 1, 1)
+        return false
+    end
+    vmValidateChunk_i += 1
+end
+vmValidateChunk_supported = vmSupportedOps()
+vmValidateChunk_i = 0
+while vmValidateChunk_i < len(vmValidateChunk_code)
+vmValidateChunk_instr = vmValidateChunk_code[vmValidateChunk_i]
+vmValidateChunk_path_i = vmValidateChunk_path + ".code[" + toString(vmValidateChunk_i) + "]"
+if not isObject(vmValidateChunk_instr)
+    vmRaise("validation", vmValidateChunk_path_i + " must be an object", "", 1, 1)
+    return false
+end
+vmValidateChunk_op = vmValidateChunk_instr.get("op", "")
+if not isString(vmValidateChunk_op) or not vmIsOp(vmValidateChunk_op, vmValidateChunk_supported)
+    vmRaise("validation", vmValidateChunk_path_i + ": unknown opcode '" + toString(vmValidateChunk_op) + "'", "", 1, 1)
+    return false
+end
+if not vmValidateOperand(vmValidateChunk_instr, "a", vmValidateChunk_op, vmValidateChunk_path_i)
+    return false
+end
+if not vmValidateOperand(vmValidateChunk_instr, "b", vmValidateChunk_op, vmValidateChunk_path_i)
+    return false
+end
+if not vmValidateOperand(vmValidateChunk_instr, "line", vmValidateChunk_op, vmValidateChunk_path_i)
+    return false
+end
+if not vmValidateOperand(vmValidateChunk_instr, "col", vmValidateChunk_op, vmValidateChunk_path_i)
+    return false
+end
+if vmValidateChunk_op == "LoadConst"
+    if not vmValidateConstantIndex(vmValidateChunk_chunk, vmValidateChunk_instr.get("a", 0), vmValidateChunk_instr, vmValidateChunk_path_i)
+        return false
+    end
+end
+if vmValidateChunk_op == "MakeClosure"
+    if not vmValidateFunctionIndex(vmValidateChunk_chunk, vmValidateChunk_instr.get("a", 0), vmValidateChunk_instr, vmValidateChunk_path_i)
+        return false
+    end
+end
+vmValidateChunk_nameKey = vmNameOperandKey(vmValidateChunk_op)
+if vmValidateChunk_nameKey != ""
+    if not vmValidateNameIndex(vmValidateChunk_chunk, vmValidateChunk_instr.get(vmValidateChunk_nameKey, 0), vmValidateChunk_instr, vmValidateChunk_path_i)
+        return false
+    end
+end
+vmValidateChunk_jumpKey = vmJumpOperandKey(vmValidateChunk_op)
+if vmValidateChunk_jumpKey != ""
+    if vmValidateChunk_instr.get(vmValidateChunk_jumpKey, 0) > len(vmValidateChunk_code)
+        vmRaiseAt("validation", vmValidateChunk_path_i + ": jump target out of range", vmValidateChunk_instr)
+        return false
+    end
+end
+if vmValidateChunk_op == "Rotate" and vmValidateChunk_instr.get("a", 0) > 16
+    vmRaiseAt("validation", vmValidateChunk_path_i + ": rotate count out of range", vmValidateChunk_instr)
+    return false
+end
+vmValidateChunk_i += 1
+end
+vmValidateChunk_i = 0
+while vmValidateChunk_i < len(vmValidateChunk_functions)
+vmValidateChunk_function = vmValidateChunk_functions[vmValidateChunk_i]
+vmValidateChunk_functionPath = vmValidateChunk_path + ".functions[" + toString(vmValidateChunk_i) + "]"
+if not isObject(vmValidateChunk_function)
+    vmRaise("validation", vmValidateChunk_functionPath + " must be an object", "", 1, 1)
+    return false
+end
+if not isString(vmValidateChunk_function.get("name", ""))
+    vmRaise("validation", vmValidateChunk_functionPath + ".name must be a string", "", 1, 1)
+    return false
+end
+vmValidateChunk_params = vmValidateChunk_function.get("params", null)
+if not isArray(vmValidateChunk_params)
+    vmRaise("validation", vmValidateChunk_functionPath + ".params must be an array", "", 1, 1)
+    return false
+end
+vmValidateChunk_j = 0
+while vmValidateChunk_j < len(vmValidateChunk_params)
+if not isString(vmValidateChunk_params[vmValidateChunk_j])
+    vmRaise("validation", vmValidateChunk_functionPath + ".params[" + toString(vmValidateChunk_j) + "] must be a string", "", 1, 1)
+    return false
+end
+vmValidateChunk_j += 1
+end
+if not vmValidateChunk(vmValidateChunk_function.get("chunk", null), vmValidateChunk_depth + 1, false, vmValidateChunk_functionPath + ".chunk")
+    return false
+end
+vmValidateChunk_i += 1
+end
+return true
+end
+function vmValidate(vmValidate_ir)
+    return vmValidateChunk(vmValidate_ir, 0, true, "ir")
+end
+function vmFrame()
+    if len(vmFrames) == 0
+        return null
+    end
+    return vmFrames[len(vmFrames) - 1]
+end
+function vmChunk(vmChunk_instr)
+    vmChunk_frame = vmFrame()
+    if vmChunk_frame == null
+        return vmRaise("runtime", "bytecode frame is missing", vmChunk_instr.get("op", ""), vmChunk_instr.get("line", 1), vmChunk_instr.get("col", 1))
+    end
+    return vmChunk_frame.chunk
+end
+function vmConstant(vmConstant_chunk, vmConstant_index, vmConstant_instr)
+    vmConstant_constants = vmConstant_chunk.get("constants", [])
+    if not isNumber(vmConstant_index) or vmConstant_index < 0 or vmConstant_index >= len(vmConstant_constants)
+        return vmRaiseAt("runtime", "constant index " + toString(vmConstant_index) + " out of range", vmConstant_instr)
+    end
+    return vmConstant_constants[vmConstant_index].get("value", null)
+end
+function vmName(vmName_chunk, vmName_index, vmName_instr)
+    vmName_constants = vmName_chunk.get("constants", [])
+    if not isNumber(vmName_index) or vmName_index < 0 or vmName_index >= len(vmName_constants)
+        return vmRaiseAt("runtime", "name index " + toString(vmName_index) + " out of range", vmName_instr)
+    end
+    vmName_constant = vmName_constants[vmName_index]
+    if vmName_constant.get("tag", "") != "string" or not isString(vmName_constant.get("value", null))
+        return vmRaiseAt("runtime", "name index " + toString(vmName_index) + " is not a string constant", vmName_instr)
+    end
+    return vmName_constant.get("value", "")
+end
+function vmPush(vmPush_value)
+    vmStack.add(vmPush_value)
+end
+function vmPop(vmPop_instr)
+    if len(vmStack) == 0
+        return vmRaiseAt("runtime", "value stack underflow", vmPop_instr)
+    end
+    return vmStack.pop()
+end
+function vmPeek(vmPeek_instr)
+    if len(vmStack) == 0
+        return vmRaiseAt("runtime", "value stack underflow", vmPeek_instr)
+    end
+    return vmStack[len(vmStack) - 1]
+end
+function vmDrain(vmDrain_count, vmDrain_instr)
+    if not isNumber(vmDrain_count) or vmDrain_count < 0 or floor(vmDrain_count) != vmDrain_count
+        return vmRaiseAt("runtime", "invalid value count", vmDrain_instr)
+    end
+    if vmDrain_count > len(vmStack)
+        return vmRaiseAt("runtime", "value stack underflow", vmDrain_instr)
+    end
+    vmDrain_start = len(vmStack) - vmDrain_count
+    vmDrain_values = []
+    vmDrain_i = 0
+    while vmDrain_i < vmDrain_count
+    vmDrain_values.add(vmStack[vmDrain_start + vmDrain_i])
+    vmDrain_i += 1
+end
+vmDrain_i = 0
+while vmDrain_i < vmDrain_count
+vmStack.pop()
+vmDrain_i += 1
+end
+return vmDrain_values
+end
+function vmRequireNumber(vmRequireNumber_value, vmRequireNumber_context, vmRequireNumber_instr)
+    if not isNumber(vmRequireNumber_value)
+        vmRaiseAt("runtime", "expected a number " + vmRequireNumber_context + ", found " + type(vmRequireNumber_value), vmRequireNumber_instr)
+        return 0
+    end
+    return vmRequireNumber_value
+end
+function vmRequireIndex(vmRequireIndex_value, vmRequireIndex_context, vmRequireIndex_instr)
+    vmRequireIndex_number = vmRequireNumber(vmRequireIndex_value, vmRequireIndex_context, vmRequireIndex_instr)
+    if vmError != null
+        return 0
+    end
+    if floor(vmRequireIndex_number) != vmRequireIndex_number or vmRequireIndex_number < 0
+        vmRaiseAt("runtime", "invalid " + vmRequireIndex_context, vmRequireIndex_instr)
+        return 0
+    end
+    return vmRequireIndex_number
+end
+function vmScopeHas(vmScopeHas_scope, vmScopeHas_name)
+    vmScopeHas_cursor = vmScopeHas_scope
+    while vmScopeHas_cursor != null
+    if vmScopeHas_cursor.vars.has(vmScopeHas_name)
+        return true
+    end
+    vmScopeHas_cursor = vmScopeHas_cursor.parent
+end
+return false
+end
+function vmScopeGet(vmScopeGet_scope, vmScopeGet_name)
+    vmScopeGet_cursor = vmScopeGet_scope
+    while vmScopeGet_cursor != null
+    if vmScopeGet_cursor.vars.has(vmScopeGet_name)
+        return vmScopeGet_cursor.vars.get(vmScopeGet_name, null)
+    end
+    vmScopeGet_cursor = vmScopeGet_cursor.parent
+end
+return null
+end
+function vmScopeDefine(vmScopeDefine_scope, vmScopeDefine_name, vmScopeDefine_value)
+    vmScopeDefine_scope.vars.set(vmScopeDefine_name, vmScopeDefine_value)
+end
+function vmScopeAssign(vmScopeAssign_scope, vmScopeAssign_name, vmScopeAssign_value)
+    vmScopeAssign_cursor = vmScopeAssign_scope
+    while vmScopeAssign_cursor != null
+    if vmScopeAssign_cursor.vars.has(vmScopeAssign_name)
+        vmScopeAssign_cursor.vars.set(vmScopeAssign_name, vmScopeAssign_value)
+        return
+    end
+    vmScopeAssign_cursor = vmScopeAssign_cursor.parent
+end
+vmScopeDefine(vmScopeAssign_scope, vmScopeAssign_name, vmScopeAssign_value)
+end
+function vmGetProperty(vmGetProperty_base, vmGetProperty_name, vmGetProperty_instr)
+    if isObject(vmGetProperty_base)
+        if vmGetProperty_base.has(vmGetProperty_name)
+            return vmGetProperty_base.get(vmGetProperty_name, null)
+        end
+        return vmRaiseAt("runtime", "unknown property '" + vmGetProperty_name + "'", vmGetProperty_instr)
+    end
+    return vmRaiseAt("runtime", "cannot access property '" + vmGetProperty_name + "' on a " + type(vmGetProperty_base), vmGetProperty_instr)
+end
+function vmSetProperty(vmSetProperty_base, vmSetProperty_name, vmSetProperty_value, vmSetProperty_instr)
+    if not isObject(vmSetProperty_base)
+        return vmRaiseAt("runtime", "cannot set property '" + vmSetProperty_name + "' on a " + type(vmSetProperty_base), vmSetProperty_instr)
+    end
+    vmSetProperty_base.set(vmSetProperty_name, vmSetProperty_value)
+    return null
+end
+function vmGetIndex(vmGetIndex_base, vmGetIndex_index, vmGetIndex_instr)
+    if isArray(vmGetIndex_base)
+        vmGetIndex_i = vmRequireIndex(vmGetIndex_index, "array index", vmGetIndex_instr)
+        if vmError != null
+            return null
+        end
+        if vmGetIndex_i >= len(vmGetIndex_base)
+            return vmRaiseAt("runtime", "array index " + toString(vmGetIndex_i) + " out of bounds (length " + toString(len(vmGetIndex_base)) + ")", vmGetIndex_instr)
+        end
+        return vmGetIndex_base[vmGetIndex_i]
+    end
+    if isString(vmGetIndex_base)
+        vmGetIndex_i = vmRequireIndex(vmGetIndex_index, "string index", vmGetIndex_instr)
+        if vmError != null
+            return null
+        end
+        if vmGetIndex_i >= len(vmGetIndex_base)
+            return vmRaiseAt("runtime", "string index " + toString(vmGetIndex_i) + " out of bounds (length " + toString(len(vmGetIndex_base)) + ")", vmGetIndex_instr)
+        end
+        return vmGetIndex_base[vmGetIndex_i]
+    end
+    return vmRaiseAt("runtime", "cannot index into a " + type(vmGetIndex_base), vmGetIndex_instr)
+end
+function vmSetIndex(vmSetIndex_base, vmSetIndex_index, vmSetIndex_value, vmSetIndex_instr)
+    if not isArray(vmSetIndex_base)
+        return vmRaiseAt("runtime", "cannot index into a " + type(vmSetIndex_base), vmSetIndex_instr)
+    end
+    vmSetIndex_i = vmRequireIndex(vmSetIndex_index, "array index", vmSetIndex_instr)
+    if vmError != null
+        return null
+    end
+    if vmSetIndex_i >= len(vmSetIndex_base)
+        return vmRaiseAt("runtime", "array index " + toString(vmSetIndex_i) + " out of bounds (length " + toString(len(vmSetIndex_base)) + ")", vmSetIndex_instr)
+    end
+    vmSetIndex_base[vmSetIndex_i] = vmSetIndex_value
+    return null
+end
+function vmBinary(vmBinary_op, vmBinary_left, vmBinary_right, vmBinary_instr)
+    if vmBinary_op == "Eq"
+        return vmBinary_left == vmBinary_right
+    end
+    if vmBinary_op == "NotEq"
+        return vmBinary_left != vmBinary_right
+    end
+    if vmBinary_op == "Add"
+        if isString(vmBinary_left) or isString(vmBinary_right)
+            return toString(vmBinary_left) + toString(vmBinary_right)
+        end
+        if isNumber(vmBinary_left) and isNumber(vmBinary_right)
+            return vmBinary_left + vmBinary_right
+        end
+        return vmRaiseAt("runtime", "cannot add " + type(vmBinary_left) + " and " + type(vmBinary_right), vmBinary_instr)
+    end
+    if vmBinary_op == "Mul" and (isString(vmBinary_left) or isString(vmBinary_right))
+        vmBinary_text = ""
+        vmBinary_count = 0
+        if isString(vmBinary_left)
+            vmBinary_text = vmBinary_left
+            vmBinary_count = vmRequireNumber(vmBinary_right, "as a string repetition count", vmBinary_instr)
+        else
+            vmBinary_text = vmBinary_right
+            vmBinary_count = vmRequireNumber(vmBinary_left, "as a string repetition count", vmBinary_instr)
+        end
+        if vmError != null
+            return null
+        end
+        if vmBinary_count <= 0 or isNaN(vmBinary_count)
+            return ""
+        end
+        vmBinary_times = floor(vmBinary_count)
+        if vmBinary_times > 1000000
+            vmBinary_times = 1000000
+        end
+        if len(vmBinary_text) > 0 and vmBinary_times > floor(1000000 / len(vmBinary_text))
+            vmBinary_times = floor(1000000 / len(vmBinary_text))
+        end
+        return repeat(vmBinary_text, vmBinary_times)
+    end
+    vmBinary_context = "on the left of the operator"
+    if vmBinary_op == "Gt" or vmBinary_op == "Lt" or vmBinary_op == "GtEq" or vmBinary_op == "LtEq"
+        vmBinary_context = "on the left of the comparison"
+    end
+    vmBinary_a = vmRequireNumber(vmBinary_left, vmBinary_context, vmBinary_instr)
+    if vmError != null
+        return null
+    end
+    if vmBinary_op == "Gt" or vmBinary_op == "Lt" or vmBinary_op == "GtEq" or vmBinary_op == "LtEq"
+        vmBinary_context = "on the right of the comparison"
+    else
+        vmBinary_context = "on the right of the operator"
+    end
+    vmBinary_b = vmRequireNumber(vmBinary_right, vmBinary_context, vmBinary_instr)
+    if vmError != null
+        return null
+    end
+    if vmBinary_op == "Sub"
+        return vmBinary_a - vmBinary_b
+    end
+    if vmBinary_op == "Mul"
+        return vmBinary_a * vmBinary_b
+    end
+    if vmBinary_op == "Div"
+        if vmBinary_b == 0
+            return vmRaiseAt("runtime", "division by zero", vmBinary_instr)
+        end
+        return vmBinary_a / vmBinary_b
+    end
+    if vmBinary_op == "Mod"
+        if vmBinary_b == 0
+            return vmRaiseAt("runtime", "division by zero", vmBinary_instr)
+        end
+        return vmBinary_a % vmBinary_b
+    end
+    if vmBinary_op == "FloorDiv"
+        if vmBinary_b == 0
+            return vmRaiseAt("runtime", "division by zero", vmBinary_instr)
+        end
+        return floor(vmBinary_a / vmBinary_b)
+    end
+    if vmBinary_op == "Pow"
+        return pow(vmBinary_a, vmBinary_b)
+    end
+    if vmBinary_op == "BitAnd"
+        return vmBinary_a & vmBinary_b
+    end
+    if vmBinary_op == "BitOr"
+        return vmBinary_a | vmBinary_b
+    end
+    if vmBinary_op == "BitXor"
+        return vmBinary_a ^ vmBinary_b
+    end
+    if vmBinary_op == "Shl"
+        return vmBinary_a << vmBinary_b
+    end
+    if vmBinary_op == "Shr"
+        return vmBinary_a >> vmBinary_b
+    end
+    if vmBinary_op == "Gt"
+        return vmBinary_a > vmBinary_b
+    end
+    if vmBinary_op == "Lt"
+        return vmBinary_a < vmBinary_b
+    end
+    if vmBinary_op == "GtEq"
+        return vmBinary_a >= vmBinary_b
+    end
+    if vmBinary_op == "LtEq"
+        return vmBinary_a <= vmBinary_b
+    end
+    return vmRaiseAt("runtime", "unsupported binary opcode '" + vmBinary_op + "'", vmBinary_instr)
+end
+function vmUnary(vmUnary_op, vmUnary_value, vmUnary_instr)
+    if vmUnary_op == "Not"
+        return not toBool(vmUnary_value)
+    end
+    if vmUnary_op == "ToBool"
+        return toBool(vmUnary_value)
+    end
+    if vmUnary_op == "Neg"
+        return -vmRequireNumber(vmUnary_value, "for unary '-'", vmUnary_instr)
+    end
+    if vmUnary_op == "BitNot"
+        return ~vmRequireNumber(vmUnary_value, "for bitwise '~'", vmUnary_instr)
+    end
+    return vmRaiseAt("runtime", "unsupported unary opcode '" + vmUnary_op + "'", vmUnary_instr)
+end
+function vmJump(vmJump_target, vmJump_instr)
+    vmJump_frame = vmFrame()
+    if vmJump_frame == null
+        return vmRaiseAt("runtime", "bytecode frame is missing", vmJump_instr)
+    end
+    vmJump_frame.ip = vmJump_target
+end
+function vmPopFrame(vmPopFrame_result)
+    vmPopFrame_frame = vmFrames.pop()
+    vmStack = slice(vmStack, 0, vmPopFrame_frame.base)
+    if len(vmFrames) == 0
+        return true
+    end
+    vmStack.add(vmPopFrame_result)
+    return false
+end
+function vmCallValue(vmCallValue_callee, vmCallValue_args, vmCallValue_name, vmCallValue_instr)
+    vmCallPushedFrame = false
+    if isObject(vmCallValue_callee) and vmCallValue_callee.get("__vmClosure", false) == true
+        vmCallValue_proto = vmCallValue_callee.get("proto", null)
+        if not isObject(vmCallValue_proto)
+            return vmRaiseAt("runtime", "closure has no function prototype", vmCallValue_instr)
+        end
+        vmCallValue_params = vmCallValue_proto.get("params", null)
+        if not isArray(vmCallValue_params)
+            return vmRaiseAt("runtime", "closure has no parameter list", vmCallValue_instr)
+        end
+        if len(vmCallValue_params) != len(vmCallValue_args)
+            vmCallValue_signature = "(" + vmCallValue_params.join(", ") + ")"
+            return vmRaiseAt("runtime", "function '" + toString(vmCallValue_proto.get("name", "")) + vmCallValue_signature + "' expects " + toString(len(vmCallValue_params)) + " argument(s) but got " + toString(len(vmCallValue_args)), vmCallValue_instr)
+        end
+        if len(vmFrames) >= vmMaxFrames
+            return vmRaiseAt("runtime", "too many nested calls while calling '" + vmCallValue_name + "'", vmCallValue_instr)
+        end
+        vmCallValue_scope = {vars: {}, parent: vmCallValue_callee.get("scope", null)}
+        vmCallValue_i = 0
+        while vmCallValue_i < len(vmCallValue_params)
+        vmScopeDefine(vmCallValue_scope, toString(vmCallValue_params[vmCallValue_i]), vmCallValue_args[vmCallValue_i])
+        vmCallValue_i += 1
+    end
+    vmFrames.add({chunk: vmCallValue_proto.get("chunk", null), ip: 0, scope: vmCallValue_scope, base: len(vmStack)})
+    vmCallPushedFrame = true
+    return null
+end
+if vmCallHook != null
+    vmCallValue_result = vmCallHook(vmCallValue_callee, vmCallValue_name, vmCallValue_args)
+    if vmIsError(vmCallValue_result)
+        vmError = vmCallValue_result
+        return null
+    end
+    return vmCallValue_result
+end
+return vmRaiseAt("runtime", "'" + vmCallValue_name + "' is not callable by the VM core (found " + type(vmCallValue_callee) + ")", vmCallValue_instr)
+end
+function vmMethodCall(vmMethodCall_receiver, vmMethodCall_method, vmMethodCall_args, vmMethodCall_instr)
+    if isObject(vmMethodCall_receiver) and vmMethodCall_receiver.has(vmMethodCall_method)
+        vmMethodCall_field = vmMethodCall_receiver.get(vmMethodCall_method, null)
+        return vmCallValue(vmMethodCall_field, vmMethodCall_args, vmMethodCall_method, vmMethodCall_instr)
+    end
+    if vmMethodHook != null
+        vmMethodCall_result = vmMethodHook(vmMethodCall_receiver, vmMethodCall_method, vmMethodCall_args)
+        if vmIsError(vmMethodCall_result)
+            vmError = vmMethodCall_result
+            return null
+        end
+        return vmMethodCall_result
+    end
+    return vmRaiseAt("runtime", "method '" + vmMethodCall_method + "' on " + type(vmMethodCall_receiver) + " requires the VM runtime hook", vmMethodCall_instr)
+end
+function vmImport(vmImport_name, vmImport_instr)
+    if vmImportHook != null
+        vmImport_result = vmImportHook(vmImport_name)
+        if vmIsError(vmImport_result)
+            vmError = vmImport_result
+            return null
+        end
+        return vmImport_result
+    end
+    return vmRaiseAt("runtime", "module '" + vmImport_name + "' requires the VM runtime hook", vmImport_instr)
+end
+function vmExec(vmExec_instr)
+    vmExec_op = vmExec_instr.get("op", "")
+    vmExec_chunk = vmChunk(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_frame = vmFrame()
+    vmExec_a = vmExec_instr.get("a", 0)
+    vmExec_b = vmExec_instr.get("b", 0)
+    if vmExec_op == "LoadConst"
+        vmPush(vmConstant(vmExec_chunk, vmExec_a, vmExec_instr))
+        return
+    end
+    if vmExec_op == "Pop"
+        vmPop(vmExec_instr)
+        return
+    end
+    if vmExec_op == "GetVar"
+        vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        if not vmScopeHas(vmExec_frame.scope, vmExec_name)
+            vmRaiseAt("runtime", "unknown variable '" + vmExec_name + "'", vmExec_instr)
+            return
+        end
+        vmPush(vmScopeGet(vmExec_frame.scope, vmExec_name))
+        return
+    end
+    if vmExec_op == "SetVar"
+        vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_value = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmScopeAssign(vmExec_frame.scope, vmExec_name, vmExec_value)
+        return
+    end
+    if vmExec_op == "DefineVar"
+        vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_value = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmScopeDefine(vmExec_frame.scope, vmExec_name, vmExec_value)
+        return
+    end
+    if vmExec_op == "GetProp"
+        vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_base = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_value = vmGetProperty(vmExec_base, vmExec_name, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmPush(vmExec_value)
+        return
+    end
+    if vmExec_op == "SetProp"
+        vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_base = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_value = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmSetProperty(vmExec_base, vmExec_name, vmExec_value, vmExec_instr)
+        return
+    end
+    if vmExec_op == "GetVarOrObject"
+        vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        if not vmScopeHas(vmExec_frame.scope, vmExec_name)
+            vmScopeDefine(vmExec_frame.scope, vmExec_name, {})
+        end
+        vmPush(vmScopeGet(vmExec_frame.scope, vmExec_name))
+        return
+    end
+    if vmExec_op == "GetPropOrObject"
+        vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_base = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        if isObject(vmExec_base) and not vmExec_base.has(vmExec_name)
+            vmExec_base.set(vmExec_name, {})
+        end
+        vmExec_value = vmGetProperty(vmExec_base, vmExec_name, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmPush(vmExec_value)
+        return
+    end
+    if vmExec_op == "GetIndex"
+        vmExec_index = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_base = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_value = vmGetIndex(vmExec_base, vmExec_index, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmPush(vmExec_value)
+        return
+    end
+    if vmExec_op == "GetIndexKeep"
+        if len(vmStack) < 2
+            vmRaiseAt("runtime", "value stack underflow", vmExec_instr)
+            return
+        end
+        vmExec_value = vmGetIndex(vmStack[len(vmStack) - 2], vmStack[len(vmStack) - 1], vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmPush(vmExec_value)
+        return
+    end
+    if vmExec_op == "SetIndex"
+        vmExec_index = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_base = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_value = vmPop(vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmSetIndex(vmExec_base, vmExec_index, vmExec_value, vmExec_instr)
+        return
+    end
+    if vmExec_op == "MakeArray"
+        vmExec_values = vmDrain(vmExec_a, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmPush(vmExec_values)
+        return
+    end
+    if vmExec_op == "MakeObject"
+        if vmExec_a > floor(len(vmStack) / 2)
+            vmRaiseAt("runtime", "value stack underflow", vmExec_instr)
+            return
+        end
+        vmExec_flat = vmDrain(vmExec_a * 2, vmExec_instr)
+        if vmError != null
+            return
+        end
+        vmExec_object = {}
+        vmExec_i = 0
+        while vmExec_i < len(vmExec_flat)
+        vmExec_object.set(toString(vmExec_flat[vmExec_i]), vmExec_flat[vmExec_i + 1])
+        vmExec_i += 2
+    end
+    vmPush(vmExec_object)
+    return
+end
+if vmExec_op == "MakeClosure"
+    vmExec_functions = vmExec_chunk.get("functions", [])
+    if vmExec_a < 0 or vmExec_a >= len(vmExec_functions)
+        vmRaiseAt("runtime", "function index " + toString(vmExec_a) + " out of range", vmExec_instr)
+        return
+    end
+    vmPush({__vmClosure: true, proto: vmExec_functions[vmExec_a], scope: vmExec_frame.scope})
+    return
+end
+if vmExec_op == "Call"
+    vmExec_name = vmName(vmExec_chunk, vmExec_b, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_args = vmDrain(vmExec_a, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_callee = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_result = vmCallValue(vmExec_callee, vmExec_args, vmExec_name, vmExec_instr)
+    if vmError != null or vmCallPushedFrame
+        return
+    end
+    vmPush(vmExec_result)
+    return
+end
+if vmExec_op == "MethodCall"
+    vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_args = vmDrain(vmExec_b, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_receiver = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_result = vmMethodCall(vmExec_receiver, vmExec_name, vmExec_args, vmExec_instr)
+    if vmError != null or vmCallPushedFrame
+        return
+    end
+    vmPush(vmExec_result)
+    return
+end
+if vmExec_op == "Say"
+    vmExec_values = vmDrain(vmExec_a, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_i = 0
+    while vmExec_i < len(vmExec_values)
+    vmOutput.add(vmExec_values[vmExec_i])
+    vmExec_i += 1
+end
+vmPush(null)
+return
+end
+if vmExec_op == "Add" or vmExec_op == "Sub" or vmExec_op == "Mul" or vmExec_op == "Div" or vmExec_op == "Mod" or vmExec_op == "FloorDiv" or vmExec_op == "Pow" or vmExec_op == "BitAnd" or vmExec_op == "BitOr" or vmExec_op == "BitXor" or vmExec_op == "Shl" or vmExec_op == "Shr" or vmExec_op == "Eq" or vmExec_op == "NotEq" or vmExec_op == "Gt" or vmExec_op == "Lt" or vmExec_op == "GtEq" or vmExec_op == "LtEq"
+    vmExec_right = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_left = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmPush(vmBinary(vmExec_op, vmExec_left, vmExec_right, vmExec_instr))
+    return
+end
+if vmExec_op == "Neg" or vmExec_op == "Not" or vmExec_op == "BitNot" or vmExec_op == "ToBool"
+    vmExec_value = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmPush(vmUnary(vmExec_op, vmExec_value, vmExec_instr))
+    return
+end
+if vmExec_op == "Dup"
+    vmPush(vmPeek(vmExec_instr))
+    return
+end
+if vmExec_op == "Rotate"
+    vmExec_count = vmExec_a + 1
+    if vmExec_count > len(vmStack)
+        vmRaiseAt("runtime", "value stack underflow", vmExec_instr)
+        return
+    end
+    vmExec_split = len(vmStack) - vmExec_count
+    vmExec_top = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmStack.insert(vmExec_split, vmExec_top)
+    return
+end
+if vmExec_op == "GetPropKeep"
+    vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_value = vmGetProperty(vmPeek(vmExec_instr), vmExec_name, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmPush(vmExec_value)
+    return
+end
+if vmExec_op == "Jump"
+    vmJump(vmExec_a, vmExec_instr)
+    return
+end
+if vmExec_op == "JumpIfFalse"
+    vmExec_value = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    if not toBool(vmExec_value)
+        vmJump(vmExec_a, vmExec_instr)
+    end
+    return
+end
+if vmExec_op == "JumpIfFalsePeek"
+    if not toBool(vmPeek(vmExec_instr))
+        vmJump(vmExec_a, vmExec_instr)
+    end
+    return
+end
+if vmExec_op == "JumpIfTruePeek"
+    if toBool(vmPeek(vmExec_instr))
+        vmJump(vmExec_a, vmExec_instr)
+    end
+    return
+end
+if vmExec_op == "JumpIfNullPeek"
+    if isNull(vmPeek(vmExec_instr))
+        vmJump(vmExec_a, vmExec_instr)
+    end
+    return
+end
+if vmExec_op == "RepeatSetup"
+    vmExec_value = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_n = vmRequireNumber(vmExec_value, "as a repeat count", vmExec_instr)
+    if vmError != null
+        return
+    end
+    if vmExec_n < 0 or isNaN(vmExec_n)
+        vmRaiseAt("runtime", "repeat count must not be negative", vmExec_instr)
+        return
+    end
+    vmPush(floor(vmExec_n))
+    return
+end
+if vmExec_op == "RepeatNext"
+    vmExec_remaining = vmPeek(vmExec_instr)
+    if vmError != null
+        return
+    end
+    if not isNumber(vmExec_remaining)
+        vmRaiseAt("runtime", "corrupt repeat counter", vmExec_instr)
+        return
+    end
+    if vmExec_remaining <= 0
+        vmStack.pop()
+        vmJump(vmExec_a, vmExec_instr)
+    else
+        vmStack[len(vmStack) - 1] = vmExec_remaining - 1
+    end
+    return
+end
+if vmExec_op == "IterSetup"
+    vmExec_iterable = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    if not isArray(vmExec_iterable)
+        vmRaiseAt("runtime", "cannot iterate over a " + type(vmExec_iterable) + "; 'for ... in' expects an array", vmExec_instr)
+        return
+    end
+    vmPush(vmExec_iterable.copy())
+    vmPush(0)
+    return
+end
+if vmExec_op == "IterNext"
+    vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+    if vmError != null
+        return
+    end
+    if len(vmStack) < 2
+        vmRaiseAt("runtime", "value stack underflow", vmExec_instr)
+        return
+    end
+    vmExec_cursor = vmStack[len(vmStack) - 1]
+    vmExec_items = vmStack[len(vmStack) - 2]
+    if not isNumber(vmExec_cursor) or not isArray(vmExec_items)
+        vmRaiseAt("runtime", "corrupt iterator state", vmExec_instr)
+        return
+    end
+    if vmExec_cursor < len(vmExec_items)
+        vmScopeDefine(vmExec_frame.scope, vmExec_name, vmExec_items[vmExec_cursor])
+        vmStack[len(vmStack) - 1] = vmExec_cursor + 1
+    else
+        vmStack.pop()
+        vmStack.pop()
+        vmJump(vmExec_b, vmExec_instr)
+    end
+    return
+end
+if vmExec_op == "Return"
+    vmExec_value = vmPop(vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmPopFrame(vmExec_value)
+    return
+end
+if vmExec_op == "ReturnNull"
+    vmPopFrame(null)
+    return
+end
+if vmExec_op == "Import"
+    vmExec_name = vmName(vmExec_chunk, vmExec_a, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmExec_value = vmImport(vmExec_name, vmExec_instr)
+    if vmError != null
+        return
+    end
+    vmScopeDefine(vmExec_frame.scope, vmExec_name, vmExec_value)
+    return
+end
+vmRaiseAt("runtime", "unsupported opcode '" + vmExec_op + "'", vmExec_instr)
+end
+function vmStep()
+    vmStep_frame = vmFrame()
+    if vmStep_frame == null
+        return
+    end
+    vmStep_code = vmStep_frame.chunk.get("code", [])
+    if vmStep_frame.ip >= len(vmStep_code)
+        vmPopFrame(null)
+        return
+    end
+    vmStep_ip = vmStep_frame.ip
+    vmStep_instr = vmStep_code[vmStep_ip]
+    vmStep_frame.ip = vmStep_ip + 1
+    vmExec(vmStep_instr)
+end
+function vmRun(vmRun_ir)
+    vmReset()
+    if not vmValidate(vmRun_ir)
+        return vmError
+    end
+    vmRun_scope = {vars: {}, parent: null}
+    vmFrames.add({chunk: vmRun_ir, ip: 0, scope: vmRun_scope, base: 0})
+    while len(vmFrames) > 0 and vmError == null
+    vmStep()
+end
+if vmError != null
+    return vmError
+end
+return vmOutput
+end
+$- ---------------------------------------------------------------------------
+   Self-tests. Every fixture is built by hand; no native emb/VM calls are used
+   as oracles. With EM_SELFTEST=1 the script prints exactly one line: ok.
+   --------------------------------------------------------------------------- -$
+function vmTestConst(vmTestConst_tag, vmTestConst_value)
+    if vmTestConst_tag == "null"
+        return {tag: vmTestConst_tag}
+    end
+    return {tag: vmTestConst_tag, value: vmTestConst_value}
+end
+function vmTestInstr(vmTestInstr_op, vmTestInstr_a, vmTestInstr_b)
+    return {op: vmTestInstr_op, a: vmTestInstr_a, b: vmTestInstr_b, line: 1, col: 1}
+end
+function vmTestChunk(vmTestChunk_constants, vmTestChunk_functions, vmTestChunk_code)
+    return {constants: vmTestChunk_constants, functions: vmTestChunk_functions, code: vmTestChunk_code}
+end
+function vmTestIr(vmTestIr_constants, vmTestIr_functions, vmTestIr_code)
+    return {version: 2, constants: vmTestIr_constants, functions: vmTestIr_functions, code: vmTestIr_code}
+end
+function vmTestArrayEq(vmTestArrayEq_actual, vmTestArrayEq_expected)
+    if not isArray(vmTestArrayEq_actual) or not isArray(vmTestArrayEq_expected)
+        return false
+    end
+    if len(vmTestArrayEq_actual) != len(vmTestArrayEq_expected)
+        return false
+    end
+    vmTestArrayEq_i = 0
+    while vmTestArrayEq_i < len(vmTestArrayEq_actual)
+    if vmTestArrayEq_actual[vmTestArrayEq_i] != vmTestArrayEq_expected[vmTestArrayEq_i]
+        return false
+    end
+    vmTestArrayEq_i += 1
+end
+return true
+end
+function vmTestOutput(vmTestOutput_ir, vmTestOutput_expected, vmTestOutput_label)
+    vmTestOutput_result = vmRun(vmTestOutput_ir)
+    assert(not vmIsError(vmTestOutput_result), vmTestOutput_label + ": " + toString(vmTestOutput_result))
+    assert(vmTestArrayEq(vmTestOutput_result, vmTestOutput_expected), vmTestOutput_label + ": expected " + toString(vmTestOutput_expected) + " but got " + toString(vmTestOutput_result))
+end
+function vmTestError(vmTestError_ir, vmTestError_needle, vmTestError_label)
+    vmTestError_result = vmRun(vmTestError_ir)
+    assert(vmIsError(vmTestError_result), vmTestError_label + ": expected a structured error")
+    assert(contains(vmTestError_result.error, vmTestError_needle), vmTestError_label + ": expected '" + vmTestError_needle + "' in " + toString(vmTestError_result))
+    assert(isNumber(vmTestError_result.line) and isNumber(vmTestError_result.col), vmTestError_label + ": error needs a source position")
+end
+function vmTestConstantsAndArithmetic()
+$- 2 + 3 * 4 = 14, 7 // 2 = 3, 2 ** 8 = 256, 5 & 3 = 1, not true = false. -$
+    vmTestConstantsAndArithmetic_ir = vmTestIr([vmTestConst("number", 2), vmTestConst("number", 3), vmTestConst("number", 4), vmTestConst("number", 7), vmTestConst("number", 2), vmTestConst("number", 8), vmTestConst("number", 5), vmTestConst("number", 3), vmTestConst("bool", true)], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("Mul", 0, 0), vmTestInstr("Add", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("LoadConst", 3, 0), vmTestInstr("LoadConst", 4, 0), vmTestInstr("FloorDiv", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("LoadConst", 4, 0), vmTestInstr("LoadConst", 5, 0), vmTestInstr("Pow", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("LoadConst", 6, 0), vmTestInstr("LoadConst", 7, 0), vmTestInstr("BitAnd", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("LoadConst", 8, 0), vmTestInstr("Not", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestConstantsAndArithmetic_ir, [14, 3, 256, 1, false], "constants and arithmetic")
+end
+function vmTestConditionals()
+$- if 2 < 3 say "yes", otherwise say "no". -$
+    vmTestConditionals_ir = vmTestIr([vmTestConst("number", 2), vmTestConst("number", 3), vmTestConst("string", "yes"), vmTestConst("string", "no")], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("Lt", 0, 0), vmTestInstr("JumpIfFalse", 6, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("Jump", 7, 0), vmTestInstr("LoadConst", 3, 0), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestConditionals_ir, ["yes"], "conditional jumps")
+    vmTestConditionals_or = vmTestIr([vmTestConst("bool", true), vmTestConst("string", "shown"), vmTestConst("string", "hidden")], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("JumpIfTruePeek", 5, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("Jump", 6, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestConditionals_or, ["shown"], "peek jumps")
+end
+function vmTestGlobalsAndStrings()
+$- DefineVar/GetVar/SetVar and string concatenation with mixed operands. -$
+    vmTestGlobalsAndStrings_ir = vmTestIr([vmTestConst("string", "x"), vmTestConst("number", 4), vmTestConst("number", 5), vmTestConst("string", " value:")], [], [vmTestInstr("LoadConst", 1, 0), vmTestInstr("DefineVar", 0, 0), vmTestInstr("GetVar", 0, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("SetVar", 0, 0), vmTestInstr("LoadConst", 3, 0), vmTestInstr("GetVar", 0, 0), vmTestInstr("Add", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestGlobalsAndStrings_ir, [" value:5"], "globals and strings")
+end
+function vmTestFunctions()
+$- double(5) and a recursive factorial(5). -$
+    vmTestFunctions_double = {name: "double", params: ["x"], chunk: vmTestChunk([vmTestConst("number", 2), vmTestConst("string", "x")], [], [vmTestInstr("GetVar", 1, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("Mul", 0, 0), vmTestInstr("Return", 0, 0)])}
+    vmTestFunctions_ir = vmTestIr([vmTestConst("number", 2), vmTestConst("number", 5), vmTestConst("string", "double")], [vmTestFunctions_double], [vmTestInstr("MakeClosure", 0, 0), vmTestInstr("DefineVar", 2, 0), vmTestInstr("GetVar", 2, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("Call", 1, 2), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestFunctions_ir, [10], "function calls")
+    vmTestFunctions_factorial = {name: "fact", params: ["n"], chunk: vmTestChunk([vmTestConst("number", 1), vmTestConst("string", "n"), vmTestConst("string", "fact")], [], [vmTestInstr("GetVar", 1, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("Lt", 0, 0), vmTestInstr("JumpIfFalse", 6, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("Return", 0, 0), vmTestInstr("GetVar", 1, 0), vmTestInstr("GetVar", 2, 0), vmTestInstr("GetVar", 1, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("Sub", 0, 0), vmTestInstr("Call", 1, 2), vmTestInstr("Mul", 0, 0), vmTestInstr("Return", 0, 0)])}
+    vmTestFunctions_factorialIr = vmTestIr([vmTestConst("number", 5), vmTestConst("string", "fact")], [vmTestFunctions_factorial], [vmTestInstr("MakeClosure", 0, 0), vmTestInstr("DefineVar", 1, 0), vmTestInstr("GetVar", 1, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("Call", 1, 1), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestFunctions_factorialIr, [120], "recursion and returns")
+end
+function vmTestArraysAndObjects()
+    vmTestArraysAndObjects_arrayIr = vmTestIr([vmTestConst("number", 1), vmTestConst("number", 2), vmTestConst("number", 0), vmTestConst("string", "a")], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("MakeArray", 2, 0), vmTestInstr("DefineVar", 3, 0), vmTestInstr("GetVar", 3, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("GetIndex", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("GetVar", 3, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("SetIndex", 0, 0), vmTestInstr("GetVar", 3, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("GetIndex", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestArraysAndObjects_arrayIr, [1, 2], "arrays and indexes")
+    vmTestArraysAndObjects_objectIr = vmTestIr([vmTestConst("string", "a"), vmTestConst("number", 7), vmTestConst("string", "b"), vmTestConst("string", "o"), vmTestConst("number", 9)], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("MakeObject", 1, 0), vmTestInstr("DefineVar", 3, 0), vmTestInstr("GetVar", 3, 0), vmTestInstr("GetProp", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("LoadConst", 4, 0), vmTestInstr("GetVar", 3, 0), vmTestInstr("SetProp", 2, 0), vmTestInstr("GetVar", 3, 0), vmTestInstr("GetProp", 2, 0), vmTestInstr("Say", 1, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestArraysAndObjects_objectIr, [7, 9], "objects and properties")
+end
+function vmTestLoops()
+    vmTestLoops_repeatIr = vmTestIr([vmTestConst("number", 3), vmTestConst("string", "x")], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("RepeatSetup", 0, 0), vmTestInstr("RepeatNext", 7, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("Say", 1, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("Jump", 2, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestLoops_repeatIr, ["x", "x", "x"], "repeat loop")
+    vmTestLoops_forIr = vmTestIr([vmTestConst("number", 1), vmTestConst("number", 2), vmTestConst("number", 3), vmTestConst("string", "n")], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("LoadConst", 2, 0), vmTestInstr("MakeArray", 3, 0), vmTestInstr("IterSetup", 0, 0), vmTestInstr("IterNext", 3, 10), vmTestInstr("GetVar", 3, 0), vmTestInstr("Say", 1, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("Jump", 5, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestLoops_forIr, [1, 2, 3], "for-in loop")
+end
+function vmTestStackShapes()
+$- Rotate and the *Keep instructions must not consume their targets. -$
+    vmTestStackShapes_ir = vmTestIr([vmTestConst("number", 1), vmTestConst("number", 2), vmTestConst("string", "a"), vmTestConst("number", 7)], [], [vmTestInstr("LoadConst", 2, 0), vmTestInstr("LoadConst", 3, 0), vmTestInstr("MakeObject", 1, 0), vmTestInstr("GetPropKeep", 2, 0), vmTestInstr("Say", 1, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("MakeArray", 2, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("GetIndexKeep", 0, 0), vmTestInstr("Say", 1, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("Pop", 0, 0), vmTestInstr("LoadConst", 0, 0), vmTestInstr("LoadConst", 1, 0), vmTestInstr("Rotate", 1, 0), vmTestInstr("Say", 2, 0), vmTestInstr("ReturnNull", 0, 0)])
+    vmTestOutput(vmTestStackShapes_ir, [7, 2, 2, 1], "keep and rotate stack shapes")
+end
+function vmTestErrors()
+    vmTestError(vmTestIr([], [], [vmTestInstr("Nope", 0, 0)]), "unknown opcode", "unknown opcode")
+    vmTestError(vmTestIr([], [], [vmTestInstr("LoadConst", 5, 0)]), "constant index", "bad constant index")
+    vmTestError(vmTestIr([], [], [vmTestInstr("Jump", 9, 0)]), "jump target", "bad jump target")
+    vmTestError(vmTestIr([vmTestConst("string", "x")], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("RepeatNext", 2, 0)]), "corrupt repeat counter", "corrupt repeat counter")
+    vmTestError(vmTestIr([], [], [vmTestInstr("Pop", 0, 0)]), "stack underflow", "stack underflow")
+    vmTestError(vmTestIr([], [], [vmTestInstr("Div", 0, 0)]), "stack underflow", "binary underflow")
+    vmTestError(vmTestIr([vmTestConst("number", 1)], [], [vmTestInstr("LoadConst", 0, 0), vmTestInstr("GetProp", 0, 0)]), "name index", "name index")
+    vmTestError({constants: [], functions: [], code: []}, "version", "missing version")
+end
+if os.env("EM_SELFTEST", "") == "1"
+    vmTestConstantsAndArithmetic()
+    vmTestConditionals()
+    vmTestGlobalsAndStrings()
+    vmTestFunctions()
+    vmTestArraysAndObjects()
+    vmTestLoops()
+    vmTestStackShapes()
+    vmTestErrors()
+    say("ok")
+end
