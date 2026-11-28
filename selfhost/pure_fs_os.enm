@@ -1,0 +1,710 @@
+$- Pure Englishmen replacements for the native `fs` and `os` modules.
+
+   The ABI in bootstrap-c/ABI.md gives exactly one non-builtin dependency: the
+   C runtime's `host` module. Every function in this file is written against
+   that module, so a tiny C VM can run the self-hosted compiler without the
+   Rust standard library modules.
+
+   Required host keys used here:
+     args, env, cwd, tempDir, pid, readFile, writeFile, readBytes, writeBytes
+
+   Optional host keys are probed at call time and used when present because
+   they give exact native parity:
+     stat, listDir, mkdir, removeFile, rename, copyFile, appendFile
+   When an optional key is absent, the fallback stores directory markers and
+   file states in `pfoRegistry` and uses read/write/byte primitives instead.
+   Those fallbacks cover files created through these module objects; they
+   cannot enumerate or delete arbitrary files created outside this module.
+
+   Native `.enm` imports live only inside pfoRunSelfTest(), which is entered
+   with EM_SELFTEST=1 and the script flag `pfo-selftest`:
+     EM_SELFTEST=1 em run selfhost/pure_fs_os.enm -- pfo-selftest
+   The native fs/os/bytes modules then act as an oracle.
+
+   Every global is prefixed with `pfo` so this file is safe to concatenate
+   into selfhost/full.enm. -$
+pfoHostModule = null
+pfoRegistry = {}
+pfoOracleNativeFs = null
+pfoOracleNativeOs = null
+$- ---------------------------------------------------------------------------
+   Host access and shared helpers
+   --------------------------------------------------------------------------- -$
+function pfoHost()
+    if pfoHostModule == null
+        import host
+        pfoHostModule = host
+    end
+    return pfoHostModule
+end
+function pfoRegistrySet(pfoRegistrySet_path, pfoRegistrySet_kind)
+    pfoRegistry.set(pfoRegistrySet_path, pfoRegistrySet_kind)
+    return null
+end
+function pfoRegistryGet(pfoRegistryGet_path)
+    return pfoRegistry.get(pfoRegistryGet_path, "")
+end
+function pfoPath(pfoPath_value, pfoPath_context)
+    if not isString(pfoPath_value)
+        assert(false, "Type mismatch: expected a string " + pfoPath_context + ", found " + type(pfoPath_value))
+    end
+    return pfoPath_value
+end
+function pfoText(pfoText_value, pfoText_context)
+    if not isString(pfoText_value)
+        assert(false, "Type mismatch: expected a string " + pfoText_context + ", found " + type(pfoText_value))
+    end
+    return pfoText_value
+end
+function pfoIsHostError(pfoIsHostError_value)
+    if type(pfoIsHostError_value) != "object"
+        return false
+    end
+    return pfoIsHostError_value.get("__hostError", null) != null
+end
+function pfoErrorText(pfoErrorText_value)
+    if type(pfoErrorText_value) == "string"
+        return pfoErrorText_value
+    end
+    if type(pfoErrorText_value) == "object"
+        pfoErrorText_hostError = pfoErrorText_value.get("__hostError", null)
+        if pfoErrorText_hostError != null
+            return toString(pfoErrorText_hostError)
+        end
+        pfoErrorText_message = pfoErrorText_value.get("message", null)
+        if pfoErrorText_message != null
+            return toString(pfoErrorText_message)
+        end
+    end
+    return toString(pfoErrorText_value)
+end
+$- Distinguish EISDIR from ENOENT: both host messages contain "directory",
+   but only the former says "is a directory". -$
+function pfoIsDirectoryError(pfoIsDirectoryError_text)
+    pfoIsDirectoryError_lower = lower(pfoIsDirectoryError_text)
+    return contains(pfoIsDirectoryError_lower, "is a directory") or contains(pfoIsDirectoryError_lower, "eisdir") or contains(pfoIsDirectoryError_lower, "os error 21")
+end
+function pfoTryRead(pfoTryRead_path)
+    pfoTryRead_value = pfoHost().readFile(pfoTryRead_path)
+    if pfoIsHostError(pfoTryRead_value)
+        return {ok: false, value: pfoTryRead_value, error: pfoErrorText(pfoTryRead_value)}
+    end
+    return {ok: true, value: pfoTryRead_value, error: ""}
+end
+function pfoTryReadBytes(pfoTryReadBytes_path)
+    pfoTryReadBytes_value = pfoHost().readBytes(pfoTryReadBytes_path)
+    if pfoIsHostError(pfoTryReadBytes_value)
+        return {ok: false, value: pfoTryReadBytes_value, error: pfoErrorText(pfoTryReadBytes_value)}
+    end
+    return {ok: true, value: pfoTryReadBytes_value, error: ""}
+end
+$- A logical path is mapped to a flattened file under tempDir when its parent
+   was created by pfoMkdir() but has no directory on disk (the required host
+   keys cannot create directories). -$
+function pfoPhysicalPath(pfoPhysicalPath_path)
+    pfoPhysicalPath_host = pfoHost()
+    pfoPhysicalPath_dirs = keys(pfoRegistry)
+    pfoPhysicalPath_i = 0
+    while pfoPhysicalPath_i < len(pfoPhysicalPath_dirs)
+    pfoPhysicalPath_dir = pfoPhysicalPath_dirs[pfoPhysicalPath_i]
+    if pfoRegistryGet(pfoPhysicalPath_dir) == "dir"
+        if startsWith(pfoPhysicalPath_path, pfoPhysicalPath_dir + "/")
+            pfoPhysicalPath_real = pfoFsStatResult(pfoPhysicalPath_dir)
+            if pfoPhysicalPath_real == null or pfoPhysicalPath_real.get("isDir", false) != true
+                pfoPhysicalPath_flat = replace(pfoPhysicalPath_path, "_", "_5f_")
+                pfoPhysicalPath_flat = replace(pfoPhysicalPath_flat, "/", "_2f_")
+                return pfoPhysicalPath_host.tempDir() + "/pfo_vfs/" + pfoPhysicalPath_flat
+            end
+        end
+    end
+    pfoPhysicalPath_i += 1
+end
+return pfoPhysicalPath_path
+end
+$- ---------------------------------------------------------------------------
+   fs module
+   --------------------------------------------------------------------------- -$
+function pfoFsStatResult(pfoFsStatResult_path)
+    pfoFsStatResult_host = pfoHost()
+    if pfoFsStatResult_host.get("stat", null) != null
+        pfoFsStatResult_info = pfoFsStatResult_host.stat(pfoFsStatResult_path)
+        if type(pfoFsStatResult_info) == "object" and not pfoIsHostError(pfoFsStatResult_info)
+            return pfoFsStatResult_info
+        end
+    end
+    return null
+end
+function pfoFsRead(pfoFsRead_path)
+    pfoFsRead_path = pfoPath(pfoFsRead_path, "as the path for fs.read")
+    pfoFsRead_result = pfoTryRead(pfoPhysicalPath(pfoFsRead_path))
+    if pfoFsRead_result.ok
+        return pfoFsRead_result.value
+    end
+    return pfoFsRead_result.value
+end
+function pfoFsWrite(pfoFsWrite_path, pfoFsWrite_text)
+    pfoFsWrite_path = pfoPath(pfoFsWrite_path, "as the path for fs.write")
+    pfoFsWrite_text = pfoText(pfoFsWrite_text, "as the content for fs.write")
+    pfoFsWrite_result = pfoHost().writeFile(pfoPhysicalPath(pfoFsWrite_path), pfoFsWrite_text)
+    if pfoIsHostError(pfoFsWrite_result)
+        return pfoFsWrite_result
+    end
+    pfoRegistrySet(pfoFsWrite_path, "file")
+    return null
+end
+function pfoFsAppend(pfoFsAppend_path, pfoFsAppend_text)
+    pfoFsAppend_path = pfoPath(pfoFsAppend_path, "as the path for fs.append")
+    pfoFsAppend_text = pfoText(pfoFsAppend_text, "as the content for fs.append")
+    pfoFsAppend_host = pfoHost()
+    pfoFsAppend_physical = pfoPhysicalPath(pfoFsAppend_path)
+    if pfoFsAppend_host.get("appendFile", null) != null
+        pfoFsAppend_result = pfoFsAppend_host.appendFile(pfoFsAppend_physical, pfoFsAppend_text)
+        if pfoIsHostError(pfoFsAppend_result)
+            return pfoFsAppend_result
+        end
+        pfoRegistrySet(pfoFsAppend_path, "file")
+        return null
+    end
+    pfoFsAppend_old = pfoTryRead(pfoFsAppend_physical)
+    if not pfoFsAppend_old.ok
+        if not pfoIsDirectoryError(pfoFsAppend_old.error)
+            pfoRegistrySet(pfoFsAppend_path, "file")
+            pfoFsAppend_created = pfoHost().writeFile(pfoFsAppend_physical, pfoFsAppend_text)
+            if pfoIsHostError(pfoFsAppend_created)
+                return pfoFsAppend_created
+            end
+            return null
+        end
+        return pfoFsAppend_old.value
+    end
+    pfoFsAppend_result = pfoHost().writeFile(pfoFsAppend_physical, pfoFsAppend_old.value + pfoFsAppend_text)
+    if pfoIsHostError(pfoFsAppend_result)
+        return pfoFsAppend_result
+    end
+    pfoRegistrySet(pfoFsAppend_path, "file")
+    return null
+end
+function pfoFsExists(pfoFsExists_path)
+    pfoFsExists_path = pfoPath(pfoFsExists_path, "as the path for fs.exists")
+    pfoFsExists_info = pfoFsStatResult(pfoFsExists_path)
+    if pfoFsExists_info != null
+        if pfoFsExists_info.get("isFile", false) or pfoFsExists_info.get("isDir", false)
+            return true
+        end
+        return false
+    end
+    pfoFsExists_state = pfoRegistryGet(pfoFsExists_path)
+    if pfoFsExists_state == "file" or pfoFsExists_state == "dir"
+        return true
+    end
+    if pfoFsExists_state == "removed"
+        return false
+    end
+    pfoFsExists_read = pfoTryRead(pfoPhysicalPath(pfoFsExists_path))
+    if pfoFsExists_read.ok
+        return true
+    end
+    return pfoIsDirectoryError(pfoFsExists_read.error)
+end
+function pfoFsIsFile(pfoFsIsFile_path)
+    pfoFsIsFile_path = pfoPath(pfoFsIsFile_path, "as the path for fs.isFile")
+    pfoFsIsFile_info = pfoFsStatResult(pfoFsIsFile_path)
+    if pfoFsIsFile_info != null
+        return pfoFsIsFile_info.get("isFile", false) == true
+    end
+    pfoFsIsFile_state = pfoRegistryGet(pfoFsIsFile_path)
+    if pfoFsIsFile_state == "file"
+        return true
+    end
+    if pfoFsIsFile_state == "dir" or pfoFsIsFile_state == "removed"
+        return false
+    end
+    return pfoTryRead(pfoPhysicalPath(pfoFsIsFile_path)).ok
+end
+function pfoFsIsDir(pfoFsIsDir_path)
+    pfoFsIsDir_path = pfoPath(pfoFsIsDir_path, "as the path for fs.isDir")
+    pfoFsIsDir_info = pfoFsStatResult(pfoFsIsDir_path)
+    if pfoFsIsDir_info != null
+        return pfoFsIsDir_info.get("isDir", false) == true
+    end
+    pfoFsIsDir_state = pfoRegistryGet(pfoFsIsDir_path)
+    if pfoFsIsDir_state == "dir"
+        return true
+    end
+    if pfoFsIsDir_state == "file" or pfoFsIsDir_state == "removed"
+        return false
+    end
+    if endsWith(pfoFsIsDir_path, "/")
+        return true
+    end
+    pfoFsIsDir_read = pfoTryRead(pfoPhysicalPath(pfoFsIsDir_path))
+    return not pfoFsIsDir_read.ok and pfoIsDirectoryError(pfoFsIsDir_read.error)
+end
+function pfoFsSizeState(pfoFsSizeState_path)
+    pfoFsSizeState_info = pfoFsStatResult(pfoFsSizeState_path)
+    if pfoFsSizeState_info != null
+        return {ok: true, value: pfoFsSizeState_info.get("size", 0), error: ""}
+    end
+    if pfoFsIsDir(pfoFsSizeState_path)
+        return {ok: true, value: 0, error: ""}
+    end
+    pfoFsSizeState_bytes = pfoTryReadBytes(pfoPhysicalPath(pfoFsSizeState_path))
+    if pfoFsSizeState_bytes.ok
+        return {ok: true, value: len(pfoFsSizeState_bytes.value), error: ""}
+    end
+    return {ok: false, value: null, error: pfoFsSizeState_bytes.error}
+end
+function pfoFsSize(pfoFsSize_path)
+    pfoFsSize_path = pfoPath(pfoFsSize_path, "as the path for fs.size")
+    pfoFsSize_state = pfoFsSizeState(pfoFsSize_path)
+    if pfoFsSize_state.ok
+        return pfoFsSize_state.value
+    end
+    return {__hostError: "Could not stat '" + pfoFsSize_path + "': " + pfoFsSize_state.error}
+end
+function pfoFsMetadata(pfoFsMetadata_path)
+    pfoFsMetadata_path = pfoPath(pfoFsMetadata_path, "as the path for fs.metadata")
+    pfoFsMetadata_info = pfoFsStatResult(pfoFsMetadata_path)
+    if pfoFsMetadata_info != null
+        return pfoFsMetadata_info
+    end
+    pfoFsMetadata_state = pfoFsSizeState(pfoFsMetadata_path)
+    if not pfoFsMetadata_state.ok
+        return {__hostError: "Could not stat '" + pfoFsMetadata_path + "': " + pfoFsMetadata_state.error}
+    end
+    return {size: pfoFsMetadata_state.value, isFile: pfoFsIsFile(pfoFsMetadata_path), isDir: pfoFsIsDir(pfoFsMetadata_path), modified: 0}
+end
+function pfoFsCopy(pfoFsCopy_from, pfoFsCopy_to)
+    pfoFsCopy_from = pfoPath(pfoFsCopy_from, "as the source for fs.copy")
+    pfoFsCopy_to = pfoPath(pfoFsCopy_to, "as the destination for fs.copy")
+    pfoFsCopy_host = pfoHost()
+    pfoFsCopy_physicalFrom = pfoPhysicalPath(pfoFsCopy_from)
+    pfoFsCopy_physicalTo = pfoPhysicalPath(pfoFsCopy_to)
+    if pfoFsCopy_host.get("copyFile", null) != null
+        pfoFsCopy_copied = pfoFsCopy_host.copyFile(pfoFsCopy_physicalFrom, pfoFsCopy_physicalTo)
+        if pfoIsHostError(pfoFsCopy_copied)
+            return pfoFsCopy_copied
+        end
+        pfoRegistrySet(pfoFsCopy_to, "file")
+        return null
+    end
+    pfoFsCopy_bytes = pfoTryReadBytes(pfoFsCopy_physicalFrom)
+    if not pfoFsCopy_bytes.ok
+        return {__hostError: "Could not copy '" + pfoFsCopy_from + "' to '" + pfoFsCopy_to + "': " + pfoFsCopy_bytes.error}
+    end
+    pfoFsCopy_written = pfoFsCopy_host.writeBytes(pfoFsCopy_physicalTo, pfoFsCopy_bytes.value)
+    if pfoIsHostError(pfoFsCopy_written)
+        return pfoFsCopy_written
+    end
+    pfoRegistrySet(pfoFsCopy_to, "file")
+    return null
+end
+$- Remove the source after a byte-level copy when the host has no rename key.
+   Truncating is the closest fallback available with writeFile only. -$
+function pfoFsForget(pfoFsForget_path)
+    pfoFsForget_host = pfoHost()
+    pfoFsForget_physical = pfoPhysicalPath(pfoFsForget_path)
+    if pfoFsForget_host.get("removeFile", null) != null
+        pfoFsForget_host.removeFile(pfoFsForget_physical)
+        pfoRegistrySet(pfoFsForget_path, "removed")
+        return null
+    end
+    pfoFsForget_host.writeFile(pfoFsForget_physical, "")
+    pfoRegistrySet(pfoFsForget_path, "removed")
+    return null
+end
+function pfoFsMove(pfoFsMove_from, pfoFsMove_to)
+    pfoFsMove_from = pfoPath(pfoFsMove_from, "as the source for fs.move")
+    pfoFsMove_to = pfoPath(pfoFsMove_to, "as the destination for fs.move")
+    pfoFsMove_host = pfoHost()
+    if pfoFsMove_host.get("rename", null) != null
+        pfoFsMove_moved = pfoFsMove_host.rename(pfoPhysicalPath(pfoFsMove_from), pfoPhysicalPath(pfoFsMove_to))
+        if pfoIsHostError(pfoFsMove_moved)
+            return pfoFsMove_moved
+        end
+        if pfoFsMove_host.get("removeFile", null) != null
+            pfoFsMove_host.removeFile(pfoFsMove_from)
+        end
+        pfoRegistrySet(pfoFsMove_from, "removed")
+        pfoRegistrySet(pfoFsMove_to, "file")
+        return null
+    end
+    pfoFsMove_copied = pfoFsCopy(pfoFsMove_from, pfoFsMove_to)
+    if pfoIsHostError(pfoFsMove_copied)
+        return pfoFsMove_copied
+    end
+    pfoFsForget(pfoFsMove_from)
+    return null
+end
+function pfoFsRemove(pfoFsRemove_path)
+    pfoFsRemove_path = pfoPath(pfoFsRemove_path, "as the path for fs.remove")
+    pfoFsRemove_host = pfoHost()
+    pfoFsRemove_physical = pfoPhysicalPath(pfoFsRemove_path)
+    if pfoFsRemove_host.get("removeFile", null) != null
+        pfoFsRemove_removed = pfoFsRemove_host.removeFile(pfoFsRemove_physical)
+        if pfoIsHostError(pfoFsRemove_removed)
+            return pfoFsRemove_removed
+        end
+        pfoRegistrySet(pfoFsRemove_path, "removed")
+        return pfoFsRemove_removed == true
+    end
+    if not pfoFsExists(pfoFsRemove_path)
+        return false
+    end
+    if pfoFsIsDir(pfoFsRemove_path)
+        pfoRegistrySet(pfoFsRemove_path, "removed")
+        return true
+    end
+    pfoFsRemove_result = pfoFsRemove_host.writeFile(pfoFsRemove_physical, "")
+    if pfoIsHostError(pfoFsRemove_result)
+        return pfoFsRemove_result
+    end
+    pfoRegistrySet(pfoFsRemove_path, "removed")
+    return true
+end
+function pfoFsList(pfoFsList_path)
+    pfoFsList_path = pfoPath(pfoFsList_path, "as the directory for fs.list")
+    pfoFsList_host = pfoHost()
+    if pfoFsList_host.get("listDir", null) != null
+        pfoFsList_names = pfoFsList_host.listDir(pfoPhysicalPath(pfoFsList_path))
+        if pfoIsHostError(pfoFsList_names)
+            return pfoFsList_names
+        end
+        return sorted(pfoFsList_names)
+    end
+    pfoFsList_prefix = pfoFsList_path
+    if not endsWith(pfoFsList_prefix, "/")
+        pfoFsList_prefix = pfoFsList_prefix + "/"
+    end
+    pfoFsList_names = []
+    pfoFsList_keys = keys(pfoRegistry)
+    pfoFsList_i = 0
+    while pfoFsList_i < len(pfoFsList_keys)
+    pfoFsList_key = pfoFsList_keys[pfoFsList_i]
+    if startsWith(pfoFsList_key, pfoFsList_prefix)
+        pfoFsList_rest = slice(pfoFsList_key, len(pfoFsList_prefix), len(pfoFsList_key))
+        if not contains(pfoFsList_rest, "/")
+            if pfoRegistryGet(pfoFsList_key) != "removed"
+                pfoFsList_names.add(pfoFsList_rest)
+            end
+        end
+    end
+    pfoFsList_i += 1
+end
+return sorted(pfoFsList_names)
+end
+function pfoFsMkdir(pfoFsMkdir_path)
+    pfoFsMkdir_path = pfoPath(pfoFsMkdir_path, "as the path for fs.mkdir")
+    pfoFsMkdir_host = pfoHost()
+    if pfoFsMkdir_host.get("mkdir", null) != null
+        pfoFsMkdir_created = pfoFsMkdir_host.mkdir(pfoPhysicalPath(pfoFsMkdir_path))
+        if pfoIsHostError(pfoFsMkdir_created)
+            return pfoFsMkdir_created
+        end
+        pfoRegistrySet(pfoFsMkdir_path, "dir")
+        return pfoFsMkdir_created == true
+    end
+    pfoFsMkdir_existed = pfoFsExists(pfoFsMkdir_path)
+    pfoFsMkdir_parts = split(pfoFsMkdir_path, "/")
+    pfoFsMkdir_prefix = ""
+    pfoFsMkdir_i = 0
+    while pfoFsMkdir_i < len(pfoFsMkdir_parts)
+    pfoFsMkdir_part = pfoFsMkdir_parts[pfoFsMkdir_i]
+    if pfoFsMkdir_part != ""
+        if pfoFsMkdir_prefix == ""
+            pfoFsMkdir_prefix = pfoFsMkdir_part
+        else
+            pfoFsMkdir_prefix = pfoFsMkdir_prefix + "/" + pfoFsMkdir_part
+        end
+        if pfoRegistryGet(pfoFsMkdir_prefix) == ""
+            pfoRegistrySet(pfoFsMkdir_prefix, "dir")
+        end
+    end
+    pfoFsMkdir_i += 1
+end
+pfoRegistrySet(pfoFsMkdir_path, "dir")
+return not pfoFsMkdir_existed
+end
+function pfoFsCwd()
+    return pfoHost().cwd()
+end
+function pfoFsTempDir()
+    return pfoHost().tempDir()
+end
+function pfoFsModule()
+    return {read: pfoFsRead, write: pfoFsWrite, append: pfoFsAppend, exists: pfoFsExists, isFile: pfoFsIsFile, isDir: pfoFsIsDir, size: pfoFsSize, metadata: pfoFsMetadata, copy: pfoFsCopy, move: pfoFsMove, remove: pfoFsRemove, list: pfoFsList, cwd: pfoFsCwd, mkdir: pfoFsMkdir, tempDir: pfoFsTempDir}
+end
+$- ---------------------------------------------------------------------------
+   os module
+   --------------------------------------------------------------------------- -$
+function pfoOsArgs()
+    return pfoHost().args()
+end
+function pfoOsEnv(pfoOsEnv_key, pfoOsEnv_default)
+    pfoOsEnv_key = pfoText(pfoOsEnv_key, "as the variable name for os.env")
+    return pfoHost().env(pfoOsEnv_key, pfoOsEnv_default)
+end
+function pfoOsHome()
+    pfoOsHome_host = pfoHost()
+    pfoOsHome_value = pfoOsHome_host.env("HOME", null)
+    if pfoOsHome_value == null
+        pfoOsHome_value = pfoOsHome_host.env("USERPROFILE", null)
+    end
+    return pfoOsHome_value
+end
+function pfoOsPid()
+    return pfoHost().pid()
+end
+function pfoOsVersion()
+    return pfoHost().env("EM_VERSION", "2.0.0")
+end
+function pfoOsPlatform()
+    pfoOsPlatform_host = pfoHost()
+    pfoOsPlatform_value = pfoOsPlatform_host.env("EM_PLATFORM", "")
+    if pfoOsPlatform_value == ""
+        if pfoOsPlatform_host.env("OS", "") == "Windows_NT"
+            pfoOsPlatform_value = "windows"
+        else
+            pfoOsPlatform_value = "unix"
+        end
+    end
+    return pfoOsPlatform_value
+end
+function pfoOsArch()
+    pfoOsArch_host = pfoHost()
+    pfoOsArch_value = pfoOsArch_host.env("EM_ARCH", "")
+    if pfoOsArch_value == ""
+        pfoOsArch_value = pfoOsArch_host.env("PROCESSOR_ARCHITECTURE", "")
+    end
+    if pfoOsArch_value == ""
+        pfoOsArch_value = pfoOsArch_host.env("HOSTTYPE", "")
+    end
+    if pfoOsArch_value == ""
+        pfoOsArch_value = pfoOsArch_host.env("MACHTYPE", "")
+        if pfoOsArch_value != ""
+            pfoOsArch_value = split(pfoOsArch_value, "-")[0]
+        end
+    end
+    if pfoOsArch_value == ""
+        pfoOsArch_value = "unknown"
+    end
+    return pfoOsArch_value
+end
+function pfoOsTempDir()
+    return pfoHost().tempDir()
+end
+function pfoOsCwd()
+    return pfoHost().cwd()
+end
+function pfoOsModule()
+    return {args: pfoOsArgs, env: pfoOsEnv, home: pfoOsHome, homeDir: pfoOsHome, pid: pfoOsPid, version: pfoOsVersion, platform: pfoOsPlatform, arch: pfoOsArch, tempDir: pfoOsTempDir, cwd: pfoOsCwd}
+end
+$- ---------------------------------------------------------------------------
+   Guarded oracle self-test. Never imported by the implementation above.
+   --------------------------------------------------------------------------- -$
+function pfoSelfTestSameJson(pfoSelfTestSameJson_actual, pfoSelfTestSameJson_expected, pfoSelfTestSameJson_label)
+    assert(jsonEncode(pfoSelfTestSameJson_actual) == jsonEncode(pfoSelfTestSameJson_expected), pfoSelfTestSameJson_label + ": expected " + toString(pfoSelfTestSameJson_expected) + ", got " + toString(pfoSelfTestSameJson_actual))
+    return null
+end
+function pfoSelfTestFs(pfoSelfTestFs_dir)
+    pfoSelfTestFs_fs = pfoFsModule()
+    pfoSelfTestFs_pure = pfoSelfTestFs_dir + "/pure.txt"
+    pfoSelfTestFs_native = pfoSelfTestFs_dir + "/native.txt"
+    pfoSelfTestFs_pureCopy = pfoSelfTestFs_dir + "/pure-copy.txt"
+    pfoSelfTestFs_nativeCopy = pfoSelfTestFs_dir + "/native-copy.txt"
+    pfoSelfTestFs_pureMoved = pfoSelfTestFs_dir + "/pure-moved.txt"
+    pfoSelfTestFs_nativeMoved = pfoSelfTestFs_dir + "/native-moved.txt"
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.write(pfoSelfTestFs_pure, "one"), pfoOracleNativeFs.write(pfoSelfTestFs_native, "one"), "fs.write")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.read(pfoSelfTestFs_pure), pfoOracleNativeFs.read(pfoSelfTestFs_native), "fs.read")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.append(pfoSelfTestFs_pure, "two"), pfoOracleNativeFs.append(pfoSelfTestFs_native, "two"), "fs.append")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.read(pfoSelfTestFs_pure), "onetwo", "append content")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.read(pfoSelfTestFs_pure), pfoOracleNativeFs.read(pfoSelfTestFs_native), "appended content parity")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.exists(pfoSelfTestFs_pure), pfoOracleNativeFs.exists(pfoSelfTestFs_native), "fs.exists")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.isFile(pfoSelfTestFs_pure), pfoOracleNativeFs.isFile(pfoSelfTestFs_native), "fs.isFile")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.isDir(pfoSelfTestFs_pure), pfoOracleNativeFs.isDir(pfoSelfTestFs_native), "fs.isDir")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.isDir(pfoSelfTestFs_dir), pfoOracleNativeFs.isDir(pfoSelfTestFs_dir), "fs.isDir directory")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.size(pfoSelfTestFs_pure), pfoOracleNativeFs.size(pfoSelfTestFs_native), "fs.size")
+    pfoSelfTestFs_pureMeta = pfoSelfTestFs_fs.metadata(pfoSelfTestFs_pure)
+    pfoSelfTestFs_nativeMeta = pfoOracleNativeFs.metadata(pfoSelfTestFs_native)
+    pfoSelfTestSameJson(pfoSelfTestFs_pureMeta.size, pfoSelfTestFs_nativeMeta.size, "metadata.size")
+    pfoSelfTestSameJson(pfoSelfTestFs_pureMeta.isFile, pfoSelfTestFs_nativeMeta.isFile, "metadata.isFile")
+    pfoSelfTestSameJson(pfoSelfTestFs_pureMeta.isDir, pfoSelfTestFs_nativeMeta.isDir, "metadata.isDir")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.copy(pfoSelfTestFs_pure, pfoSelfTestFs_pureCopy), pfoOracleNativeFs.copy(pfoSelfTestFs_native, pfoSelfTestFs_nativeCopy), "fs.copy")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.read(pfoSelfTestFs_pureCopy), pfoOracleNativeFs.read(pfoSelfTestFs_nativeCopy), "copy content")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.move(pfoSelfTestFs_pureCopy, pfoSelfTestFs_pureMoved), pfoOracleNativeFs.move(pfoSelfTestFs_nativeCopy, pfoSelfTestFs_nativeMoved), "fs.move")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.exists(pfoSelfTestFs_pureCopy), pfoOracleNativeFs.exists(pfoSelfTestFs_nativeCopy), "move removed source")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.read(pfoSelfTestFs_pureMoved), pfoOracleNativeFs.read(pfoSelfTestFs_nativeMoved), "move content")
+    pfoSelfTestFs_missing = pfoSelfTestFs_dir + "/missing.txt"
+    pfoSelfTestFs_error = pfoSelfTestFs_fs.read(pfoSelfTestFs_missing)
+    assert(type(pfoSelfTestFs_error) == "object", "read error is an object")
+    assert(pfoSelfTestFs_error.get("__hostError", null) != null, "read error keeps __hostError")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.exists(pfoSelfTestFs_missing), pfoOracleNativeFs.exists(pfoSelfTestFs_missing), "missing exists")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.isFile(pfoSelfTestFs_missing), pfoOracleNativeFs.isFile(pfoSelfTestFs_missing), "missing isFile")
+    pfoSelfTestFs_pureMade = pfoSelfTestFs_dir + "/pure-made"
+    pfoSelfTestFs_nativeMade = pfoSelfTestFs_dir + "/native-made"
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.mkdir(pfoSelfTestFs_pureMade), pfoOracleNativeFs.mkdir(pfoSelfTestFs_nativeMade), "fs.mkdir")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.isDir(pfoSelfTestFs_pureMade), pfoOracleNativeFs.isDir(pfoSelfTestFs_nativeMade), "mkdir isDir")
+    pfoSelfTestFs_fs.write(pfoSelfTestFs_pureMade + "/child.txt", "child")
+    pfoOracleNativeFs.write(pfoSelfTestFs_nativeMade + "/child.txt", "child")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.list(pfoSelfTestFs_pureMade), pfoOracleNativeFs.list(pfoSelfTestFs_nativeMade), "fs.list")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.remove(pfoSelfTestFs_pure), pfoOracleNativeFs.remove(pfoSelfTestFs_native), "fs.remove")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.exists(pfoSelfTestFs_pure), pfoOracleNativeFs.exists(pfoSelfTestFs_native), "removed exists")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.remove(pfoSelfTestFs_pure), pfoOracleNativeFs.remove(pfoSelfTestFs_native), "fs.remove missing")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.cwd(), pfoOracleNativeFs.cwd(), "fs.cwd")
+    pfoSelfTestSameJson(pfoSelfTestFs_fs.tempDir(), pfoOracleNativeOs.tempDir(), "fs.tempDir")
+    return null
+end
+function pfoSelfTestOs(pfoSelfTestOs_dir)
+    pfoSelfTestOs_os = pfoOsModule()
+    pfoSelfTestOs_key = "PFO_SELFTEST_" + toString(pfoOracleNativeOs.pid())
+    pfoSelfTestSameJson(pfoSelfTestOs_os.env(pfoSelfTestOs_key, "fallback"), pfoOracleNativeOs.env(pfoSelfTestOs_key, "fallback"), "os.env fallback")
+    pfoSelfTestSameJson(pfoSelfTestOs_os.pid(), pfoOracleNativeOs.pid(), "os.pid")
+    pfoSelfTestSameJson(pfoSelfTestOs_os.tempDir(), pfoOracleNativeOs.tempDir(), "os.tempDir")
+    pfoSelfTestSameJson(pfoSelfTestOs_os.cwd(), pfoOracleNativeOs.cwd(), "os.cwd")
+    pfoSelfTestSameJson(pfoSelfTestOs_os.version(), "2.0.0", "os.version")
+    pfoSelfTestSameJson(pfoSelfTestOs_os.platform(), pfoOracleNativeOs.platform(), "os.platform")
+    assert(type(pfoSelfTestOs_os.args()) == "array", "os.args is an array")
+    assert(isString(pfoSelfTestOs_os.arch()), "os.arch is a string")
+    if pfoSelfTestOs_os.home() != null
+        assert(isString(pfoSelfTestOs_os.home()), "os.home is a string or null")
+    end
+    return null
+end
+$- Exercise the ABI-only fallback: the host object below has exactly the keys
+   required by bootstrap-c/ABI.md, with no stat/list/mkdir/remove helpers. -$
+function pfoSelfTestMinimalHost(pfoSelfTestMinimalHost_oracle)
+    pfoSelfTestMinimalHost_host = {args: pfoSelfTestMinimalHost_oracle.args, env: pfoSelfTestMinimalHost_oracle.env, cwd: pfoSelfTestMinimalHost_oracle.cwd, tempDir: pfoSelfTestMinimalHost_oracle.tempDir, pid: pfoSelfTestMinimalHost_oracle.pid, readFile: pfoSelfTestMinimalHost_oracle.readFile, writeFile: pfoSelfTestMinimalHost_oracle.writeFile, readBytes: pfoSelfTestMinimalHost_oracle.readBytes, writeBytes: pfoSelfTestMinimalHost_oracle.writeBytes}
+    pfoSelfTestMinimalHost_saved = pfoHostModule
+    pfoHostModule = pfoSelfTestMinimalHost_host
+    pfoSelfTestMinimalHost_root = pfoOracleNativeOs.tempDir() + "/pfo_vfs"
+    pfoOracleNativeFs.mkdir(pfoSelfTestMinimalHost_root)
+    pfoSelfTestMinimalHost_dir = pfoOracleNativeOs.tempDir() + "/pfo_minimal_" + toString(pfoOracleNativeOs.pid())
+    pfoSelfTestMinimalHost_file = pfoSelfTestMinimalHost_dir + "/hello.txt"
+    pfoSelfTestMinimalHost_copy = pfoSelfTestMinimalHost_dir + "/copy.txt"
+    pfoSelfTestMinimalHost_moved = pfoSelfTestMinimalHost_dir + "/moved.txt"
+    pfoSelfTestMinimalHost_fs = pfoFsModule()
+    assert(pfoSelfTestMinimalHost_fs.mkdir(pfoSelfTestMinimalHost_dir) == true, "minimal mkdir")
+    assert(pfoSelfTestMinimalHost_fs.isDir(pfoSelfTestMinimalHost_dir) == true, "minimal isDir")
+    pfoSelfTestMinimalHost_fs.write(pfoSelfTestMinimalHost_file, "hello")
+    assert(pfoSelfTestMinimalHost_fs.read(pfoSelfTestMinimalHost_file) == "hello", "minimal read")
+    pfoSelfTestMinimalHost_fs.append(pfoSelfTestMinimalHost_file, " world")
+    assert(pfoSelfTestMinimalHost_fs.read(pfoSelfTestMinimalHost_file) == "hello world", "minimal append")
+    assert(pfoSelfTestMinimalHost_fs.exists(pfoSelfTestMinimalHost_file) == true, "minimal exists")
+    assert(pfoSelfTestMinimalHost_fs.isFile(pfoSelfTestMinimalHost_file) == true, "minimal isFile")
+    assert(pfoSelfTestMinimalHost_fs.size(pfoSelfTestMinimalHost_file) == 11, "minimal size")
+    assert(contains(pfoSelfTestMinimalHost_fs.list(pfoSelfTestMinimalHost_dir), "hello.txt"), "minimal list")
+    pfoSelfTestMinimalHost_fs.copy(pfoSelfTestMinimalHost_file, pfoSelfTestMinimalHost_copy)
+    assert(pfoSelfTestMinimalHost_fs.read(pfoSelfTestMinimalHost_copy) == "hello world", "minimal copy")
+    pfoSelfTestMinimalHost_fs.move(pfoSelfTestMinimalHost_copy, pfoSelfTestMinimalHost_moved)
+    assert(pfoSelfTestMinimalHost_fs.exists(pfoSelfTestMinimalHost_copy) == false, "minimal move source")
+    assert(pfoSelfTestMinimalHost_fs.read(pfoSelfTestMinimalHost_moved) == "hello world", "minimal move target")
+    assert(pfoSelfTestMinimalHost_fs.remove(pfoSelfTestMinimalHost_file) == true, "minimal remove")
+    assert(pfoSelfTestMinimalHost_fs.exists(pfoSelfTestMinimalHost_file) == false, "minimal removed")
+    pfoHostModule = pfoSelfTestMinimalHost_saved
+    return null
+end
+function pfoRunSelfTest()
+    import os
+    if os.env("EM_SELFTEST", "") != "1"
+        return null
+    end
+    import fs
+    import bytes
+    pfoOracleNativeFs = fs
+    pfoOracleNativeOs = os
+$- The native modules are wrapped as a host module so the implementation
+       above needs no changes for the parity run. -$
+    function pfoOracleWriteFile(pfoOracleWriteFile_path, pfoOracleWriteFile_text)
+        fs.write(pfoOracleWriteFile_path, pfoOracleWriteFile_text)
+        return true
+    end
+    function pfoOracleReadFile(pfoOracleReadFile_path)
+        if not fs.exists(pfoOracleReadFile_path)
+            return {__hostError: "Could not read '" + pfoOracleReadFile_path + "': not found"}
+        end
+        if fs.isDir(pfoOracleReadFile_path)
+            return {__hostError: "Could not read '" + pfoOracleReadFile_path + "': Is a directory"}
+        end
+        return fs.read(pfoOracleReadFile_path)
+    end
+    function pfoOracleReadBytes(pfoOracleReadBytes_path)
+        if not fs.exists(pfoOracleReadBytes_path)
+            return {__hostError: "Could not read '" + pfoOracleReadBytes_path + "': not found"}
+        end
+        return bytes.read(pfoOracleReadBytes_path)
+    end
+    function pfoOracleWriteBytes(pfoOracleWriteBytes_path, pfoOracleWriteBytes_data)
+        return bytes.write(pfoOracleWriteBytes_path, pfoOracleWriteBytes_data)
+    end
+    function pfoOracleStat(pfoOracleStat_path)
+        if not fs.exists(pfoOracleStat_path)
+            return {__hostError: "Could not stat '" + pfoOracleStat_path + "': not found"}
+        end
+        return fs.metadata(pfoOracleStat_path)
+    end
+    function pfoOracleListDir(pfoOracleListDir_path)
+        return fs.list(pfoOracleListDir_path)
+    end
+    function pfoOracleMkdir(pfoOracleMkdir_path)
+        return fs.mkdir(pfoOracleMkdir_path)
+    end
+    function pfoOracleRemoveFile(pfoOracleRemoveFile_path)
+        return fs.remove(pfoOracleRemoveFile_path)
+    end
+    function pfoOracleRename(pfoOracleRename_from, pfoOracleRename_to)
+        fs.move(pfoOracleRename_from, pfoOracleRename_to)
+        return true
+    end
+    function pfoOracleCopyFile(pfoOracleCopyFile_from, pfoOracleCopyFile_to)
+        fs.copy(pfoOracleCopyFile_from, pfoOracleCopyFile_to)
+        return true
+    end
+    function pfoOracleAppendFile(pfoOracleAppendFile_path, pfoOracleAppendFile_text)
+        fs.append(pfoOracleAppendFile_path, pfoOracleAppendFile_text)
+        return true
+    end
+    function pfoOracleEnv(pfoOracleEnv_key, pfoOracleEnv_default)
+        return os.env(pfoOracleEnv_key, pfoOracleEnv_default)
+    end
+    function pfoOracleArgs()
+        return os.args()
+    end
+    function pfoOraclePid()
+        return os.pid()
+    end
+    function pfoOracleCwd()
+        return os.cwd()
+    end
+    function pfoOracleTempDir()
+        return os.tempDir()
+    end
+    function pfoOracleExit(pfoOracleExit_code)
+        return null
+    end
+    function pfoOracleStdout(pfoOracleStdout_text)
+        say(pfoOracleStdout_text)
+        return true
+    end
+    pfoSelfTestHost = {readFile: pfoOracleReadFile, writeFile: pfoOracleWriteFile, readBytes: pfoOracleReadBytes, writeBytes: pfoOracleWriteBytes, stat: pfoOracleStat, listDir: pfoOracleListDir, mkdir: pfoOracleMkdir, removeFile: pfoOracleRemoveFile, rename: pfoOracleRename, copyFile: pfoOracleCopyFile, appendFile: pfoOracleAppendFile, env: pfoOracleEnv, args: pfoOracleArgs, cwd: pfoOracleCwd, tempDir: pfoOracleTempDir, pid: pfoOraclePid, version: null, platform: null, arch: null, exit: pfoOracleExit, stdout: pfoOracleStdout, stderr: pfoOracleStdout}
+    pfoSelfTestSavedHost = pfoHostModule
+    pfoHostModule = pfoSelfTestHost
+    pfoSelfTestDir = os.tempDir() + "/pfo_selftest_" + toString(os.pid()) + "_" + toString(floor(random() * 1000000))
+    fs.mkdir(pfoSelfTestDir)
+    pfoRegistrySet(pfoSelfTestDir, "dir")
+    pfoSelfTestFs(pfoSelfTestDir)
+    pfoSelfTestOs(pfoSelfTestDir)
+    pfoSelfTestMinimalHost(pfoSelfTestHost)
+    deleteFile(pfoSelfTestDir)
+    pfoHostModule = pfoSelfTestSavedHost
+    say("ok")
+    return null
+end
+pfoSelftestRequested = false
+for pfoSelftestArg in args()
+    if pfoSelftestArg == "pfo-selftest"
+        pfoSelftestRequested = true
+    end
+end
+if pfoSelftestRequested
+    pfoRunSelfTest()
+end
