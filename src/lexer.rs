@@ -196,7 +196,8 @@ impl Lexer {
                 self.skip_to_end_of_line();
                 continue;
             }
-            if c == '/' && self.peek_at(1) == Some('/') {
+            // `//=` is an operator, not the start of a `//` comment.
+            if c == '/' && self.peek_at(1) == Some('/') && self.peek_at(2) != Some('=') {
                 let operator = tokens
                     .last()
                     .filter(|t| t.token.ends_expression() && t.span.line == self.line)
@@ -712,7 +713,14 @@ impl Lexer {
                 }
             }
             '~' => Token::BitNot,
-            '?' => Token::Question,
+            '?' => {
+                if self.peek() == Some('?') {
+                    self.advance();
+                    Token::NullCoalesce
+                } else {
+                    Token::Question
+                }
+            }
             '=' => {
                 if self.peek() == Some('=') {
                     self.advance();

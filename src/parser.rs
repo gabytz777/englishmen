@@ -1,4 +1,4 @@
-use crate::ast::{expr_to_assignable, Assignable, BinOp, Expr, Stmt, UnOp};
+use crate::ast::{expr_to_assignable, BinOp, Expr, Stmt, UnOp};
 use crate::error::{EmError, Span};
 use crate::lexer::{InterpPart, SpannedToken, Token};
 
@@ -328,12 +328,13 @@ impl Parser {
     }
 
     fn parse_coalesce(&mut self) -> Result<Expr, EmError> {
-        let mut left = self.parse_or()?;
-        while self.check(&Token::NullCoalesce) {
+        let left = self.parse_or()?;
+        if self.check(&Token::NullCoalesce) {
             let span = self.peek_span();
             self.advance();
-            let right = self.parse_or()?;
-            left = Expr::Binary(Box::new(left), BinOp::Coalesce, Box::new(right), span);
+            // `??` is right-associative: `a ?? b ?? c` is `a ?? (b ?? c)`.
+            let right = self.parse_coalesce()?;
+            return Ok(Expr::Binary(Box::new(left), BinOp::Coalesce, Box::new(right), span));
         }
         Ok(left)
     }
@@ -535,6 +536,9 @@ impl Parser {
             } else if matches!(self.peek(), Token::PlusPlus | Token::MinusMinus) {
                 let span = self.peek_span();
                 let increment = matches!(self.peek(), Token::PlusPlus);
+                // Validate here so an invalid target fails at parse time in
+                // both backends, not only when the expression is executed.
+                expr_to_assignable(expr.clone(), span)?;
                 self.advance();
                 expr = Expr::Postfix(Box::new(expr), increment, span);
             } else {
@@ -711,6 +715,7 @@ pub fn parse(tokens: Vec<SpannedToken>) -> Result<Vec<Stmt>, EmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Assignable;
     use crate::lexer::tokenize;
 
     fn parse_src(src: &str) -> Vec<Stmt> {
@@ -940,10 +945,26 @@ mod tests {
         assert!(matches!(**right, Expr::Binary(_, BinOp::Coalesce, _, _)));
     }
 
+    /// Compare ASTs without source positions: `&&` and `and` occupy a
+    /// different number of columns, but must build the same expression.
+    fn without_spans(stmts: &[Stmt]) -> String {
+        let text = format!("{stmts:?}");
+        let mut out = String::new();
+        let mut rest = text.as_str();
+        while let Some(index) = rest.find("Span {") {
+            out.push_str(&rest[..index]);
+            rest = &rest[index..];
+            let end = rest.find('}').expect("a closing brace for Span").saturating_add(1);
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     #[test]
     fn symbol_aliases_match_word_operators() {
         let left = parse_src("x = a and b or not c\n");
         let right = parse_src("x = a && b || !c\n");
-        assert_eq!(format!("{left:?}"), format!("{right:?}"));
+        assert_eq!(without_spans(&left), without_spans(&right));
     }
 }

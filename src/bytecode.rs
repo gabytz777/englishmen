@@ -84,6 +84,15 @@ pub enum Op {
     Mul,
     Div,
     Mod,
+    /// Floor division (`a // b`), rounding towards negative infinity.
+    FloorDiv,
+    /// Exponentiation (`a ** b`), right-associative in the source language.
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
     Eq,
     NotEq,
     Gt,
@@ -92,6 +101,8 @@ pub enum Op {
     LtEq,
     Neg,
     Not,
+    /// Bitwise complement (`~x`).
+    BitNot,
     /// Replace the top of the stack with its truthiness as a boolean.
     ToBool,
     /// Duplicate the top of the stack (used by postfix `++`/`--`).
@@ -480,6 +491,13 @@ fn encode_op(op: Op) -> (u8, u32, u32) {
         Op::Mul => (19, 0, 0),
         Op::Div => (20, 0, 0),
         Op::Mod => (21, 0, 0),
+        Op::FloorDiv => (42, 0, 0),
+        Op::Pow => (43, 0, 0),
+        Op::BitAnd => (44, 0, 0),
+        Op::BitOr => (45, 0, 0),
+        Op::BitXor => (46, 0, 0),
+        Op::Shl => (47, 0, 0),
+        Op::Shr => (48, 0, 0),
         Op::Eq => (22, 0, 0),
         Op::NotEq => (23, 0, 0),
         Op::Gt => (24, 0, 0),
@@ -488,6 +506,7 @@ fn encode_op(op: Op) -> (u8, u32, u32) {
         Op::LtEq => (27, 0, 0),
         Op::Neg => (28, 0, 0),
         Op::Not => (29, 0, 0),
+        Op::BitNot => (49, 0, 0),
         Op::ToBool => (30, 0, 0),
         Op::Jump(a) => (31, a, 0),
         Op::JumpIfFalse(a) => (32, a, 0),
@@ -500,6 +519,11 @@ fn encode_op(op: Op) -> (u8, u32, u32) {
         Op::Return => (39, 0, 0),
         Op::ReturnNull => (40, 0, 0),
         Op::Import(a) => (41, a, 0),
+        Op::Dup => (50, 0, 0),
+        Op::Rotate(a) => (51, a, 0),
+        Op::GetPropKeep(a) => (52, a, 0),
+        Op::GetIndexKeep => (53, 0, 0),
+        Op::JumpIfNullPeek(a) => (54, a, 0),
     }
 }
 
@@ -527,6 +551,13 @@ fn decode_op(tag: u8, a: u32, b: u32) -> Result<Op, EmError> {
         19 => Op::Mul,
         20 => Op::Div,
         21 => Op::Mod,
+        42 => Op::FloorDiv,
+        43 => Op::Pow,
+        44 => Op::BitAnd,
+        45 => Op::BitOr,
+        46 => Op::BitXor,
+        47 => Op::Shl,
+        48 => Op::Shr,
         22 => Op::Eq,
         23 => Op::NotEq,
         24 => Op::Gt,
@@ -535,6 +566,7 @@ fn decode_op(tag: u8, a: u32, b: u32) -> Result<Op, EmError> {
         27 => Op::LtEq,
         28 => Op::Neg,
         29 => Op::Not,
+        49 => Op::BitNot,
         30 => Op::ToBool,
         31 => Op::Jump(a),
         32 => Op::JumpIfFalse(a),
@@ -547,6 +579,11 @@ fn decode_op(tag: u8, a: u32, b: u32) -> Result<Op, EmError> {
         39 => Op::Return,
         40 => Op::ReturnNull,
         41 => Op::Import(a),
+        50 => Op::Dup,
+        51 => Op::Rotate(a),
+        52 => Op::GetPropKeep(a),
+        53 => Op::GetIndexKeep,
+        54 => Op::JumpIfNullPeek(a),
         other => {
             return Err(EmError::new(format!(
                 "Corrupt bytecode: unknown instruction {other}"
@@ -611,6 +648,13 @@ fn format_op(chunk: &Chunk, op: Op) -> String {
         Op::Mul => "MUL".to_string(),
         Op::Div => "DIV".to_string(),
         Op::Mod => "MOD".to_string(),
+        Op::FloorDiv => "FLOOR_DIV".to_string(),
+        Op::Pow => "POW".to_string(),
+        Op::BitAnd => "BIT_AND".to_string(),
+        Op::BitOr => "BIT_OR".to_string(),
+        Op::BitXor => "BIT_XOR".to_string(),
+        Op::Shl => "SHL".to_string(),
+        Op::Shr => "SHR".to_string(),
         Op::Eq => "EQ".to_string(),
         Op::NotEq => "NOT_EQ".to_string(),
         Op::Gt => "GT".to_string(),
@@ -619,6 +663,7 @@ fn format_op(chunk: &Chunk, op: Op) -> String {
         Op::LtEq => "LT_EQ".to_string(),
         Op::Neg => "NEG".to_string(),
         Op::Not => "NOT".to_string(),
+        Op::BitNot => "BIT_NOT".to_string(),
         Op::ToBool => "TO_BOOL".to_string(),
         Op::Jump(a) => format!("JUMP           -> {a}"),
         Op::JumpIfFalse(a) => format!("JUMP_IF_FALSE  -> {a}"),
@@ -631,6 +676,11 @@ fn format_op(chunk: &Chunk, op: Op) -> String {
         Op::Return => "RETURN".to_string(),
         Op::ReturnNull => "RETURN_NULL".to_string(),
         Op::Import(a) => format!("IMPORT         {a}  '{}'", chunk.name(a)),
+        Op::Dup => "DUP".to_string(),
+        Op::Rotate(a) => format!("ROTATE         {a}"),
+        Op::GetPropKeep(a) => format!("GET_PROP_KEEP  {a}  '{}'", chunk.name(a)),
+        Op::GetIndexKeep => "GET_INDEX_KEEP".to_string(),
+        Op::JumpIfNullPeek(a) => format!("JUMP_NULL_PK   -> {a}"),
     }
 }
 
