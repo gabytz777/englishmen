@@ -67,10 +67,13 @@ end
 $- Camera transform plus perspective projection. -$
 function project(p, ax, ay)
     q = rotate_point(p[0], p[1], p[2], ax, ay)
-    depth = q[2] + CAM_Z
-    sx = W / 2 + q[0] * FOCAL / depth
-    sy = H / 2 - q[1] * FOCAL / depth
-    return [sx, sy, depth]
+    $- The camera sits on +Z looking towards the origin: larger z is nearer,
+       so distance from the camera is CAM_Z - z and smaller depth wins.
+       Name it `dist` to avoid shadowing anything in the rasteriser. -$
+    dist = CAM_Z - q[2]
+    sx = W / 2 + q[0] * FOCAL / dist
+    sy = H / 2 - q[1] * FOCAL / dist
+    return [sx, sy, dist]
 end
 
 $- Rasterise one triangle with barycentric weights and a z-buffer. -$
