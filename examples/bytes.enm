@@ -1,0 +1,45 @@
+$- Bytes: text, buffers, hex, little-endian packing and binary file I/O -$
+import bytes
+import fs
+path = "bytes-example.bin"
+$- UTF-8 text and bytes -$
+utf8 = bytes.fromString("héllo")
+say(utf8)
+say(bytes.toString(utf8))
+$- Explicit bytes, length, indexing and mutation -$
+buf = bytes.of(10, 20, 30, 40)
+say(buf)
+say(bytes.length(buf))
+say(bytes.get(buf, 0))
+say(bytes.get(buf, -1))
+bytes.set(buf, 1, 99)
+say(buf)
+$- Concatenation, half-open slices and independent copies -$
+joined = bytes.concat(bytes.of(1, 2), bytes.of(3), bytes.of(4, 5))
+say(joined)
+say(bytes.slice(joined, 1, 4))
+say(bytes.slice(joined, 2))
+clone = bytes.copy(joined)
+bytes.set(clone, 0, 99)
+say(joined)
+say(clone)
+$- Hex parsing and formatting -$
+say(bytes.fromHex("aa bb cc"))
+say(bytes.fromHex("0a0b0c"))
+say(bytes.toHex(bytes.of(0, 15, 255)))
+$- Unsigned little-endian packing -$
+say(bytes.u8(255))
+say(bytes.u16(4660))
+say(bytes.u32(305419896))
+say(bytes.u64(4294967295))
+$- Signed two's-complement little-endian packing -$
+say(bytes.i16(-2))
+say(bytes.i32(-2))
+say(bytes.i64(-2))
+$- IEEE-754 little-endian packing -$
+say(bytes.f64(1.5))
+$- Binary file I/O -$
+say(bytes.write(path, bytes.fromHex("00 01 fe ff")))
+say(bytes.read(path))
+say(bytes.toHex(bytes.read(path)))
+say(fs.remove(path))
