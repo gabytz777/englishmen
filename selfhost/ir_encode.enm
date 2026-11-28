@@ -1,0 +1,257 @@
+$-!
+    selfhost/ir_encode.enm
+
+    Pure-Englishmen encoder for the `emb` IR described in
+    docs/selfhost/EMB_AND_MANIFEST.md.  `ieEncode(ir)` returns the exact byte
+    array that native `emb.encode(ir)` / bytecode::serialize would produce.
+
+    There are no local .enm imports, so every helper is self-contained and
+    prefixed with `ie`.  `emb` is imported only for the guarded self-tests at
+    the bottom; the encoder itself uses no native module.
+!-$
+import emb
+import os
+$- Name -> [tag, operand shape].  Shape 0 means both operands are zeroed,
+   shape 1 keeps `a`, and shape 2 keeps `a` and `b`.  This mirrors the table in
+   src/modules/emb.rs and bytecode::encode_op. -$
+ieOps = {LoadConst: [0, 1], Pop: [1, 0], GetVar: [2, 1], SetVar: [3, 1], DefineVar: [4, 1], GetProp: [5, 1], SetProp: [6, 1], GetVarOrObject: [7, 1], GetPropOrObject: [8, 1], GetIndex: [9, 0], SetIndex: [10, 0], MakeArray: [11, 1], MakeObject: [12, 1], MakeClosure: [13, 1], Call: [14, 2], MethodCall: [15, 2], Say: [16, 1], Add: [17, 0], Sub: [18, 0], Mul: [19, 0], Div: [20, 0], Mod: [21, 0], FloorDiv: [42, 0], Pow: [43, 0], BitAnd: [44, 0], BitOr: [45, 0], BitXor: [46, 0], Shl: [47, 0], Shr: [48, 0], Eq: [22, 0], NotEq: [23, 0], Gt: [24, 0], Lt: [25, 0], GtEq: [26, 0], LtEq: [27, 0], Neg: [28, 0], Not: [29, 0], BitNot: [49, 0], ToBool: [30, 0], Jump: [31, 1], JumpIfFalse: [32, 1], JumpIfFalsePeek: [33, 1], JumpIfTruePeek: [34, 1], RepeatSetup: [35, 0], RepeatNext: [36, 1], IterSetup: [37, 0], IterNext: [38, 2], Return: [39, 0], ReturnNull: [40, 0], Import: [41, 1], Dup: [50, 0], Rotate: [51, 1], GetPropKeep: [52, 1], GetIndexKeep: [53, 0], JumpIfNullPeek: [54, 1]}
+$- Append the low `count` bytes of a non-negative whole number, little-endian. -$
+function ieAppendUint(out, value, count)
+    assert(isNumber(value), "ieEncode: expected a whole number")
+    assert(value >= 0, "ieEncode: expected a non-negative whole number")
+    for i in range(count)
+        out.add(value % 256)
+        value = floor(value / 256)
+    end
+end
+$- Append a u32 exactly as bytecode::write_u32 does. -$
+function ieAppendU32(out, value)
+    assert(isNumber(value) and value <= 4294967295, "ieEncode: u32 out of range")
+    ieAppendUint(out, value, 4)
+end
+$- UTF-8 bytes for one string, matching Rust's String::as_bytes. -$
+function ieTextBytes(text)
+    out = []
+    for i in range(len(text))
+        code = charCode(text[i])
+        if code <= 127
+            out.add(code)
+        else if code <= 2047
+            out.add(192 | (code >> 6))
+            out.add(128 | (code & 63))
+        else if code <= 65535
+            out.add(224 | (code >> 12))
+            out.add(128 | ((code >> 6) & 63))
+            out.add(128 | (code & 63))
+        else
+            out.add(240 | (code >> 18))
+            out.add(128 | ((code >> 12) & 63))
+            out.add(128 | ((code >> 6) & 63))
+            out.add(128 | (code & 63))
+        end
+    end
+    return out
+end
+$- A length-prefixed UTF-8 string (write_str in bytecode.rs). -$
+function ieAppendStr(out, text)
+    assert(isString(text), "ieEncode: expected a string")
+    bytes = ieTextBytes(text)
+    ieAppendU32(out, len(bytes))
+    for byte in bytes
+        out.add(byte)
+    end
+end
+$- IEEE-754 binary64, little-endian.  Scaling by powers of two is exact, so
+   the recovered 52-bit fraction is bit-identical to f64::to_le_bytes. -$
+function ieAppendF64(out, number)
+    assert(isNumber(number), "ieEncode: expected a number constant")
+    sign = 0
+    if isNaN(number)
+        if number.toFixed(1).startsWith("-")
+            sign = 1
+        end
+    else if number == 0
+        if number.toFixed(1).startsWith("-")
+            sign = 1
+        end
+    else if number < 0
+        sign = 1
+    end
+    exponent = 0
+    fraction = 0
+    if isNaN(number)
+        exponent = 2047
+        fraction = 2251799813685248 $- 2^51, canonical quiet NaN -$
+    else if not number.isFinite()
+        exponent = 2047
+        fraction = 0
+    else
+        magnitude = abs(number)
+        if magnitude > 0
+            scaled = magnitude
+            unbiased = 0
+            for i in range(1100)
+                if scaled >= 2
+                    scaled = scaled / 2
+                    unbiased += 1
+                else
+                    break
+                end
+            end
+            for i in range(1100)
+                if scaled < 1 and unbiased > -1022
+                    scaled = scaled * 2
+                    unbiased -= 1
+                else
+                    break
+                end
+            end
+            if unbiased == -1022 and scaled < 1
+$- Subnormal: `scaled` is already magnitude * 2^1022. -$
+                exponent = 0
+                fraction = scaled
+            else
+                exponent = unbiased + 1023
+                fraction = scaled - 1
+            end
+            for i in range(52)
+                fraction = fraction * 2
+            end
+            fraction = floor(fraction)
+        end
+    end
+$- Fraction bytes 0..5; the top four fraction bits share byte 6 with the
+       low four exponent bits.  Byte 7 holds the remaining exponent bits and
+       the sign bit. -$
+    for i in range(6)
+        out.add(fraction % 256)
+        fraction = floor(fraction / 256)
+    end
+    out.add((fraction % 16) + ((exponent % 16) * 16))
+    out.add(floor(exponent / 16) + (sign * 128))
+end
+$- Validate and append a u32 operand; absent fields use the Rust defaults. -$
+function ieOperand(instruction, name, fallback)
+    if not instruction.has(name)
+        return fallback
+    end
+    value = instruction.get(name)
+    assert(isNumber(value) and value.isFinite(), "ieEncode: operand must be a finite number")
+    assert(value >= 0 and value <= 4294967295 and value == floor(value), "ieEncode: operand must be a u32")
+    return value
+end
+function ieAppendConstant(out, constant)
+    tag = constant.get("tag", null)
+    assert(isString(tag), "ieEncode: constant tag must be a string")
+    if tag == "number"
+        value = constant.get("value")
+        assert(isNumber(value), "ieEncode: number constant needs a numeric value")
+        out.add(0)
+        ieAppendF64(out, value)
+    else if tag == "string"
+        value = constant.get("value")
+        out.add(1)
+        ieAppendStr(out, value)
+    else if tag == "bool"
+        value = constant.get("value")
+        assert(isBool(value), "ieEncode: bool constant needs a boolean value")
+        out.add(2)
+        if value
+            out.add(1)
+        else
+            out.add(0)
+        end
+    else if tag == "null"
+        out.add(3)
+    else
+        assert(false, "ieEncode: unknown constant tag '" + tag + "'")
+    end
+end
+function ieAppendInstruction(out, instruction)
+    name = instruction.get("op", null)
+    assert(isString(name) and ieOps.has(name), "ieEncode: unknown op name")
+    info = ieOps.get(name)
+    a = ieOperand(instruction, "a", 0)
+    b = ieOperand(instruction, "b", 0)
+    line = ieOperand(instruction, "line", 1)
+    col = ieOperand(instruction, "col", 1)
+    if info[1] == 0
+        a = 0
+        b = 0
+    else if info[1] == 1
+        b = 0
+    end
+    out.add(info[0])
+    ieAppendU32(out, a)
+    ieAppendU32(out, b)
+    ieAppendU32(out, line)
+    ieAppendU32(out, col)
+end
+$- Chunks are recursive: constants, functions (with their own chunk), code. -$
+function ieAppendChunk(out, chunk, depth)
+    assert(depth <= 32, "ieEncode: functions are nested too deeply")
+    constants = chunk.get("constants")
+    functions = chunk.get("functions")
+    code = chunk.get("code")
+    assert(isArray(constants), "ieEncode: chunk needs a constants array")
+    assert(isArray(functions), "ieEncode: chunk needs a functions array")
+    assert(isArray(code), "ieEncode: chunk needs a code array")
+    ieAppendU32(out, len(constants))
+    for constant in constants
+        ieAppendConstant(out, constant)
+    end
+    ieAppendU32(out, len(functions))
+    for prototype in functions
+        name = prototype.get("name")
+        params = prototype.get("params")
+        body = prototype.get("chunk")
+        assert(isString(name), "ieEncode: function needs a string name")
+        assert(isArray(params), "ieEncode: function needs a params array")
+        ieAppendStr(out, name)
+        ieAppendU32(out, len(params))
+        for param in params
+            ieAppendStr(out, param)
+        end
+        ieAppendChunk(out, body, depth + 1)
+    end
+    ieAppendU32(out, len(code))
+    for instruction in code
+        ieAppendInstruction(out, instruction)
+    end
+end
+$- Public entry point: magic, LE u16 version, then the root chunk. -$
+function ieEncode(ir)
+    assert(ir.get("version") == 2, "ieEncode: version mismatch, expected 2")
+    out = []
+    out.add(charCode("E"))
+    out.add(charCode("M"))
+    out.add(charCode("B"))
+    out.add(charCode("C"))
+    out.add(2)
+    out.add(0)
+    ieAppendChunk(out, ir, 0)
+    return out
+end
+$- ---------------------------------------------------------------- self-tests -$
+function ieCheckFixture(label, ir)
+    expected = jsonEncode(emb.encode(ir))
+    actual = jsonEncode(ieEncode(ir))
+    assert(actual == expected, "ieEncode mismatch in " + label + "\n" + actual + "\n" + expected)
+    return true
+end
+if os.env("EM_SELFTEST", "") == "1"
+    ieCheckFixture("empty", {version: 2, constants: [], functions: [], code: []})
+    ieCheckFixture("hello", {version: 2, constants: [{tag: "string", value: "hello from emb"}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "Say", a: 1}, {op: "ReturnNull"}]})
+    ieCheckFixture("constants", {version: 2, constants: [{tag: "number", value: 0}, {tag: "number", value: -0}, {tag: "number", value: 1}, {tag: "number", value: -1}, {tag: "number", value: 1.5}, {tag: "number", value: -3.25}, {tag: "number", value: 3.141592653589793}, {tag: "number", value: 9007199254740991}, {tag: "number", value: parseFloat("5e-324")}, {tag: "number", value: parseFloat("2.2250738585072014e-308")}, {tag: "number", value: parseFloat("1e308")}, {tag: "number", value: parseFloat("inf")}, {tag: "number", value: -parseFloat("inf")}, {tag: "number", value: parseFloat("NaN")}, {tag: "string", value: ""}, {tag: "string", value: "héllo 😀"}, {tag: "string", value: "line\nquote\"tab\t\\"}, {tag: "bool", value: true}, {tag: "bool", value: false}, {tag: "null"}], functions: [], code: []})
+    ieOpsCode = []
+    for ieName in ieOps.keys()
+        ieOpsCode.add({op: ieName, a: 2, b: 3, line: 4, col: 5})
+    end
+    ieCheckFixture("all opcodes", {version: 2, constants: [], functions: [], code: ieOpsCode})
+    ieCheckFixture("defaults", {version: 2, constants: [{tag: "string", value: "x"}], functions: [], code: [{op: "Add"}, {op: "Call"}, {op: "MethodCall", a: 0}, {op: "IterNext", b: 2}, {op: "Jump", line: 0, col: 0}]})
+    ieInner = {constants: [{tag: "number", value: 2.5}], functions: [], code: [{op: "Return", line: 9, col: 3}]}
+    ieMiddle = {constants: [], functions: [{name: " função 😀", params: ["α", "b"], chunk: ieInner}], code: [{op: "GetVar", a: 0}, {op: "Return"}]}
+    ieCheckFixture("nested functions", {version: 2, constants: [{tag: "string", value: "name"}], functions: [{name: "f", params: ["a"], chunk: ieMiddle}, {name: "", params: [], chunk: {constants: [], functions: [], code: []}}], code: [{op: "MakeClosure", a: 0}, {op: "Call", a: 2, b: 0, line: 7, col: 8}, {op: "ReturnNull"}]})
+    ieCheckFixture("wide operands", {version: 2, constants: [], functions: [], code: [{op: "Call", a: 4294967295, b: 4294967295, line: 4294967295, col: 0}]})
+    say("ok")
+end
