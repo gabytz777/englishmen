@@ -8,6 +8,7 @@ use crate::compiler;
 use crate::environment::Environment;
 use crate::lexer::tokenize;
 use crate::parser::parse;
+use crate::value::Snapshot;
 use crate::vm::Vm;
 use std::fs;
 use std::io::{self, Write};
@@ -166,10 +167,20 @@ impl Repl {
             }
             Command::Type(expression) => type_expression(&self.vm, &expression),
             Command::Repeat { count, source } => {
+                let mut succeeded = 0;
                 for _ in 0..count {
-                    self.execute_source(&source, REPL_NAME, false);
+                    if self.execute_source(&source, REPL_NAME, false) {
+                        succeeded += 1;
+                    }
                 }
-                println!("Ran source {count} time{}.", if count == 1 { "" } else { "s" });
+                if succeeded == 0 {
+                    println!("Source failed on all {count} attempts.");
+                } else {
+                    println!(
+                        "Ran source {succeeded} time{}.",
+                        if succeeded == 1 { "" } else { "s" }
+                    );
+                }
             }
             Command::Invalid(message) => println!("{message}"),
         }
@@ -287,6 +298,11 @@ fn repeat_command(argument: &str) -> Command {
 /// Turn one input line into an action. `continuing` is true while a multiline
 /// block is being collected; in that case the line is always source.
 fn classify_input(line: &str, continuing: bool) -> Input {
+    // `:reset` must work even while a multiline block is open, otherwise the
+    // command text itself would be recorded as source and break `:save`.
+    if continuing && line.trim().eq_ignore_ascii_case(":reset") {
+        return Input::Command(Command::Reset);
+    }
     if continuing {
         return Input::Source(line.to_string());
     }
@@ -529,7 +545,7 @@ fn type_expression(vm: &Vm, expression: &str) {
     }
     let source = source_for_type(expression);
     let mut scratch = Vm::new();
-    scratch.globals = Environment::child(&vm.globals);
+    scratch.globals = vm.globals.snapshot(&mut Snapshot::new());
     if run_snippet(&mut scratch, &source, REPL_NAME) {
         match scratch.globals.get(TYPE_PROBE) {
             Some(value) => println!("{} ({})", value.debug_display(), value.type_name()),
@@ -661,6 +677,25 @@ mod tests {
         assert_eq!(classify_input("x = 1", false), Input::Source("x = 1".to_string()));
         assert_eq!(classify_input("   ", false), Input::Blank);
         assert_eq!(classify_input("", false), Input::Blank);
+    }
+
+    #[test]
+    fn reset_is_recognized_while_a_block_is_open() {
+        assert_eq!(classify_input(":reset", true), Input::Command(Command::Reset));
+        assert_eq!(classify_input("  :RESET  ", true), Input::Command(Command::Reset));
+        assert_eq!(classify_input(":reset now", true), Input::Source(":reset now".to_string()));
+        assert_eq!(classify_input("say(1)", true), Input::Source("say(1)".to_string()));
+    }
+
+    #[test]
+    fn type_expression_cannot_mutate_session_globals() {
+        let mut vm = Vm::new();
+        assert!(run_snippet(&mut vm, "a = [1]\n", REPL_NAME));
+        type_expression(&vm, "a.push(2)");
+        let Some(Value::Array(items)) = vm.globals.get("a") else {
+            panic!("session array disappeared");
+        };
+        assert_eq!(items.borrow().len(), 1, ":type must not mutate session state");
     }
 
     #[test]

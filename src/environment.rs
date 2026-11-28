@@ -1,5 +1,5 @@
 use crate::builtins;
-use crate::value::Value;
+use crate::value::{Snapshot, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -22,6 +22,32 @@ impl Environment {
             vars: RefCell::new(HashMap::new()),
             parent: Some(Rc::clone(parent)),
         })
+    }
+
+    /// Deep-copy this scope (and its parents) for isolated evaluation. Shared
+    /// arrays, objects and closure environments get fresh cells, so mutating
+    /// calls in the copy cannot leak back into the original scope.
+    pub fn snapshot(&self, snapshot: &mut Snapshot) -> Rc<Environment> {
+        let key = self as *const Environment as usize;
+        if let Some(existing) = snapshot.envs.get(&key) {
+            return Rc::clone(existing);
+        }
+        let parent = self.parent.as_ref().map(|p| p.snapshot(snapshot));
+        let copy = Rc::new(Environment {
+            vars: RefCell::new(HashMap::new()),
+            parent,
+        });
+        snapshot.envs.insert(key, Rc::clone(&copy));
+        let entries: Vec<(String, Value)> = self
+            .vars
+            .borrow()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        for (name, value) in entries {
+            copy.vars.borrow_mut().insert(name, value.snapshot(snapshot));
+        }
+        copy
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
