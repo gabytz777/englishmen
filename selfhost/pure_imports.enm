@@ -1,0 +1,10 @@
+$- Pure import table for the C bootstrap VM.
+   This file is inlined by the regenerator together with the pure module
+   implementations. Every module object below comes from a pure Englishmen
+   builder function, so the generated compiler source needs no native imports.
+   The C bootstrap VM exposes its `host` module as a global object; the
+   regenerator keeps that entry only for images built with that host present.
+   All globals defined here are prefixed with `pi`. -$
+function piImports()
+    return {__arities: {of: 8, concat: 8, slice: 3}, fs: pfoFsModule(), os: pfoOsModule(), emb: pefEmbModule(), json: pjsJsonModule(), string: pstStringModule(), bytes: pbyBytesModule(), math: pmtMathModule(), text: pmtTextModule(), cowsay: ppcCowModule(), project: ppcProjectModule(), host: host}
+end
