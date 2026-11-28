@@ -8,17 +8,7 @@
  * the `err` out-parameter.
  */
 
-#include "value.h"
-
-/* bootstrap-c/vm.h currently includes both value.h and emb.h, which declare
- * EmFunctionProto differently. Include only value.h here and restate the VM
- * entry points this file uses so the public signature stays identical. */
-typedef struct EmVm EmVm;
-
-int em_vm_call_value(EmVm *vm, EmValue *callee, EmValue **args, size_t argc,
-                     EmValue **out, char **err);
-int em_vm_call_method(EmVm *vm, EmValue *receiver, const char *name,
-                      EmValue **args, size_t argc, EmValue **out, char **err);
+#include "vm.h"
 
 #include <float.h>
 #include <limits.h>
