@@ -53,22 +53,26 @@ pub fn say(args: &[Value]) {
 const ARRAY_METHODS: &[&str] = &[
     "add", "push", "remove", "removeAt", "length", "contains", "pop", "shift", "unshift",
     "insert", "clear", "reverse", "sort", "slice", "join", "indexOf", "lastIndexOf", "count",
-    "first", "last", "concat", "copy", "isEmpty", "swap", "unique", "flatten",
+    "first", "last", "concat", "copy", "isEmpty", "swap", "unique", "flatten", "rotate",
+    "indexesOf", "interleave",
 ];
 const OBJECT_METHODS: &[&str] = &[
-    "keys", "values", "has", "get", "set", "delete", "length", "merge", "copy", "isEmpty",
+    "keys", "values", "has", "get", "set", "delete", "length", "merge", "copy", "isEmpty", "pick",
+    "omit", "entries",
 ];
 const STRING_METHODS: &[&str] = &[
     "length", "upper", "lower", "trim", "split", "contains", "startsWith", "endsWith", "replace",
     "replaceAll", "slice", "substring", "indexOf", "lastIndexOf", "charAt", "toNumber",
     "capitalize", "titleCase", "reverse", "repeat", "padLeft", "padRight", "isDigit", "isAlpha",
-    "lines", "chars",
+    "lines", "chars", "swapCase", "isBlank", "truncate",
 ];
 const NUMBER_METHODS: &[&str] = &[
     "isEven", "isOdd", "isInteger", "isFinite", "toFixed", "clamp", "toHex", "toBinary", "sign",
-    "abs", "floor", "ceil", "round", "sqrt",
+    "abs", "floor", "ceil", "round", "sqrt", "toOctal", "toDegrees", "reciprocal",
 ];
-const BOOL_METHODS: &[&str] = &["toggle", "toString", "and", "or", "xor"];
+const BOOL_METHODS: &[&str] = &[
+    "toggle", "toString", "and", "or", "xor", "implies", "nand",
+];
 
 /// Turn a type mismatch from [`expect_number`] into a spanned error.
 fn number_arg(
@@ -415,6 +419,68 @@ pub fn call_array_method(
             *array.borrow_mut() = flat;
             Ok(Value::Array(Rc::clone(array)))
         }
+        "rotate" => {
+            // Positive shifts move elements towards the tail; negative shifts
+            // move them towards the head. The receiver is left untouched.
+            let amount = number_arg(args, 0, "rotate", "as a number of positions", span)?;
+            if !amount.is_finite() || amount.fract() != 0.0 {
+                return Err(EmError::type_error(
+                    "rotate() expects a whole number of positions",
+                )
+                .with_span(span));
+            }
+            let items = array_items(array);
+            if items.is_empty() {
+                return Ok(Value::new_array(Vec::new()));
+            }
+            let len = items.len();
+            let shift = (amount as i64).rem_euclid(len as i64) as usize;
+            let split = len - shift;
+            let mut rotated = Vec::with_capacity(len);
+            rotated.extend_from_slice(&items[split..]);
+            rotated.extend_from_slice(&items[..split]);
+            Ok(Value::new_array(rotated))
+        }
+        "indexesOf" => {
+            let target = args.get(0).cloned().unwrap_or(Value::Null);
+            let indexes = array
+                .borrow()
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| value.equals(&target))
+                .map(|(index, _)| Value::Number(index as f64))
+                .collect();
+            Ok(Value::new_array(indexes))
+        }
+        "interleave" => {
+            let other = match args.get(0) {
+                Some(Value::Array(other)) => other.borrow().clone(),
+                Some(value) => {
+                    return Err(EmError::type_error(format!(
+                        "interleave(): expected an array, found {}",
+                        value.type_name()
+                    ))
+                    .with_span(span));
+                }
+                None => {
+                    return Err(
+                        EmError::arity("interleave() expects an array to interleave")
+                            .with_span(span),
+                    );
+                }
+            };
+            let left = array_items(array);
+            let mut result = Vec::with_capacity(left.len() + other.len());
+            for index in 0..left.len().max(other.len()) {
+                if let Some(value) = left.get(index) {
+                    result.push(value.clone());
+                }
+                if let Some(value) = other.get(index) {
+                    result.push(value.clone());
+                }
+            }
+            Ok(Value::new_array(result))
+        }
         other => Err(method_error("Array", other, ARRAY_METHODS, span)),
     }
 }
@@ -494,6 +560,38 @@ pub fn call_object_method(
         }
         "copy" => Ok(Value::new_object(object.borrow().clone())),
         "isEmpty" => Ok(Value::Bool(object.borrow().is_empty())),
+        "pick" => {
+            let source = object.borrow();
+            let mut fields = BTreeMap::new();
+            for value in args {
+                let key = expect_string(value, "as a key").map_err(|message| {
+                    EmError::type_error(format!("pick(): {message}")).with_span(span)
+                })?;
+                if let Some(value) = source.get(&key) {
+                    fields.insert(key, value.clone());
+                }
+            }
+            Ok(Value::new_object(fields))
+        }
+        "omit" => {
+            let mut fields = object.borrow().clone();
+            for value in args {
+                let key = expect_string(value, "as a key").map_err(|message| {
+                    EmError::type_error(format!("omit(): {message}")).with_span(span)
+                })?;
+                fields.remove(&key);
+            }
+            Ok(Value::new_object(fields))
+        }
+        "entries" => Ok(Value::new_array(
+            object
+                .borrow()
+                .iter()
+                .map(|(key, value)| {
+                    Value::new_array(vec![Value::String(key.clone()), value.clone()])
+                })
+                .collect(),
+        )),
         other => Err(method_error("Object", other, OBJECT_METHODS, span)),
     }
 }
@@ -677,6 +775,40 @@ pub fn call_string_method(
         "chars" => Ok(Value::new_array(
             s.chars().map(|c| Value::String(c.to_string())).collect(),
         )),
+        "swapCase" => {
+            let mut out = String::new();
+            for c in s.chars() {
+                if c.is_uppercase() {
+                    out.extend(c.to_lowercase());
+                } else if c.is_lowercase() {
+                    out.extend(c.to_uppercase());
+                } else {
+                    out.push(c);
+                }
+            }
+            Ok(Value::String(out))
+        }
+        "isBlank" => Ok(Value::Bool(s.chars().all(char::is_whitespace))),
+        "truncate" => {
+            let width = number_arg(args, 0, "truncate", "as a maximum width", span)?;
+            if !width.is_finite() || width.fract() != 0.0 || width < 0.0 {
+                return Err(EmError::type_error(
+                    "truncate() expects a non-negative whole width",
+                )
+                .with_span(span));
+            }
+            let width = (width as usize).min(100_000);
+            let suffix = opt_string_arg(args, 1, "truncate", "as a suffix", "...", span)?;
+            let chars: Vec<char> = s.chars().collect();
+            if chars.len() <= width {
+                return Ok(Value::String(s.to_string()));
+            }
+            let suffix: Vec<char> = suffix.chars().collect();
+            let kept = width.saturating_sub(suffix.len());
+            let mut out: String = chars.iter().take(kept).collect();
+            out.extend(suffix.iter().take(width - kept));
+            Ok(Value::String(out))
+        }
         other => Err(method_error("String", other, STRING_METHODS, span)),
     }
 }
@@ -719,22 +851,22 @@ pub fn call_number_method(
             }
             Ok(Value::Number(n.max(min).min(max)))
         }
-        "toHex" | "toBinary" => {
+        "toHex" | "toBinary" | "toOctal" => {
             let magnitude = n.trunc().abs();
             // `as i64` saturates for out-of-range or non-finite values, which
             // would silently produce a plausible but wrong string.
             if !n.is_finite() || magnitude >= 9_223_372_036_854_775_808.0 {
-                return Err(
-                    EmError::new("toHex/toBinary need a finite integer within range")
-                        .with_span(span),
-                );
+                return Err(EmError::new(
+                    "toHex/toBinary/toOctal need a finite integer within range",
+                )
+                .with_span(span));
             }
             let negative = n < 0.0;
             let magnitude = magnitude as i64;
-            let digits = if method == "toHex" {
-                format!("{magnitude:x}")
-            } else {
-                format!("{magnitude:b}")
+            let digits = match method {
+                "toHex" => format!("{magnitude:x}"),
+                "toBinary" => format!("{magnitude:b}"),
+                _ => format!("{magnitude:o}"),
             };
             Ok(Value::String(if negative && magnitude != 0 {
                 format!("-{digits}")
@@ -760,6 +892,14 @@ pub fn call_number_method(
                 Ok(Value::Number(n.sqrt()))
             }
         }
+        "toDegrees" => Ok(Value::Number(n * 180.0 / std::f64::consts::PI)),
+        "reciprocal" => {
+            if n == 0.0 {
+                Err(EmError::new("reciprocal() is undefined for zero").with_span(span))
+            } else {
+                Ok(Value::Number(1.0 / n))
+            }
+        }
         other => Err(method_error("Number", other, NUMBER_METHODS, span)),
     }
 }
@@ -777,6 +917,16 @@ pub fn call_bool_method(
         "and" => Ok(Value::Bool(b && bool_arg(args, 0, "and", "an operand", span)?)),
         "or" => Ok(Value::Bool(b || bool_arg(args, 0, "or", "an operand", span)?)),
         "xor" => Ok(Value::Bool(b ^ bool_arg(args, 0, "xor", "an operand", span)?)),
+        // Validate the operand even when the receiver alone decides the
+        // result, so a bad argument never slips through a short circuit.
+        "implies" => {
+            let other = bool_arg(args, 0, "implies", "an operand", span)?;
+            Ok(Value::Bool(!b || other))
+        }
+        "nand" => {
+            let other = bool_arg(args, 0, "nand", "an operand", span)?;
+            Ok(Value::Bool(!(b && other)))
+        }
         other => Err(method_error("Boolean", other, BOOL_METHODS, span)),
     }
 }
@@ -1431,6 +1581,261 @@ mod tests {
         let err = call_bool_method(true, "and", &[num(1.0)], Span::default()).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Type);
         let err = call_bool_method(true, "xor", &[], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Arity);
+    }
+
+    #[test]
+    fn array_rotation_lookup_and_interleave_methods() {
+        let a = arr(vec![num(1.0), num(2.0), num(3.0), num(4.0)]);
+        assert_eq!(
+            call_array_method(&a, "rotate", &[num(1.0)], Span::default())
+                .unwrap()
+                .display(),
+            "[4, 1, 2, 3]"
+        );
+        assert_eq!(
+            call_array_method(&a, "rotate", &[num(-1.0)], Span::default())
+                .unwrap()
+                .display(),
+            "[2, 3, 4, 1]"
+        );
+        assert_eq!(
+            call_array_method(&a, "rotate", &[num(5.0)], Span::default())
+                .unwrap()
+                .display(),
+            "[4, 1, 2, 3]"
+        );
+        // Rotation returns a fresh array instead of mutating the receiver.
+        assert_eq!(
+            a.borrow().iter().map(Value::display).collect::<Vec<_>>(),
+            ["1", "2", "3", "4"]
+        );
+        assert_eq!(
+            call_array_method(&arr(vec![]), "rotate", &[num(2.0)], Span::default())
+                .unwrap()
+                .display(),
+            "[]"
+        );
+        let err = call_array_method(&a, "rotate", &[num(1.5)], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Type);
+
+        let words = arr(vec![text("a"), text("b"), text("a")]);
+        assert_eq!(
+            call_array_method(&words, "indexesOf", &[text("a")], Span::default())
+                .unwrap()
+                .display(),
+            "[0, 2]"
+        );
+        assert_eq!(
+            call_array_method(&words, "indexesOf", &[text("z")], Span::default())
+                .unwrap()
+                .display(),
+            "[]"
+        );
+
+        let left = arr(vec![num(1.0), num(2.0)]);
+        let right = Value::new_array(vec![text("a"), text("b"), text("c")]);
+        assert_eq!(
+            call_array_method(&left, "interleave", &[right], Span::default())
+                .unwrap()
+                .display(),
+            "[1, \"a\", 2, \"b\", \"c\"]"
+        );
+        let err = call_array_method(&left, "interleave", &[num(3.0)], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Type);
+        let err = call_array_method(&left, "interleave", &[], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Arity);
+    }
+
+    #[test]
+    fn object_pick_omit_and_entries_methods() {
+        let mut fields = BTreeMap::new();
+        fields.insert("a".to_string(), num(1.0));
+        fields.insert("b".to_string(), num(2.0));
+        fields.insert("c".to_string(), num(3.0));
+        let o = Rc::new(RefCell::new(fields));
+
+        let picked = call_object_method(
+            &o,
+            "pick",
+            &[text("c"), text("a"), text("missing")],
+            Span::default(),
+        )
+        .unwrap();
+        assert_eq!(picked.display(), "{a: 1, c: 3}");
+        let omitted = call_object_method(&o, "omit", &[text("b")], Span::default()).unwrap();
+        assert_eq!(omitted.display(), "{a: 1, c: 3}");
+        // Both helpers return a new object and leave the receiver alone.
+        assert_eq!(o.borrow().len(), 3);
+        assert_eq!(
+            call_object_method(&o, "entries", &[], Span::default())
+                .unwrap()
+                .display(),
+            "[[\"a\", 1], [\"b\", 2], [\"c\", 3]]"
+        );
+        let err = call_object_method(&o, "pick", &[num(1.0)], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Type);
+        let err = call_object_method(&o, "omit", &[num(1.0)], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Type);
+    }
+
+    #[test]
+    fn string_swap_case_blank_and_truncate_methods() {
+        assert_eq!(
+            call_string_method("Hello WORLD 42", "swapCase", &[], Span::default())
+                .unwrap()
+                .display(),
+            "hELLO world 42"
+        );
+        assert_eq!(
+            call_string_method("héllo", "swapCase", &[], Span::default())
+                .unwrap()
+                .display(),
+            "HÉLLO"
+        );
+        for blank in ["", "   \t\n"] {
+            assert_eq!(
+                call_string_method(blank, "isBlank", &[], Span::default())
+                    .unwrap()
+                    .display(),
+                "true"
+            );
+        }
+        assert_eq!(
+            call_string_method(" a ", "isBlank", &[], Span::default())
+                .unwrap()
+                .display(),
+            "false"
+        );
+        assert_eq!(
+            call_string_method("hello world", "truncate", &[num(8.0)], Span::default())
+                .unwrap()
+                .display(),
+            "hello..."
+        );
+        assert_eq!(
+            call_string_method(
+                "hello world",
+                "truncate",
+                &[num(5.0), text("~")],
+                Span::default(),
+            )
+            .unwrap()
+            .display(),
+            "hell~"
+        );
+        assert_eq!(
+            call_string_method("hi", "truncate", &[num(10.0)], Span::default())
+                .unwrap()
+                .display(),
+            "hi"
+        );
+        // A suffix at least as wide as the limit is clipped to the limit.
+        assert_eq!(
+            call_string_method("hello", "truncate", &[num(2.0)], Span::default())
+                .unwrap()
+                .display(),
+            ".."
+        );
+        assert_eq!(
+            call_string_method("hello", "truncate", &[num(0.0)], Span::default())
+                .unwrap()
+                .display(),
+            ""
+        );
+        let err =
+            call_string_method("hello", "truncate", &[num(1.5)], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Type);
+        let err = call_string_method("hello", "truncate", &[], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Arity);
+        let err =
+            call_string_method("hello", "truncate", &[num(3.0), num(1.0)], Span::default())
+                .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Type);
+    }
+
+    #[test]
+    fn number_octal_degree_and_reciprocal_methods() {
+        assert_eq!(
+            call_number_method(255.0, "toOctal", &[], Span::default())
+                .unwrap()
+                .display(),
+            "377"
+        );
+        assert_eq!(
+            call_number_method(-8.0, "toOctal", &[], Span::default())
+                .unwrap()
+                .display(),
+            "-10"
+        );
+        for value in [f64::NAN, f64::INFINITY, 1e30] {
+            let err = call_number_method(value, "toOctal", &[], Span::default()).unwrap_err();
+            assert!(
+                err.message.contains("finite"),
+                "toOctal({value}) must be rejected"
+            );
+        }
+        let degrees = call_number_method(std::f64::consts::PI, "toDegrees", &[], Span::default())
+            .unwrap();
+        assert!(matches!(degrees, Value::Number(n) if (n - 180.0).abs() < 1e-9));
+        assert_eq!(
+            call_number_method(4.0, "reciprocal", &[], Span::default())
+                .unwrap()
+                .display(),
+            "0.25"
+        );
+        assert_eq!(
+            call_number_method(-2.0, "reciprocal", &[], Span::default())
+                .unwrap()
+                .display(),
+            "-0.5"
+        );
+        let err = call_number_method(0.0, "reciprocal", &[], Span::default()).unwrap_err();
+        assert!(err.message.contains("zero"));
+    }
+
+    #[test]
+    fn boolean_implication_and_nand_methods() {
+        assert_eq!(
+            call_bool_method(true, "implies", &[Value::Bool(true)], Span::default())
+                .unwrap()
+                .display(),
+            "true"
+        );
+        assert_eq!(
+            call_bool_method(true, "implies", &[Value::Bool(false)], Span::default())
+                .unwrap()
+                .display(),
+            "false"
+        );
+        assert_eq!(
+            call_bool_method(false, "implies", &[Value::Bool(false)], Span::default())
+                .unwrap()
+                .display(),
+            "true"
+        );
+        assert_eq!(
+            call_bool_method(true, "nand", &[Value::Bool(true)], Span::default())
+                .unwrap()
+                .display(),
+            "false"
+        );
+        assert_eq!(
+            call_bool_method(true, "nand", &[Value::Bool(false)], Span::default())
+                .unwrap()
+                .display(),
+            "true"
+        );
+        assert_eq!(
+            call_bool_method(false, "nand", &[Value::Bool(true)], Span::default())
+                .unwrap()
+                .display(),
+            "true"
+        );
+        // Operands are validated even when the receiver settles the result.
+        let err = call_bool_method(false, "implies", &[num(1.0)], Span::default()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Type);
+        let err = call_bool_method(false, "nand", &[], Span::default()).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Arity);
     }
 
