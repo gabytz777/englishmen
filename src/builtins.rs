@@ -476,6 +476,68 @@ fn slice_index(raw: f64, len: usize, name: &str) -> Result<usize, String> {
     Ok(index.clamp(0, len as i64) as usize)
 }
 
+/// Validate a non-negative, integer count or target length argument.
+fn expect_count(args: &[Value], idx: usize, name: &str) -> Result<usize, String> {
+    let n = expect_num(args, idx, &format!("as the count for {name}"))?;
+    if !n.is_finite() || n.fract() != 0.0 || n < 0.0 {
+        return Err(format!("{name} expects a non-negative integer count"));
+    }
+    if n >= usize::MAX as f64 {
+        return Err(format!("{name} count is too large"));
+    }
+    Ok(n as usize)
+}
+
+/// Pad a string to a target length measured in characters, repeating `fill`.
+fn pad_string(
+    text: &str,
+    target: usize,
+    fill: &str,
+    _name: &str,
+    at_start: bool,
+) -> Result<String, String> {
+    // Match the string padding methods: a capped width and a space fallback.
+    let target = target.min(100_000);
+    let len = text.chars().count();
+    if target <= len {
+        return Ok(text.to_string());
+    }
+    let missing = target - len;
+    let unit = if fill.is_empty() { " " } else { fill };
+    let filler: Vec<char> = unit.chars().collect();
+    let mut padding = String::new();
+    for i in 0..missing {
+        padding.push(filler[i % filler.len()]);
+    }
+    Ok(if at_start {
+        format!("{padding}{text}")
+    } else {
+        format!("{text}{padding}")
+    })
+}
+
+/// Take the first `count` items/chars, or drop them and keep the remainder.
+fn take_or_drop(source: &Value, count: usize, drop: bool, name: &str) -> Result<Value, String> {
+    match source {
+        Value::Array(a) => {
+            let items = a.borrow();
+            let n = count.min(items.len());
+            let range = if drop { n..items.len() } else { 0..n };
+            Ok(Value::new_array(items[range].to_vec()))
+        }
+        Value::String(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            let n = count.min(chars.len());
+            let range = if drop { n..chars.len() } else { 0..n };
+            Ok(Value::String(chars[range].iter().collect()))
+        }
+        other => Err(format!(
+            "Type mismatch: {name} expects an array or string, found {}",
+            other.type_name()
+        )),
+    }
+}
+
 /// The global builtin table. Seeded into every new root environment.
 pub fn globals() -> HashMap<String, Value> {
     let mut g = HashMap::new();
@@ -602,6 +664,17 @@ pub fn globals() -> HashMap<String, Value> {
             Ok(Value::Bool(matches!(
                 arg(args, 0),
                 Value::Function(_) | Value::Compiled(_) | Value::Native(_)
+            )))
+        }),
+    );
+
+    g.insert(
+        "isNaN".to_string(),
+        native("isNaN", |args| {
+            exact_args(args, 1, "isNaN")?;
+            Ok(Value::Bool(matches!(
+                arg(args, 0),
+                Value::Number(n) if n.is_nan()
             )))
         }),
     );
@@ -884,6 +957,24 @@ pub fn globals() -> HashMap<String, Value> {
     );
 
     g.insert(
+        "take".to_string(),
+        native("take", |args| {
+            exact_args(args, 2, "take")?;
+            let count = expect_count(args, 1, "take")?;
+            take_or_drop(arg(args, 0), count, false, "take")
+        }),
+    );
+
+    g.insert(
+        "drop".to_string(),
+        native("drop", |args| {
+            exact_args(args, 2, "drop")?;
+            let count = expect_count(args, 1, "drop")?;
+            take_or_drop(arg(args, 0), count, true, "drop")
+        }),
+    );
+
+    g.insert(
         "keys".to_string(),
         native("keys", |args| {
             exact_args(args, 1, "keys")?;
@@ -910,6 +1001,60 @@ pub fn globals() -> HashMap<String, Value> {
                     other.type_name()
                 )),
             }
+        }),
+    );
+
+    g.insert(
+        "entries".to_string(),
+        native("entries", |args| {
+            exact_args(args, 1, "entries")?;
+            match arg(args, 0) {
+                Value::Object(fields) => Ok(Value::new_array(
+                    fields
+                        .borrow()
+                        .iter()
+                        .map(|(k, v)| Value::new_array(vec![Value::String(k.clone()), v.clone()]))
+                        .collect(),
+                )),
+                other => Err(format!(
+                    "Type mismatch: entries expects an object, found {}",
+                    other.type_name()
+                )),
+            }
+        }),
+    );
+
+    g.insert(
+        "fromEntries".to_string(),
+        native("fromEntries", |args| {
+            exact_args(args, 1, "fromEntries")?;
+            let entries = expect_array(args, 0, "for fromEntries")?;
+            let mut fields = BTreeMap::new();
+            for (i, entry) in entries.iter().enumerate() {
+                let Value::Array(pair) = entry else {
+                    return Err(format!(
+                        "fromEntries expects an array of [key, value] pairs, found {} at index {i}",
+                        entry.type_name()
+                    ));
+                };
+                let pair = pair.borrow();
+                if pair.len() != 2 {
+                    return Err(format!(
+                        "fromEntries expects exactly 2 values per entry, found {} at index {i}",
+                        pair.len()
+                    ));
+                }
+                let Value::String(key) = &pair[0] else {
+                    return Err(format!(
+                        "fromEntries expects string keys, found {} at index {i}",
+                        pair[0].type_name()
+                    ));
+                };
+                if fields.insert(key.clone(), pair[1].clone()).is_some() {
+                    return Err(format!("fromEntries found duplicate key \"{key}\""));
+                }
+            }
+            Ok(Value::new_object(fields))
         }),
     );
 
@@ -1057,6 +1202,83 @@ pub fn globals() -> HashMap<String, Value> {
             let n = expect_num(args, 0, "for sign")?;
             let s = if n > 0.0 { 1.0 } else if n < 0.0 { -1.0 } else { 0.0 };
             Ok(Value::Number(s))
+        }),
+    );
+
+    g.insert(
+        "median".to_string(),
+        native("median", |args| {
+            exact_args(args, 1, "median")?;
+            let items = expect_array(args, 0, "for median")?;
+            if items.is_empty() {
+                return Err("median expects a non-empty array".to_string());
+            }
+            let mut numbers = Vec::with_capacity(items.len());
+            for (i, value) in items.iter().enumerate() {
+                let n = expect_num_value(value, &format!("at index {i} for median"))?;
+                if !n.is_finite() {
+                    return Err(format!(
+                        "median expects finite numbers, found {n} at index {i}"
+                    ));
+                }
+                numbers.push(n);
+            }
+            numbers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mid = numbers.len() / 2;
+            let result = if numbers.len() % 2 == 1 {
+                numbers[mid]
+            } else {
+                numbers[mid - 1] / 2.0 + numbers[mid] / 2.0
+            };
+            Ok(Value::Number(result))
+        }),
+    );
+
+    g.insert(
+        "log2".to_string(),
+        native("log2", |args| {
+            exact_args(args, 1, "log2")?;
+            let n = expect_num(args, 0, "for log2")?;
+            if !n.is_finite() || n <= 0.0 {
+                return Err("log2 expects a finite positive number".to_string());
+            }
+            Ok(Value::Number(n.log2()))
+        }),
+    );
+
+    g.insert(
+        "log10".to_string(),
+        native("log10", |args| {
+            exact_args(args, 1, "log10")?;
+            let n = expect_num(args, 0, "for log10")?;
+            if !n.is_finite() || n <= 0.0 {
+                return Err("log10 expects a finite positive number".to_string());
+            }
+            Ok(Value::Number(n.log10()))
+        }),
+    );
+
+    g.insert(
+        "toDegrees".to_string(),
+        native("toDegrees", |args| {
+            exact_args(args, 1, "toDegrees")?;
+            let n = expect_num(args, 0, "for toDegrees")?;
+            if !n.is_finite() {
+                return Err("toDegrees expects a finite number".to_string());
+            }
+            Ok(Value::Number(n.to_degrees()))
+        }),
+    );
+
+    g.insert(
+        "toRadians".to_string(),
+        native("toRadians", |args| {
+            exact_args(args, 1, "toRadians")?;
+            let n = expect_num(args, 0, "for toRadians")?;
+            if !n.is_finite() {
+                return Err("toRadians expects a finite number".to_string());
+            }
+            Ok(Value::Number(n.to_radians()))
         }),
     );
 
@@ -1297,6 +1519,81 @@ pub fn globals() -> HashMap<String, Value> {
                 return Err("repeat output would exceed 1000000 bytes".to_string());
             }
             Ok(Value::String(s.repeat(times)))
+        }),
+    );
+
+    g.insert(
+        "padStart".to_string(),
+        native("padStart", |args| {
+            at_least_args(args, 2, "padStart")?;
+            no_extra(args, 3, "padStart")?;
+            let text = expect_str(args, 0, "for padStart")?;
+            let target = expect_count(args, 1, "padStart")?;
+            let fill = if args.len() == 3 {
+                expect_str(args, 2, "as the fill for padStart")?
+            } else {
+                " ".to_string()
+            };
+            Ok(Value::String(pad_string(
+                &text, target, &fill, "padStart", true,
+            )?))
+        }),
+    );
+
+    g.insert(
+        "padEnd".to_string(),
+        native("padEnd", |args| {
+            at_least_args(args, 2, "padEnd")?;
+            no_extra(args, 3, "padEnd")?;
+            let text = expect_str(args, 0, "for padEnd")?;
+            let target = expect_count(args, 1, "padEnd")?;
+            let fill = if args.len() == 3 {
+                expect_str(args, 2, "as the fill for padEnd")?
+            } else {
+                " ".to_string()
+            };
+            Ok(Value::String(pad_string(
+                &text, target, &fill, "padEnd", false,
+            )?))
+        }),
+    );
+
+    g.insert(
+        "charCode".to_string(),
+        native("charCode", |args| {
+            exact_args(args, 1, "charCode")?;
+            match arg(args, 0) {
+                Value::String(s) => Ok(s
+                    .chars()
+                    .next()
+                    .map(|c| Value::Number(c as u32 as f64))
+                    .unwrap_or(Value::Null)),
+                other => Err(format!(
+                    "Type mismatch: charCode expects a string, found {}",
+                    other.type_name()
+                )),
+            }
+        }),
+    );
+
+    g.insert(
+        "fromCharCode".to_string(),
+        native("fromCharCode", |args| {
+            exact_args(args, 1, "fromCharCode")?;
+            let n = expect_num(args, 0, "for fromCharCode")?;
+            if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n > 0x10FFFF as f64 {
+                return Err(
+                    "fromCharCode expects a Unicode code point from 0 to 1114111".to_string(),
+                );
+            }
+            char::from_u32(n as u32)
+                .map(|c| Value::String(c.to_string()))
+                .ok_or_else(|| {
+                    format!(
+                        "fromCharCode: {} is not a valid Unicode code point",
+                        n as u32
+                    )
+                })
         }),
     );
 
@@ -1596,6 +1893,7 @@ mod tests {
         "isBool",
         "isNull",
         "isFunction",
+        "isNaN",
         "parseInt",
         "parseFloat",
         "range",
@@ -1608,8 +1906,12 @@ mod tests {
         "sorted",
         "reversed",
         "zip",
+        "take",
+        "drop",
         "keys",
         "values",
+        "entries",
+        "fromEntries",
         "first",
         "last",
         "indexOf",
@@ -1621,6 +1923,11 @@ mod tests {
         "ceil",
         "round",
         "sign",
+        "median",
+        "log2",
+        "log10",
+        "toDegrees",
+        "toRadians",
         "random",
         "randomInt",
         "seed",
@@ -1638,6 +1945,10 @@ mod tests {
         "startsWith",
         "endsWith",
         "repeat",
+        "padStart",
+        "padEnd",
+        "charCode",
+        "fromCharCode",
         "readFile",
         "writeFile",
         "appendFile",
@@ -1720,9 +2031,20 @@ mod tests {
     #[test]
     fn registry_exposes_all_builtins_as_native_functions() {
         let table = globals();
-        assert!(table.len() >= 35, "only {} builtins", table.len());
+        assert_eq!(
+            table.len(),
+            EXPECTED_BUILTINS.len(),
+            "registry has {} builtins, expected list has {}",
+            table.len(),
+            EXPECTED_BUILTINS.len()
+        );
         for name in EXPECTED_BUILTINS {
-            assert!(matches!(table.get(*name), Some(Value::Native(_))), "missing {name}");
+            match table.get(*name) {
+                Some(Value::Native(f)) => {
+                    assert_eq!(f.name, *name, "native function has the wrong name");
+                }
+                _ => panic!("missing builtin: {name}"),
+            }
         }
     }
 
@@ -1830,6 +2152,184 @@ mod tests {
         assert_eq!(number(ok("clamp", &[Value::Number(12.0), Value::Number(0.0), Value::Number(10.0)])), 10.0);
         assert!(err("sqrt", &[Value::Number(-1.0)]).contains("negative"));
         assert!(err("clamp", &[Value::Number(1.0), Value::Number(5.0), Value::Number(0.0)]).contains("min <= max"));
+    }
+
+    #[test]
+    fn padding_and_codepoint_builtins() {
+        assert_eq!(
+            text(ok("padStart", &[Value::String("7".into()), Value::Number(3.0)])),
+            "  7"
+        );
+        assert_eq!(
+            text(ok(
+                "padStart",
+                &[
+                    Value::String("7".into()),
+                    Value::Number(4.0),
+                    Value::String("ab".into())
+                ]
+            )),
+            "aba7"
+        );
+        assert_eq!(
+            text(ok(
+                "padEnd",
+                &[
+                    Value::String("é".into()),
+                    Value::Number(3.0),
+                    Value::String("-".into())
+                ]
+            )),
+            "é--"
+        );
+        assert_eq!(
+            text(ok("padEnd", &[Value::String("abcd".into()), Value::Number(2.0)])),
+            "abcd"
+        );
+        assert_eq!(
+            text(ok(
+                "padStart",
+                &[
+                    Value::String("x".into()),
+                    Value::Number(2.0),
+                    Value::String("".into())
+                ]
+            )),
+            " x",
+            "an empty fill falls back to a space, matching string methods"
+        );
+        assert!(err("padEnd", &[Value::String("x".into()), Value::Number(-1.0)])
+            .contains("non-negative integer"));
+
+        assert_eq!(number(ok("charCode", &[Value::String("é".into())])), 233.0);
+        assert!(matches!(ok("charCode", &[Value::String("".into())]), Value::Null));
+        assert_eq!(text(ok("fromCharCode", &[Value::Number(233.0)])), "é");
+        assert!(err("charCode", &[Value::Number(65.0)]).contains("expects a string"));
+        assert!(err("fromCharCode", &[Value::Number(0xD800 as f64)])
+            .contains("not a valid Unicode code point"));
+        assert!(err("fromCharCode", &[Value::Number(0x110000 as f64)]).contains("0 to 1114111"));
+    }
+
+    #[test]
+    fn object_entry_builtins() {
+        let source = object(&[
+            ("b", Value::Number(2.0)),
+            ("a", Value::String("x".into())),
+        ]);
+        let pairs = items(ok("entries", &[source]));
+        assert_eq!(pairs.len(), 2);
+        let first = items(pairs[0].clone());
+        assert_eq!(text(first[0].clone()), "a");
+        assert_eq!(text(first[1].clone()), "x");
+        let second = items(pairs[1].clone());
+        assert_eq!(text(second[0].clone()), "b");
+        assert_eq!(number(second[1].clone()), 2.0);
+
+        assert_eq!(
+            ok("fromEntries", &[Value::new_array(pairs)]).display(),
+            "{a: \"x\", b: 2}"
+        );
+        assert_eq!(ok("entries", &[object(&[])]).display(), "[]");
+
+        assert!(err("entries", &[Value::new_array(vec![])]).contains("expects an object"));
+        assert!(err(
+            "fromEntries",
+            &[Value::new_array(vec![Value::Number(1.0)])]
+        )
+        .contains("pairs"));
+        assert!(err(
+            "fromEntries",
+            &[Value::new_array(vec![Value::new_array(strings(&["a"]))])]
+        )
+        .contains("exactly 2"));
+        assert!(err(
+            "fromEntries",
+            &[Value::new_array(vec![Value::new_array(vec![
+                Value::Number(1.0),
+                Value::Null
+            ])])]
+        )
+        .contains("string keys"));
+        assert!(err(
+            "fromEntries",
+            &[Value::new_array(vec![
+                Value::new_array(vec![Value::String("a".into()), Value::Number(1.0)]),
+                Value::new_array(vec![Value::String("a".into()), Value::Number(2.0)])
+            ])]
+        )
+        .contains("duplicate key"));
+    }
+
+    #[test]
+    fn take_and_drop_builtins() {
+        let array = Value::new_array(numbers(&[1.0, 2.0, 3.0]));
+        assert_eq!(
+            items(ok("take", &[array.clone(), Value::Number(2.0)]))
+                .iter()
+                .map(|v| number(v.clone()))
+                .collect::<Vec<_>>(),
+            [1.0, 2.0]
+        );
+        assert_eq!(
+            items(ok("drop", &[array.clone(), Value::Number(1.0)]))
+                .iter()
+                .map(|v| number(v.clone()))
+                .collect::<Vec<_>>(),
+            [2.0, 3.0]
+        );
+        assert_eq!(
+            text(ok("take", &[Value::String("héllo".into()), Value::Number(2.0)])),
+            "hé"
+        );
+        assert_eq!(
+            text(ok("drop", &[Value::String("héllo".into()), Value::Number(2.0)])),
+            "llo"
+        );
+        assert_eq!(items(ok("take", &[array.clone(), Value::Number(10.0)])).len(), 3);
+        assert!(items(ok("drop", &[array, Value::Number(10.0)])).is_empty());
+        assert!(err("take", &[Value::Number(1.0), Value::Number(1.0)])
+            .contains("expects an array or string"));
+        assert!(err("drop", &[Value::new_array(vec![]), Value::Number(1.5)])
+            .contains("non-negative integer"));
+    }
+
+    #[test]
+    fn extra_math_and_number_predicate_builtins() {
+        assert_eq!(
+            number(ok(
+                "median",
+                &[Value::new_array(numbers(&[3.0, 1.0, 2.0]))]
+            )),
+            2.0
+        );
+        assert_eq!(
+            number(ok(
+                "median",
+                &[Value::new_array(numbers(&[4.0, 1.0, 3.0, 2.0]))]
+            )),
+            2.5
+        );
+        assert!((number(ok("log2", &[Value::Number(8.0)])) - 3.0).abs() < 1e-12);
+        assert!((number(ok("log10", &[Value::Number(1000.0)])) - 3.0).abs() < 1e-12);
+        assert!(
+            (number(ok("toDegrees", &[Value::Number(std::f64::consts::PI)])) - 180.0).abs() < 1e-9
+        );
+        assert!(
+            (number(ok("toRadians", &[Value::Number(180.0)])) - std::f64::consts::PI).abs() < 1e-12
+        );
+        assert!(boolean(ok("isNaN", &[Value::Number(f64::NAN)])));
+        assert!(!boolean(ok("isNaN", &[Value::Number(1.0)])));
+
+        assert!(err("median", &[Value::new_array(vec![])]).contains("non-empty"));
+        assert!(err(
+            "median",
+            &[Value::new_array(vec![Value::Number(1.0), Value::String("x".into())])]
+        )
+        .contains("expected a number"));
+        assert!(err("log2", &[Value::Number(0.0)]).contains("positive"));
+        assert!(err("log10", &[Value::Number(-1.0)]).contains("positive"));
+        assert!(err("toRadians", &[Value::Number(f64::INFINITY)]).contains("finite"));
+        assert!(!boolean(ok("isNaN", &[Value::String("x".into())])));
     }
 
     #[test]
@@ -1958,6 +2458,12 @@ mod tests {
         .contains("all numbers or all strings"));
         assert!(err("toNumber", &[Value::String("oops".into())]).contains("could not convert"));
         assert!(err("jsonDecode", &[Value::Number(1.0)]).contains("expected a string"));
+        assert!(err("take", &[Value::Number(1.0)]).contains("expects 2 arguments"));
+        assert!(
+            err("padStart", &[Value::String("x".into())])
+                .contains("expects at least 2 arguments")
+        );
+        assert!(err("isNaN", &[]).contains("expects 1 argument"));
     }
 
     #[test]
@@ -1968,7 +2474,21 @@ mod tests {
             "c = jsonEncode({ name: \"Ada\", scores: [1, 2] })\n",
             "d = sum([1, 2, 3])\n",
             "parts = split(\"a,b,c\", \",\")\n",
-            "e = parts[1]\n"
+            "e = parts[1]\n",
+            "f = padStart(\"7\", 3, \"0\")\n",
+            "g = entries({ b: 2, a: 1 })\n",
+            "h = median([3, 1, 2])\n",
+            "i = fromEntries(zip([\"x\"], [4]))\n",
+            "j = take(\"héllo\", 2)\n",
+            "k = drop([1, 2, 3], 1)\n",
+            "l = charCode(\"A\")\n",
+            "m = fromCharCode(66)\n",
+            "n = log2(8)\n",
+            "o = log10(100)\n",
+            "p = isNaN(1)\n",
+            "q = padEnd(\"ab\", 4, \"xy\")\n",
+            "r = toDegrees(0)\n",
+            "s = toRadians(0)\n"
         );
         let program = parse(tokenize(src).unwrap()).unwrap();
 
@@ -1983,6 +2503,20 @@ mod tests {
             ("c", r#"{"name":"Ada","scores":[1,2]}"#),
             ("d", "6"),
             ("e", "b"),
+            ("f", "007"),
+            ("g", r#"[["a", 1], ["b", 2]]"#),
+            ("h", "2"),
+            ("i", "{x: 4}"),
+            ("j", "hé"),
+            ("k", "[2, 3]"),
+            ("l", "65"),
+            ("m", "B"),
+            ("n", "3"),
+            ("o", "2"),
+            ("p", "false"),
+            ("q", "abxy"),
+            ("r", "0"),
+            ("s", "0"),
         ] {
             let interpreted = interpreter.globals.get(name).unwrap().display();
             let compiled = vm.globals.get(name).unwrap().display();
