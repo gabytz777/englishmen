@@ -1,0 +1,299 @@
+$-!
+    selfhost/pure_emb_file.enm
+
+    Pure-Englishmen `emb` module object for the C bootstrap VM.  The module
+    value returned by `pefEmbModule()` mirrors the native `emb` module:
+
+        magic, version, encodeOp, encode, write, writeBytes
+
+    `pefEncode` is the pure IR encoder contract from `selfhost/ir_encode.enm`;
+    its helpers are duplicated here with a `pef` prefix because self-hosted
+    files cannot import one another.  `pefWrite`/`pefWriteBytes` persist bytes
+    only through the `host` module supplied by the bootstrap VM.  No native
+    module other than `os` (used solely for the EM_SELFTEST guard) is imported
+    outside the guarded oracle self-test at the bottom of this file.
+!-$
+import os
+$- Name -> [tag, operand shape], copied from src/modules/emb.rs and mirrored by
+   bytecode::encode_op.  Shape 0 zeroes both operands, shape 1 keeps `a`,
+   shape 2 keeps `a` and `b`. -$
+pefOps = {LoadConst: [0, 1], Pop: [1, 0], GetVar: [2, 1], SetVar: [3, 1], DefineVar: [4, 1], GetProp: [5, 1], SetProp: [6, 1], GetVarOrObject: [7, 1], GetPropOrObject: [8, 1], GetIndex: [9, 0], SetIndex: [10, 0], MakeArray: [11, 1], MakeObject: [12, 1], MakeClosure: [13, 1], Call: [14, 2], MethodCall: [15, 2], Say: [16, 1], Add: [17, 0], Sub: [18, 0], Mul: [19, 0], Div: [20, 0], Mod: [21, 0], FloorDiv: [42, 0], Pow: [43, 0], BitAnd: [44, 0], BitOr: [45, 0], BitXor: [46, 0], Shl: [47, 0], Shr: [48, 0], Eq: [22, 0], NotEq: [23, 0], Gt: [24, 0], Lt: [25, 0], GtEq: [26, 0], LtEq: [27, 0], Neg: [28, 0], Not: [29, 0], BitNot: [49, 0], ToBool: [30, 0], Jump: [31, 1], JumpIfFalse: [32, 1], JumpIfFalsePeek: [33, 1], JumpIfTruePeek: [34, 1], RepeatSetup: [35, 0], RepeatNext: [36, 1], IterSetup: [37, 0], IterNext: [38, 2], Return: [39, 0], ReturnNull: [40, 0], Import: [41, 1], Dup: [50, 0], Rotate: [51, 1], GetPropKeep: [52, 1], GetIndexKeep: [53, 0], JumpIfNullPeek: [54, 1]}
+$- Append the low `count` bytes of a non-negative whole number, little-endian. -$
+function pefAppendUint(pefAppendUint_out, pefAppendUint_value, pefAppendUint_count)
+    assert(isNumber(pefAppendUint_value), "pefEncode: expected a whole number")
+    assert(pefAppendUint_value >= 0, "pefEncode: expected a non-negative whole number")
+    for pefAppendUint_i in range(pefAppendUint_count)
+        pefAppendUint_out.add(pefAppendUint_value % 256)
+        pefAppendUint_value = floor(pefAppendUint_value / 256)
+    end
+end
+$- Append a u32 exactly as bytecode::write_u32 does. -$
+function pefAppendU32(pefAppendU32_out, pefAppendU32_value)
+    assert(isNumber(pefAppendU32_value) and pefAppendU32_value <= 4294967295, "pefEncode: u32 out of range")
+    pefAppendUint(pefAppendU32_out, pefAppendU32_value, 4)
+end
+$- UTF-8 bytes for one string, matching Rust's String::as_bytes. -$
+function pefTextBytes(pefTextBytes_text)
+    pefTextBytes_out = []
+    for pefTextBytes_i in range(len(pefTextBytes_text))
+        pefTextBytes_code = charCode(pefTextBytes_text[pefTextBytes_i])
+        if pefTextBytes_code <= 127
+            pefTextBytes_out.add(pefTextBytes_code)
+        else if pefTextBytes_code <= 2047
+            pefTextBytes_out.add(192 | (pefTextBytes_code >> 6))
+            pefTextBytes_out.add(128 | (pefTextBytes_code & 63))
+        else if pefTextBytes_code <= 65535
+            pefTextBytes_out.add(224 | (pefTextBytes_code >> 12))
+            pefTextBytes_out.add(128 | ((pefTextBytes_code >> 6) & 63))
+            pefTextBytes_out.add(128 | (pefTextBytes_code & 63))
+        else
+            pefTextBytes_out.add(240 | (pefTextBytes_code >> 18))
+            pefTextBytes_out.add(128 | ((pefTextBytes_code >> 12) & 63))
+            pefTextBytes_out.add(128 | ((pefTextBytes_code >> 6) & 63))
+            pefTextBytes_out.add(128 | (pefTextBytes_code & 63))
+        end
+    end
+    return pefTextBytes_out
+end
+$- A length-prefixed UTF-8 string (write_str in bytecode.rs). -$
+function pefAppendStr(pefAppendStr_out, pefAppendStr_text)
+    assert(isString(pefAppendStr_text), "pefEncode: expected a string")
+    pefAppendStr_bytes = pefTextBytes(pefAppendStr_text)
+    pefAppendU32(pefAppendStr_out, len(pefAppendStr_bytes))
+    for pefAppendStr_byte in pefAppendStr_bytes
+        pefAppendStr_out.add(pefAppendStr_byte)
+    end
+end
+$- IEEE-754 binary64, little-endian.  Scaling by powers of two is exact, so
+   the recovered 52-bit fraction is bit-identical to f64::to_le_bytes. -$
+function pefAppendF64(pefAppendF64_out, pefAppendF64_number)
+    assert(isNumber(pefAppendF64_number), "pefEncode: expected a number constant")
+    pefAppendF64_sign = 0
+    if isNaN(pefAppendF64_number)
+        if pefAppendF64_number.toFixed(1).startsWith("-")
+            pefAppendF64_sign = 1
+        end
+    else if pefAppendF64_number == 0
+        if pefAppendF64_number.toFixed(1).startsWith("-")
+            pefAppendF64_sign = 1
+        end
+    else if pefAppendF64_number < 0
+        pefAppendF64_sign = 1
+    end
+    pefAppendF64_exponent = 0
+    pefAppendF64_fraction = 0
+    if isNaN(pefAppendF64_number)
+        pefAppendF64_exponent = 2047
+        pefAppendF64_fraction = 2251799813685248 $- 2^51, canonical quiet NaN -$
+    else if not pefAppendF64_number.isFinite()
+        pefAppendF64_exponent = 2047
+        pefAppendF64_fraction = 0
+    else
+        pefAppendF64_magnitude = abs(pefAppendF64_number)
+        if pefAppendF64_magnitude > 0
+            pefAppendF64_scaled = pefAppendF64_magnitude
+            pefAppendF64_unbiased = 0
+            for pefAppendF64_i in range(1100)
+                if pefAppendF64_scaled >= 2
+                    pefAppendF64_scaled = pefAppendF64_scaled / 2
+                    pefAppendF64_unbiased += 1
+                else
+                    break
+                end
+            end
+            for pefAppendF64_i in range(1100)
+                if pefAppendF64_scaled < 1 and pefAppendF64_unbiased > -1022
+                    pefAppendF64_scaled = pefAppendF64_scaled * 2
+                    pefAppendF64_unbiased -= 1
+                else
+                    break
+                end
+            end
+            if pefAppendF64_unbiased == -1022 and pefAppendF64_scaled < 1
+$- Subnormal: `scaled` is already magnitude * 2^1022. -$
+                pefAppendF64_exponent = 0
+                pefAppendF64_fraction = pefAppendF64_scaled
+            else
+                pefAppendF64_exponent = pefAppendF64_unbiased + 1023
+                pefAppendF64_fraction = pefAppendF64_scaled - 1
+            end
+            for pefAppendF64_i in range(52)
+                pefAppendF64_fraction = pefAppendF64_fraction * 2
+            end
+            pefAppendF64_fraction = floor(pefAppendF64_fraction)
+        end
+    end
+$- Fraction bytes 0..5; the top four fraction bits share byte 6 with the
+           low four exponent bits.  Byte 7 holds the remaining exponent bits and
+           the sign bit. -$
+    for pefAppendF64_i in range(6)
+        pefAppendF64_out.add(pefAppendF64_fraction % 256)
+        pefAppendF64_fraction = floor(pefAppendF64_fraction / 256)
+    end
+    pefAppendF64_out.add((pefAppendF64_fraction % 16) + ((pefAppendF64_exponent % 16) * 16))
+    pefAppendF64_out.add(floor(pefAppendF64_exponent / 16) + (pefAppendF64_sign * 128))
+end
+$- Validate and append a u32 operand; absent fields use the Rust defaults. -$
+function pefOperand(pefOperand_instruction, pefOperand_name, pefOperand_fallback)
+    if not pefOperand_instruction.has(pefOperand_name)
+        return pefOperand_fallback
+    end
+    pefOperand_value = pefOperand_instruction.get(pefOperand_name)
+    assert(isNumber(pefOperand_value) and pefOperand_value.isFinite(), "pefEncode: operand must be a finite number")
+    assert(pefOperand_value >= 0 and pefOperand_value <= 4294967295 and pefOperand_value == floor(pefOperand_value), "pefEncode: operand must be a u32")
+    return pefOperand_value
+end
+function pefAppendConstant(pefAppendConstant_out, pefAppendConstant_constant)
+    pefAppendConstant_tag = pefAppendConstant_constant.get("tag", null)
+    assert(isString(pefAppendConstant_tag), "pefEncode: constant tag must be a string")
+    if pefAppendConstant_tag == "number"
+        pefAppendConstant_value = pefAppendConstant_constant.get("value")
+        assert(isNumber(pefAppendConstant_value), "pefEncode: number constant needs a numeric value")
+        pefAppendConstant_out.add(0)
+        pefAppendF64(pefAppendConstant_out, pefAppendConstant_value)
+    else if pefAppendConstant_tag == "string"
+        pefAppendConstant_value = pefAppendConstant_constant.get("value")
+        pefAppendConstant_out.add(1)
+        pefAppendStr(pefAppendConstant_out, pefAppendConstant_value)
+    else if pefAppendConstant_tag == "bool"
+        pefAppendConstant_value = pefAppendConstant_constant.get("value")
+        assert(isBool(pefAppendConstant_value), "pefEncode: bool constant needs a boolean value")
+        pefAppendConstant_out.add(2)
+        if pefAppendConstant_value
+            pefAppendConstant_out.add(1)
+        else
+            pefAppendConstant_out.add(0)
+        end
+    else if pefAppendConstant_tag == "null"
+        pefAppendConstant_out.add(3)
+    else
+        assert(false, "pefEncode: unknown constant tag '" + pefAppendConstant_tag + "'")
+    end
+end
+function pefAppendInstruction(pefAppendInstruction_out, pefAppendInstruction_instruction)
+    pefAppendInstruction_name = pefAppendInstruction_instruction.get("op", null)
+    assert(isString(pefAppendInstruction_name) and pefOps.has(pefAppendInstruction_name), "pefEncode: unknown op name")
+    pefAppendInstruction_info = pefOps.get(pefAppendInstruction_name)
+    pefAppendInstruction_a = pefOperand(pefAppendInstruction_instruction, "a", 0)
+    pefAppendInstruction_b = pefOperand(pefAppendInstruction_instruction, "b", 0)
+    pefAppendInstruction_line = pefOperand(pefAppendInstruction_instruction, "line", 1)
+    pefAppendInstruction_col = pefOperand(pefAppendInstruction_instruction, "col", 1)
+    if pefAppendInstruction_info[1] == 0
+        pefAppendInstruction_a = 0
+        pefAppendInstruction_b = 0
+    else if pefAppendInstruction_info[1] == 1
+        pefAppendInstruction_b = 0
+    end
+    pefAppendInstruction_out.add(pefAppendInstruction_info[0])
+    pefAppendU32(pefAppendInstruction_out, pefAppendInstruction_a)
+    pefAppendU32(pefAppendInstruction_out, pefAppendInstruction_b)
+    pefAppendU32(pefAppendInstruction_out, pefAppendInstruction_line)
+    pefAppendU32(pefAppendInstruction_out, pefAppendInstruction_col)
+end
+$- Chunks are recursive: constants, functions (with their own chunk), code. -$
+function pefAppendChunk(pefAppendChunk_out, pefAppendChunk_chunk, pefAppendChunk_depth)
+    assert(pefAppendChunk_depth <= 32, "pefEncode: functions are nested too deeply")
+    pefAppendChunk_constants = pefAppendChunk_chunk.get("constants")
+    pefAppendChunk_functions = pefAppendChunk_chunk.get("functions")
+    pefAppendChunk_code = pefAppendChunk_chunk.get("code")
+    assert(isArray(pefAppendChunk_constants), "pefEncode: chunk needs a constants array")
+    assert(isArray(pefAppendChunk_functions), "pefEncode: chunk needs a functions array")
+    assert(isArray(pefAppendChunk_code), "pefEncode: chunk needs a code array")
+    pefAppendU32(pefAppendChunk_out, len(pefAppendChunk_constants))
+    for pefAppendChunk_constant in pefAppendChunk_constants
+        pefAppendConstant(pefAppendChunk_out, pefAppendChunk_constant)
+    end
+    pefAppendU32(pefAppendChunk_out, len(pefAppendChunk_functions))
+    for pefAppendChunk_prototype in pefAppendChunk_functions
+        pefAppendChunk_name = pefAppendChunk_prototype.get("name")
+        pefAppendChunk_params = pefAppendChunk_prototype.get("params")
+        pefAppendChunk_body = pefAppendChunk_prototype.get("chunk")
+        assert(isString(pefAppendChunk_name), "pefEncode: function needs a string name")
+        assert(isArray(pefAppendChunk_params), "pefEncode: function needs a params array")
+        pefAppendStr(pefAppendChunk_out, pefAppendChunk_name)
+        pefAppendU32(pefAppendChunk_out, len(pefAppendChunk_params))
+        for pefAppendChunk_param in pefAppendChunk_params
+            pefAppendStr(pefAppendChunk_out, pefAppendChunk_param)
+        end
+        pefAppendChunk(pefAppendChunk_out, pefAppendChunk_body, pefAppendChunk_depth + 1)
+    end
+    pefAppendU32(pefAppendChunk_out, len(pefAppendChunk_code))
+    for pefAppendChunk_instruction in pefAppendChunk_code
+        pefAppendInstruction(pefAppendChunk_out, pefAppendChunk_instruction)
+    end
+end
+$- Public encoder entry point: magic, LE u16 version, then the root chunk. -$
+function pefEncode(pefEncode_ir)
+    assert(pefEncode_ir.get("version") == 2, "pefEncode: version mismatch, expected 2")
+    pefEncode_out = []
+    pefEncode_out.add(charCode("E"))
+    pefEncode_out.add(charCode("M"))
+    pefEncode_out.add(charCode("B"))
+    pefEncode_out.add(charCode("C"))
+    pefEncode_out.add(2)
+    pefEncode_out.add(0)
+    pefAppendChunk(pefEncode_out, pefEncode_ir, 0)
+    return pefEncode_out
+end
+$- Native-module-compatible members.  Paths are strings and buffers are arrays
+   of whole bytes; `host.writeBytes` is the only persistence primitive used. -$
+function pefMagic()
+    return "EMBC"
+end
+function pefVersion()
+    return 2
+end
+function pefEncodeOp(pefEncodeOp_name)
+    assert(isString(pefEncodeOp_name) and pefOps.has(pefEncodeOp_name), "pefEncodeOp: unknown op name '" + toString(pefEncodeOp_name) + "'")
+    return pefOps.get(pefEncodeOp_name)[0]
+end
+function pefWriteBytes(pefWriteBytes_path, pefWriteBytes_bytes)
+    assert(isString(pefWriteBytes_path), "pefWriteBytes: expected a string as the path")
+    assert(isArray(pefWriteBytes_bytes), "pefWriteBytes: expected an array for the buffer")
+    for pefWriteBytes_i in range(len(pefWriteBytes_bytes))
+        pefWriteBytes_byte = pefWriteBytes_bytes[pefWriteBytes_i]
+        assert(isNumber(pefWriteBytes_byte) and pefWriteBytes_byte.isFinite() and pefWriteBytes_byte == floor(pefWriteBytes_byte) and pefWriteBytes_byte >= 0 and pefWriteBytes_byte <= 255, "pefWriteBytes: expected a whole number from 0 to 255 at index " + toString(pefWriteBytes_i))
+    end
+    return host.writeBytes(pefWriteBytes_path, pefWriteBytes_bytes)
+end
+function pefWrite(pefWrite_path, pefWrite_ir)
+    return pefWriteBytes(pefWrite_path, pefEncode(pefWrite_ir))
+end
+$- The module object has the same member names as native `emb`. -$
+function pefEmbModule()
+    return {magic: pefMagic, version: pefVersion, encodeOp: pefEncodeOp, encode: pefEncode, write: pefWrite, writeBytes: pefWriteBytes}
+end
+$- ---------------------------------------------------------------- self-tests -$
+function pefCheckFixture(pefCheckFixture_label, pefCheckFixture_ir)
+    pefCheckFixture_expected = jsonEncode(emb.encode(pefCheckFixture_ir))
+    pefCheckFixture_actual = jsonEncode(pefEncode(pefCheckFixture_ir))
+    assert(pefCheckFixture_actual == pefCheckFixture_expected, "pefEncode mismatch in " + pefCheckFixture_label + "\n" + pefCheckFixture_actual + "\n" + pefCheckFixture_expected)
+    return true
+end
+if os.env("EM_SELFTEST", "") == "1"
+    import emb
+    assert(pefMagic() == emb.magic(), "pefMagic")
+    assert(pefVersion() == emb.version(), "pefVersion")
+    for pefName in pefOps.keys()
+        assert(pefEncodeOp(pefName) == emb.encodeOp(pefName), "pefEncodeOp " + pefName)
+    end
+    pefModule = pefEmbModule()
+    assert(len(pefModule) == 6, "pefEmbModule member count")
+    for pefMember in ["magic", "version", "encodeOp", "encode", "write", "writeBytes"]
+        assert(isFunction(pefModule.get(pefMember)), "pefEmbModule." + pefMember)
+    end
+    pefCheckFixture("empty", {version: 2, constants: [], functions: [], code: []})
+    pefCheckFixture("hello", {version: 2, constants: [{tag: "string", value: "hello from pure emb file"}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "Say", a: 1}, {op: "ReturnNull"}]})
+    pefCheckFixture("constants", {version: 2, constants: [{tag: "number", value: 0}, {tag: "number", value: -0}, {tag: "number", value: 1}, {tag: "number", value: -1}, {tag: "number", value: 1.5}, {tag: "number", value: -3.25}, {tag: "number", value: 3.141592653589793}, {tag: "number", value: 9007199254740991}, {tag: "number", value: parseFloat("5e-324")}, {tag: "number", value: parseFloat("2.2250738585072014e-308")}, {tag: "number", value: parseFloat("1e308")}, {tag: "number", value: parseFloat("inf")}, {tag: "number", value: -parseFloat("inf")}, {tag: "number", value: parseFloat("NaN")}, {tag: "string", value: ""}, {tag: "string", value: "héllo 😀"}, {tag: "string", value: "line\nquote\"tab\t\\"}, {tag: "bool", value: true}, {tag: "bool", value: false}, {tag: "null"}], functions: [], code: []})
+    pefOpsCode = []
+    for pefName in pefOps.keys()
+        pefOpsCode.add({op: pefName, a: 2, b: 3, line: 4, col: 5})
+    end
+    pefCheckFixture("all opcodes", {version: 2, constants: [], functions: [], code: pefOpsCode})
+    pefCheckFixture("defaults", {version: 2, constants: [{tag: "string", value: "x"}], functions: [], code: [{op: "Add"}, {op: "Call"}, {op: "MethodCall", a: 0}, {op: "IterNext", b: 2}, {op: "Jump", line: 0, col: 0}]})
+    pefInner = {constants: [{tag: "number", value: 2.5}], functions: [], code: [{op: "Return", line: 9, col: 3}]}
+    pefMiddle = {constants: [], functions: [{name: " função 😀", params: ["α", "b"], chunk: pefInner}], code: [{op: "GetVar", a: 0}, {op: "Return"}]}
+    pefCheckFixture("nested functions", {version: 2, constants: [{tag: "string", value: "name"}], functions: [{name: "f", params: ["a"], chunk: pefMiddle}, {name: "", params: [], chunk: {constants: [], functions: [], code: []}}], code: [{op: "MakeClosure", a: 0}, {op: "Call", a: 2, b: 0, line: 7, col: 8}, {op: "ReturnNull"}]})
+    pefCheckFixture("wide operands", {version: 2, constants: [], functions: [], code: [{op: "Call", a: 4294967295, b: 4294967295, line: 4294967295, col: 0}]})
+    say("ok")
+end
