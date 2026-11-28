@@ -1,0 +1,1408 @@
+$- Self-contained bootstrap compiler for Englishmen.
+   Englishmen cannot import local .enm files yet, so the lexer, parser and
+   emitter are inlined here. The emitter builds Value objects/arrays and lets
+   json.encode handle key ordering, escaping and number formatting, which makes
+   the output byte-identical to `em build <file> --emit ast-json`.
+-$
+import fs
+import json
+$- ---------------------------------------------------------------------------
+   Lexer state and helpers. Token objects mirror src/lexer.rs:
+   {type: RustTokenVariant, value: ..., line: n, col: n} with an extra `op`
+   field on compound assignments.
+   --------------------------------------------------------------------------- -$
+lxSrc = ""
+lxPos = 0
+lxLine = 1
+lxCol = 1
+lxTokens = []
+lxTokLine = 1
+lxTokCol = 1
+function lxPeek()
+    if lxPos >= len(lxSrc)
+        return null
+    end
+    return lxSrc[lxPos]
+end
+function lxPeekAt(lxPeekAt_offset)
+    lxPeekAt_i = lxPos + lxPeekAt_offset
+    if lxPeekAt_i >= len(lxSrc)
+        return null
+    end
+    return lxSrc[lxPeekAt_i]
+end
+function lxAdvance()
+    lxAdvance_c = lxSrc[lxPos]
+    lxPos += 1
+    if charCode(lxAdvance_c) == 10
+        lxLine += 1
+        lxCol = 1
+    else
+        lxCol += 1
+    end
+    return lxAdvance_c
+end
+function lxMake(lxMake_type, lxMake_value)
+    lxMake_tok = {type: lxMake_type, value: lxMake_value, line: lxTokLine, col: lxTokCol}
+    return lxMake_tok
+end
+function lxMakeCompound(lxMakeCompound_op)
+    lxMakeCompound_tok = {type: "CompoundAssign", value: lxMakeCompound_op, op: lxMakeCompound_op, line: lxTokLine, col: lxTokCol}
+    return lxMakeCompound_tok
+end
+function lxIsDigit(lxIsDigit_c)
+    if lxIsDigit_c == null
+        return false
+    end
+    lxIsDigit_n = charCode(lxIsDigit_c)
+    return lxIsDigit_n >= 48 and lxIsDigit_n <= 57
+end
+function lxIsLetter(lxIsLetter_c)
+    if lxIsLetter_c == null
+        return false
+    end
+    return lxIsLetter_c.isAlpha()
+end
+function lxDigitValue(lxDigitValue_c)
+    if lxDigitValue_c == null
+        return -1
+    end
+    lxDigitValue_n = charCode(lxDigitValue_c)
+    if lxDigitValue_n >= 48 and lxDigitValue_n <= 57
+        return lxDigitValue_n - 48
+    end
+    lxDigitValue_n = charCode(lxDigitValue_c.lower())
+    if lxDigitValue_n >= 97 and lxDigitValue_n <= 102
+        return lxDigitValue_n - 87
+    end
+    return -1
+end
+function lxEndsExpression(lxEndsExpression_type)
+    lxEndsExpression_ends = ["Number", "String", "Interpolated", "Identifier", "True", "False", "Null", "RParen", "RBracket", "RBrace", "PlusPlus", "MinusMinus"]
+    return lxEndsExpression_ends.indexOf(lxEndsExpression_type) >= 0
+end
+function lxSkipToEndOfLine()
+    while lxPos < len(lxSrc) and lxSrc[lxPos] != "\n"
+    lxAdvance()
+end
+end
+function lxSkipWhitespaceAndComments()
+    while lxPos < len(lxSrc)
+    lxSkipWhitespaceAndComments_c = lxSrc[lxPos]
+    lxSkipWhitespaceAndComments_n = charCode(lxSkipWhitespaceAndComments_c)
+    if lxSkipWhitespaceAndComments_n == 32 or lxSkipWhitespaceAndComments_n == 9 or lxSkipWhitespaceAndComments_n == 13
+        lxAdvance()
+    else if lxSkipWhitespaceAndComments_c == "$" and lxPeekAt(1) == "-"
+        lxAdvance()
+        lxAdvance()
+        lxSkipWhitespaceAndComments_closed = false
+        while lxPos < len(lxSrc)
+        if lxSrc[lxPos] == "-" and lxPeekAt(1) == "$"
+            lxAdvance()
+            lxAdvance()
+            lxSkipWhitespaceAndComments_closed = true
+            break
+        end
+        lxAdvance()
+    end
+    assert(lxSkipWhitespaceAndComments_closed, "Unterminated comment")
+else
+    break
+end
+end
+end
+function lxReadNumber()
+    lxReadNumber_c = lxSrc[lxPos]
+    lxReadNumber_nextChar = lxPeekAt(1)
+    if lxReadNumber_nextChar == null
+        lxReadNumber_nextChar = ""
+    end
+    if lxReadNumber_c == "0" and "xXbBoO".indexOf(lxReadNumber_nextChar) >= 0
+        lxReadNumber_p = lxSrc[lxPos + 1]
+        if lxReadNumber_p == "x" or lxReadNumber_p == "X"
+            lxReadNumber_radix = 16
+        else if lxReadNumber_p == "b" or lxReadNumber_p == "B"
+            lxReadNumber_radix = 2
+        else
+            lxReadNumber_radix = 8
+        end
+        lxAdvance()
+        lxAdvance()
+        lxReadNumber_digits = ""
+        while lxPos < len(lxSrc)
+        lxReadNumber_d = lxSrc[lxPos]
+        if lxReadNumber_d == "_"
+            lxAdvance()
+        else if lxDigitValue(lxReadNumber_d) >= 0 and lxDigitValue(lxReadNumber_d) < lxReadNumber_radix
+            lxReadNumber_digits += lxReadNumber_d
+            lxAdvance()
+        else
+            break
+        end
+    end
+    assert(len(lxReadNumber_digits) > 0, "Invalid numeric literal")
+    return lxMake("Number", parseInt(lxReadNumber_digits, lxReadNumber_radix))
+end
+lxReadNumber_s = ""
+lxReadNumber_lastWasDigit = false
+while lxPos < len(lxSrc)
+lxReadNumber_d = lxSrc[lxPos]
+if lxIsDigit(lxReadNumber_d)
+    lxReadNumber_s += lxReadNumber_d
+    lxAdvance()
+    lxReadNumber_lastWasDigit = true
+else if lxReadNumber_d == "_" and lxReadNumber_lastWasDigit and lxIsDigit(lxPeekAt(1))
+    lxAdvance()
+    lxReadNumber_lastWasDigit = false
+else
+    break
+end
+end
+if lxPeek() == "." and lxIsDigit(lxPeekAt(1))
+    lxReadNumber_s += "."
+    lxAdvance()
+    while lxPos < len(lxSrc)
+    lxReadNumber_d = lxSrc[lxPos]
+    if lxIsDigit(lxReadNumber_d)
+        lxReadNumber_s += lxReadNumber_d
+        lxAdvance()
+    else if lxReadNumber_d == "_" and lxReadNumber_s[len(lxReadNumber_s) - 1] != "" and lxIsDigit(lxReadNumber_s[len(lxReadNumber_s) - 1]) and lxIsDigit(lxPeekAt(1))
+        lxAdvance()
+    else
+        break
+    end
+end
+end
+lxReadNumber_d = lxPeek()
+if lxReadNumber_d == "e" or lxReadNumber_d == "E"
+    lxReadNumber_exponent = ""
+    lxAdvance()
+    lxReadNumber_d = lxPeek()
+    if lxReadNumber_d == "+" or lxReadNumber_d == "-"
+        lxReadNumber_exponent += lxAdvance()
+    end
+    lxReadNumber_sawDigit = false
+    while lxPos < len(lxSrc)
+    lxReadNumber_d = lxSrc[lxPos]
+    if lxIsDigit(lxReadNumber_d)
+        lxReadNumber_exponent += lxReadNumber_d
+        lxAdvance()
+        lxReadNumber_sawDigit = true
+    else if lxReadNumber_d == "_" and lxReadNumber_sawDigit and lxIsDigit(lxPeekAt(1))
+        lxAdvance()
+    else
+        break
+    end
+end
+assert(lxReadNumber_sawDigit, "Invalid exponent in numeric literal")
+lxReadNumber_s += "e" + lxReadNumber_exponent
+end
+return lxMake("Number", toNumber(lxReadNumber_s))
+end
+function lxReadInterpolation(lxReadInterpolation_exprLine, lxReadInterpolation_exprCol)
+    lxReadInterpolation_raw = ""
+    lxReadInterpolation_depth = 0
+    while true
+    assert(lxPos < len(lxSrc), "Unclosed interpolation")
+    lxReadInterpolation_c = lxPeek()
+    if lxReadInterpolation_c == "\\"
+        lxReadInterpolation_raw += lxReadInterpolation_c
+        lxAdvance()
+        if lxPos < len(lxSrc)
+            lxReadInterpolation_raw += lxSrc[lxPos]
+            lxAdvance()
+        end
+    else if lxReadInterpolation_c == "\""
+        lxReadInterpolation_raw += "\""
+        lxAdvance()
+        while true
+        assert(lxPos < len(lxSrc), "Unterminated string literal")
+        lxReadInterpolation_d = lxAdvance()
+        lxReadInterpolation_raw += lxReadInterpolation_d
+        if lxReadInterpolation_d == "\""
+            break
+        end
+        if lxReadInterpolation_d == "\\" and lxPos < len(lxSrc)
+            lxReadInterpolation_raw += lxSrc[lxPos]
+            lxAdvance()
+        end
+    end
+else if lxReadInterpolation_c == "$" and lxPeekAt(1) == "-"
+    lxReadInterpolation_raw += "$"
+    lxReadInterpolation_raw += "-"
+    lxAdvance()
+    lxAdvance()
+    while lxPos < len(lxSrc)
+    lxReadInterpolation_d = lxAdvance()
+    lxReadInterpolation_raw += lxReadInterpolation_d
+    if lxReadInterpolation_d == "-" and lxPeek() == "$"
+        lxReadInterpolation_raw += "$"
+        lxAdvance()
+        break
+    end
+end
+else if lxReadInterpolation_c == "\{"
+lxReadInterpolation_depth += 1
+lxReadInterpolation_raw += "\{"
+lxAdvance()
+else if lxReadInterpolation_c == "\}"
+lxAdvance()
+if lxReadInterpolation_depth == 0
+    break
+end
+lxReadInterpolation_depth -= 1
+lxReadInterpolation_raw += "\}"
+else
+    lxReadInterpolation_raw += lxReadInterpolation_c
+    lxAdvance()
+end
+end
+lxReadInterpolation_savedSrc = lxSrc
+lxReadInterpolation_savedPos = lxPos
+lxReadInterpolation_savedLine = lxLine
+lxReadInterpolation_savedCol = lxCol
+lxReadInterpolation_savedTokens = lxTokens
+lxReadInterpolation_savedTokLine = lxTokLine
+lxReadInterpolation_savedTokCol = lxTokCol
+lxReadInterpolation_inner = lex(lxReadInterpolation_raw)
+for lxReadInterpolation_i in range(len(lxReadInterpolation_inner))
+    lxReadInterpolation_tok = lxReadInterpolation_inner[lxReadInterpolation_i]
+    if lxReadInterpolation_tok.line == 1
+        lxReadInterpolation_tok.col = lxReadInterpolation_exprCol + lxReadInterpolation_tok.col - 1
+    end
+    lxReadInterpolation_tok.line = lxReadInterpolation_exprLine + lxReadInterpolation_tok.line - 1
+end
+lxSrc = lxReadInterpolation_savedSrc
+lxPos = lxReadInterpolation_savedPos
+lxLine = lxReadInterpolation_savedLine
+lxCol = lxReadInterpolation_savedCol
+lxTokens = lxReadInterpolation_savedTokens
+lxTokLine = lxReadInterpolation_savedTokLine
+lxTokCol = lxReadInterpolation_savedTokCol
+return lxReadInterpolation_inner
+end
+function lxReadString()
+    lxAdvance()
+    lxReadString_literal = ""
+    lxReadString_parts = []
+    while true
+    assert(lxPos < len(lxSrc), "Unterminated string literal")
+    lxReadString_c = lxAdvance()
+    if lxReadString_c == "\""
+        break
+    else if lxReadString_c == "\\"
+        assert(lxPos < len(lxSrc), "Unterminated string literal")
+        lxReadString_e = lxAdvance()
+        if lxReadString_e == "n"
+            lxReadString_literal += fromCharCode(10)
+        else if lxReadString_e == "t"
+            lxReadString_literal += fromCharCode(9)
+        else if lxReadString_e == "r"
+            lxReadString_literal += fromCharCode(13)
+        else if lxReadString_e == "0"
+            lxReadString_literal += fromCharCode(0)
+        else if lxReadString_e == "u"
+            assert(lxPeek() == "\{", "Invalid unicode escape")
+            lxAdvance()
+            lxReadString_hex = ""
+            lxReadString_closed = false
+            while lxPos < len(lxSrc)
+            lxReadString_h = lxAdvance()
+            if lxReadString_h == "\}"
+                lxReadString_closed = true
+                break
+            end
+            lxReadString_hex += lxReadString_h
+        end
+        assert(lxReadString_closed, "Invalid unicode escape")
+        lxReadString_literal += fromCharCode(parseInt(lxReadString_hex, 16))
+    else
+        lxReadString_literal += lxReadString_e
+    end
+else if lxReadString_c == "\{"
+    if lxPeek() == "\{"
+        lxAdvance()
+        lxReadString_literal += "\{"
+    else
+        if lxReadString_literal != ""
+        lxReadString_parts.add({type: "Literal", value: lxReadString_literal})
+        lxReadString_literal = ""
+    end
+    lxReadString_exprLine = lxLine
+    lxReadString_exprCol = lxCol
+    lxReadString_exprTokens = lxReadInterpolation(lxReadString_exprLine, lxReadString_exprCol)
+    assert(len(lxReadString_exprTokens) > 0 and lxReadString_exprTokens[0].type != "Eof", "Empty interpolation")
+    lxReadString_parts.add({type: "Expr", value: lxReadString_exprTokens})
+end
+else if lxReadString_c == "\}"
+if lxPeek() == "\}"
+    lxAdvance()
+end
+lxReadString_literal += "\}"
+else
+    lxReadString_literal += lxReadString_c
+end
+end
+if len(lxReadString_parts) == 0
+    return lxMake("String", lxReadString_literal)
+end
+if lxReadString_literal != ""
+    lxReadString_parts.add({type: "Literal", value: lxReadString_literal})
+end
+return lxMake("Interpolated", lxReadString_parts)
+end
+function lxReadIdentifier()
+    lxReadIdentifier_s = ""
+    while lxPos < len(lxSrc)
+    lxReadIdentifier_c = lxSrc[lxPos]
+    if lxIsLetter(lxReadIdentifier_c) or lxIsDigit(lxReadIdentifier_c) or lxReadIdentifier_c == "_"
+        lxReadIdentifier_s += lxReadIdentifier_c
+        lxAdvance()
+    else
+        break
+    end
+end
+lxReadIdentifier_keywords = {if: "If", else: "Else", end: "End", function: "Function", return: "Return", repeat: "Repeat", while: "While", for: "For", in: "In", import: "Import", and: "And", or: "Or", not: "Not", break: "Break", continue: "Continue", div: "Div", true: "True", false: "False", null: "Null"}
+lxReadIdentifier_kw = lxReadIdentifier_keywords.get(lxReadIdentifier_s)
+if lxReadIdentifier_kw != null
+    return lxMake(lxReadIdentifier_kw, lxReadIdentifier_s)
+end
+return lxMake("Identifier", lxReadIdentifier_s)
+end
+function lxReadSymbol()
+    lxReadSymbol_c = lxAdvance()
+    if lxReadSymbol_c == "+"
+        if lxPeek() == "+"
+            lxAdvance()
+            return lxMake("PlusPlus", null)
+        end
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("+")
+        end
+        return lxMake("Plus", null)
+    end
+    if lxReadSymbol_c == "-"
+        if lxPeek() == "-"
+            lxAdvance()
+            return lxMake("MinusMinus", null)
+        end
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("-")
+        end
+        return lxMake("Minus", null)
+    end
+    if lxReadSymbol_c == "*"
+        if lxPeek() == "*" and lxPeekAt(1) == "="
+            lxAdvance()
+            lxAdvance()
+            return lxMakeCompound("**")
+        end
+        if lxPeek() == "*"
+            lxAdvance()
+            return lxMake("Pow", null)
+        end
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("*")
+        end
+        return lxMake("Star", null)
+    end
+    if lxReadSymbol_c == "/"
+        if lxPeek() == "/" and lxPeekAt(1) == "="
+            lxAdvance()
+            lxAdvance()
+            return lxMakeCompound("//")
+        end
+        if lxPeek() == "/"
+            lxAdvance()
+            return lxMake("FloorDiv", null)
+        end
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("/")
+        end
+        return lxMake("Slash", null)
+    end
+    if lxReadSymbol_c == "%"
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("%")
+        end
+        return lxMake("Percent", null)
+    end
+    if lxReadSymbol_c == "("
+        return lxMake("LParen", null)
+    end
+    if lxReadSymbol_c == ")"
+        return lxMake("RParen", null)
+    end
+    if lxReadSymbol_c == "["
+        return lxMake("LBracket", null)
+    end
+    if lxReadSymbol_c == "]"
+        return lxMake("RBracket", null)
+    end
+    if lxReadSymbol_c == "\{"
+        return lxMake("LBrace", null)
+    end
+    if lxReadSymbol_c == "\}"
+        return lxMake("RBrace", null)
+    end
+    if lxReadSymbol_c == "."
+        return lxMake("Dot", null)
+    end
+    if lxReadSymbol_c == ","
+        return lxMake("Comma", null)
+    end
+    if lxReadSymbol_c == ":"
+        return lxMake("Colon", null)
+    end
+    if lxReadSymbol_c == "&"
+        if lxPeek() == "&"
+            lxAdvance()
+            return lxMake("AndAlso", null)
+        end
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("&")
+        end
+        return lxMake("BitAnd", null)
+    end
+    if lxReadSymbol_c == "|"
+        if lxPeek() == "|"
+            lxAdvance()
+            return lxMake("OrElse", null)
+        end
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("|")
+        end
+        return lxMake("BitOr", null)
+    end
+    if lxReadSymbol_c == "^"
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMakeCompound("^")
+        end
+        return lxMake("BitXor", null)
+    end
+    if lxReadSymbol_c == "~"
+        return lxMake("BitNot", null)
+    end
+    if lxReadSymbol_c == "?"
+        if lxPeek() == "?"
+            lxAdvance()
+            return lxMake("NullCoalesce", null)
+        end
+        return lxMake("Question", null)
+    end
+    if lxReadSymbol_c == "="
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMake("Eq", null)
+        end
+        return lxMake("Assign", null)
+    end
+    if lxReadSymbol_c == "!"
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMake("NotEq", null)
+        end
+        return lxMake("Bang", null)
+    end
+    if lxReadSymbol_c == ">"
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMake("GtEq", null)
+        end
+        if lxPeek() == ">" and lxPeekAt(1) == "="
+            lxAdvance()
+            lxAdvance()
+            return lxMakeCompound(">>")
+        end
+        if lxPeek() == ">"
+            lxAdvance()
+            return lxMake("Shr", null)
+        end
+        return lxMake("Gt", null)
+    end
+    if lxReadSymbol_c == "<"
+        if lxPeek() == "="
+            lxAdvance()
+            return lxMake("LtEq", null)
+        end
+        if lxPeek() == "<" and lxPeekAt(1) == "="
+            lxAdvance()
+            lxAdvance()
+            return lxMakeCompound("<<")
+        end
+        if lxPeek() == "<"
+            lxAdvance()
+            return lxMake("Shl", null)
+        end
+        return lxMake("Lt", null)
+    end
+    assert(false, "Unexpected character '" + lxReadSymbol_c + "'")
+end
+function lex(source)
+    lxSrc = source
+    if len(lxSrc) > 0 and charCode(lxSrc[0]) == 65279
+        lxSrc = lxSrc.slice(1, len(lxSrc))
+    end
+    lxPos = 0
+    lxLine = 1
+    lxCol = 1
+    lxTokens = []
+    while true
+    lxSkipWhitespaceAndComments()
+    if lxPos >= len(lxSrc)
+        lxTokLine = lxLine
+        lxTokCol = lxCol
+        lxTokens.add(lxMake("Eof", null))
+        break
+    end
+    lex_c = lxSrc[lxPos]
+    if lex_c == "\n"
+        lxTokLine = lxLine
+        lxTokCol = lxCol
+        lxAdvance()
+        lxTokens.add(lxMake("Newline", null))
+        continue
+    end
+    if lex_c == "#"
+        lxSkipToEndOfLine()
+        continue
+    end
+    if lex_c == "/" and lxPeekAt(1) == "/" and lxPeekAt(2) != "="
+        lex_previousEnds = false
+        if len(lxTokens) > 0
+            lex_previousEnds = lxEndsExpression(lxTokens[len(lxTokens) - 1].type) and lxTokens[len(lxTokens) - 1].line == lxLine
+        end
+        if not lex_previousEnds
+            lxSkipToEndOfLine()
+            continue
+        end
+    end
+    lxTokLine = lxLine
+    lxTokCol = lxCol
+    if lxIsDigit(lex_c)
+        lxTokens.add(lxReadNumber())
+    else if lex_c == "\""
+        lxTokens.add(lxReadString())
+    else if lxIsLetter(lex_c) or lex_c == "_"
+        lxTokens.add(lxReadIdentifier())
+    else
+        lxTokens.add(lxReadSymbol())
+    end
+end
+return lxTokens
+end
+$- ---------------------------------------------------------------------------
+   Parser state. The parser mirrors src/parser.rs and produces the AST JSON
+   object shape from docs/selfhost/CONTRACT.md section 6.
+   --------------------------------------------------------------------------- -$
+paTokens = []
+paPos = 0
+paLoopDepth = 0
+function paPeek()
+    return paTokens[paPos]
+end
+function paType()
+    return paTokens[paPos].type
+end
+function paSpan()
+    paSpan_tok = paPeek()
+    return {line: paSpan_tok.line, col: paSpan_tok.col}
+end
+function paSpanAt(paSpanAt_line, paSpanAt_col)
+    return {line: paSpanAt_line, col: paSpanAt_col}
+end
+function paAdvance()
+    paAdvance_tok = paPeek()
+    if paAdvance_tok.type != "Eof"
+        paPos += 1
+    end
+    return paAdvance_tok
+end
+function paCheck(paCheck_type)
+    return paType() == paCheck_type
+end
+function paMatches(paMatches_type)
+    if paCheck(paMatches_type)
+        paAdvance()
+        return true
+    end
+    return false
+end
+function paExpect(paExpect_type, paExpect_context)
+    assert(paCheck(paExpect_type), "Expected " + paExpect_type + " " + paExpect_context + ", found " + paType())
+    return paAdvance()
+end
+function paSkipNewlines()
+    while paCheck("Newline")
+    paAdvance()
+end
+end
+function paEndOfStatement()
+    paEndOfStatement_t = paType()
+    assert(paEndOfStatement_t == "Newline" or paEndOfStatement_t == "Eof", "Expected end of line, found " + paEndOfStatement_t)
+    paSkipNewlines()
+end
+function paAtEnd()
+    return paCheck("Eof")
+end
+function paKeywordName(paKeywordName_type)
+    paKeywordName_names = {True: "true", False: "false", Null: "null", If: "if", Else: "else", End: "end", Function: "function", Return: "return", Repeat: "repeat", While: "while", For: "for", In: "in", Import: "import", And: "and", Or: "or", Not: "not", Break: "break", Continue: "continue", Div: "div"}
+    return paKeywordName_names.get(paKeywordName_type)
+end
+function paExpectIdentifier(paExpectIdentifier_context)
+    assert(paCheck("Identifier"), "Expected identifier " + paExpectIdentifier_context + ", found " + paType())
+    return paAdvance().value
+end
+function paExpectMemberName(paExpectMemberName_context)
+    paExpectMemberName_t = paType()
+    paExpectMemberName_name = paPeek().value
+    if paExpectMemberName_t != "Identifier"
+        paExpectMemberName_name = paKeywordName(paExpectMemberName_t)
+    end
+    assert(paExpectMemberName_name != null, "Expected member name " + paExpectMemberName_context + ", found " + paExpectMemberName_t)
+    paAdvance()
+    return paExpectMemberName_name
+end
+function paRequireInLoop(paRequireInLoop_word)
+    assert(paLoopDepth > 0, "'" + paRequireInLoop_word + "' can only be used inside a loop")
+end
+function paRepeatIsCall()
+    if paType() != "Repeat"
+        return false
+    end
+    if paPos + 1 >= len(paTokens) or paTokens[paPos + 1].type != "LParen"
+        return false
+    end
+    paRepeatIsCall_depth = 0
+    paRepeatIsCall_i = paPos + 1
+    while paRepeatIsCall_i < len(paTokens)
+    paRepeatIsCall_t = paTokens[paRepeatIsCall_i].type
+    if paRepeatIsCall_t == "LParen"
+        paRepeatIsCall_depth += 1
+    else if paRepeatIsCall_t == "RParen"
+        paRepeatIsCall_depth -= 1
+        if paRepeatIsCall_depth == 0
+            return false
+        end
+    else if paRepeatIsCall_t == "Comma" and paRepeatIsCall_depth == 1
+        return true
+    end
+    paRepeatIsCall_i += 1
+end
+return false
+end
+$- AST builders: field names and value types match the JSON schema exactly. -$
+function eNumber(eNumber_value)
+    return {kind: "Number", value: eNumber_value}
+end
+function eString(eString_value)
+    return {kind: "String", value: eString_value}
+end
+function eBool(eBool_value)
+    return {kind: "Bool", value: eBool_value}
+end
+function eNull()
+    return {kind: "Null"}
+end
+function eVariable(eVariable_name)
+    return {kind: "Variable", name: eVariable_name}
+end
+function eProperty(eProperty_base, eProperty_name)
+    return {kind: "PropertyAccess", base: eProperty_base, name: eProperty_name}
+end
+function eIndex(eIndex_base, eIndex_index)
+    return {kind: "Index", base: eIndex_base, index: eIndex_index}
+end
+function eArray(eArray_items)
+    return {kind: "Array", items: eArray_items}
+end
+function eObject(eObject_fields)
+    return {kind: "Object", fields: eObject_fields}
+end
+function eCall(eCall_callee, eCall_args)
+    return {kind: "Call", callee: eCall_callee, args: eCall_args}
+end
+function eMethodCall(eMethodCall_receiver, eMethodCall_name, eMethodCall_args)
+    return {kind: "MethodCall", receiver: eMethodCall_receiver, name: eMethodCall_name, args: eMethodCall_args}
+end
+function eBinary(eBinary_op, eBinary_left, eBinary_right, eBinary_span)
+    return {kind: "Binary", op: eBinary_op, left: eBinary_left, right: eBinary_right, span: eBinary_span}
+end
+function eUnary(eUnary_op, eUnary_operand, eUnary_span)
+    return {kind: "Unary", op: eUnary_op, operand: eUnary_operand, span: eUnary_span}
+end
+function eTernary(eTernary_condition, eTernary_whenTrue, eTernary_whenFalse, eTernary_span)
+    return {kind: "Ternary", condition: eTernary_condition, whenTrue: eTernary_whenTrue, whenFalse: eTernary_whenFalse, span: eTernary_span}
+end
+function ePostfix(ePostfix_op, ePostfix_target, ePostfix_span)
+    return {kind: "Postfix", op: ePostfix_op, target: ePostfix_target, span: ePostfix_span}
+end
+function aVariable(aVariable_name)
+    return {kind: "Variable", name: aVariable_name}
+end
+function aProperty(aProperty_base, aProperty_name)
+    return {kind: "Property", base: aProperty_base, name: aProperty_name}
+end
+function aIndex(aIndex_base, aIndex_index)
+    return {kind: "Index", base: aIndex_base, index: aIndex_index}
+end
+function sAssign(sAssign_span, sAssign_target, sAssign_value)
+    return {kind: "Assign", span: sAssign_span, target: sAssign_target, value: sAssign_value}
+end
+function sCompoundAssign(sCompoundAssign_span, sCompoundAssign_target, sCompoundAssign_op, sCompoundAssign_value)
+    return {kind: "CompoundAssign", span: sCompoundAssign_span, target: sCompoundAssign_target, op: sCompoundAssign_op, value: sCompoundAssign_value}
+end
+function sExprStmt(sExprStmt_span, sExprStmt_expr)
+    return {kind: "ExprStmt", span: sExprStmt_span, expr: sExprStmt_expr}
+end
+function sIf(sIf_span, sIf_branches, sIf_elseBody)
+    return {kind: "If", span: sIf_span, branches: sIf_branches, else: sIf_elseBody}
+end
+function sFunctionDef(sFunctionDef_span, sFunctionDef_name, sFunctionDef_params, sFunctionDef_body)
+    return {kind: "FunctionDef", span: sFunctionDef_span, name: sFunctionDef_name, params: sFunctionDef_params, body: sFunctionDef_body}
+end
+function sReturn(sReturn_span, sReturn_value)
+    return {kind: "Return", span: sReturn_span, value: sReturn_value}
+end
+function sRepeat(sRepeat_span, sRepeat_count, sRepeat_body)
+    return {kind: "Repeat", span: sRepeat_span, count: sRepeat_count, body: sRepeat_body}
+end
+function sWhile(sWhile_span, sWhile_condition, sWhile_body)
+    return {kind: "While", span: sWhile_span, condition: sWhile_condition, body: sWhile_body}
+end
+function sForIn(sForIn_span, sForIn_name, sForIn_iterable, sForIn_body)
+    return {kind: "ForIn", span: sForIn_span, name: sForIn_name, iterable: sForIn_iterable, body: sForIn_body}
+end
+function sBreak(sBreak_span)
+    return {kind: "Break", span: sBreak_span}
+end
+function sContinue(sContinue_span)
+    return {kind: "Continue", span: sContinue_span}
+end
+function sImport(sImport_span, sImport_name)
+    return {kind: "Import", span: sImport_span, name: sImport_name}
+end
+function paToAssignable(paToAssignable_expr, paToAssignable_span)
+    if paToAssignable_expr.kind == "Variable"
+        return aVariable(paToAssignable_expr.name)
+    end
+    if paToAssignable_expr.kind == "PropertyAccess"
+        return aProperty(paToAssignable_expr.base, paToAssignable_expr.name)
+    end
+    if paToAssignable_expr.kind == "Index"
+        return aIndex(paToAssignable_expr.base, paToAssignable_expr.index)
+    end
+    assert(false, "Invalid assignment target")
+end
+function paIsAssignable(paIsAssignable_expr)
+    return paIsAssignable_expr.kind == "Variable" or paIsAssignable_expr.kind == "PropertyAccess" or paIsAssignable_expr.kind == "Index"
+end
+function paParseBlockUntil(paParseBlockUntil_terminators)
+    paParseBlockUntil_stmts = []
+    paSkipNewlines()
+    while not paAtEnd() and paParseBlockUntil_terminators.indexOf(paType()) < 0
+    paParseBlockUntil_stmts.add(paParseStatement())
+    paSkipNewlines()
+end
+return paParseBlockUntil_stmts
+end
+function paParseIf()
+    paParseIf_span = paSpan()
+    paAdvance()
+    paParseIf_condition = paParseExpression()
+    paEndOfStatement()
+    paParseIf_body = paParseBlockUntil(["Else", "End"])
+    paParseIf_branches = [{condition: paParseIf_condition, body: paParseIf_body}]
+    paParseIf_elseBody = null
+    while paCheck("Else")
+    paAdvance()
+    if paCheck("If")
+        paAdvance()
+        paParseIf_condition = paParseExpression()
+        paEndOfStatement()
+        paParseIf_body = paParseBlockUntil(["Else", "End"])
+        paParseIf_branches.add({condition: paParseIf_condition, body: paParseIf_body})
+    else
+        paEndOfStatement()
+        paParseIf_elseBody = paParseBlockUntil(["End"])
+        break
+    end
+end
+paExpect("End", "to close 'if'")
+paEndOfStatement()
+return sIf(paParseIf_span, paParseIf_branches, paParseIf_elseBody)
+end
+function paParseFunctionDef()
+    paParseFunctionDef_span = paSpan()
+    paAdvance()
+    paParseFunctionDef_name = paExpectIdentifier("for function name")
+    paExpect("LParen", "after function name")
+    paParseFunctionDef_params = []
+    if not paCheck("RParen")
+        while true
+        paParseFunctionDef_params.add(paExpectIdentifier("in parameter list"))
+        if not paMatches("Comma")
+            break
+        end
+    end
+end
+paExpect("RParen", "to close parameter list")
+paEndOfStatement()
+paParseFunctionDef_outerDepth = paLoopDepth
+paLoopDepth = 0
+paParseFunctionDef_body = paParseBlockUntil(["End"])
+paLoopDepth = paParseFunctionDef_outerDepth
+paExpect("End", "to close function")
+paEndOfStatement()
+return sFunctionDef(paParseFunctionDef_span, paParseFunctionDef_name, paParseFunctionDef_params, paParseFunctionDef_body)
+end
+function paParseRepeat()
+    paParseRepeat_span = paSpan()
+    paAdvance()
+    paParseRepeat_count = paParseExpression()
+    paEndOfStatement()
+    paLoopDepth += 1
+    paParseRepeat_body = paParseBlockUntil(["End"])
+    paLoopDepth -= 1
+    paExpect("End", "to close 'repeat'")
+    paEndOfStatement()
+    return sRepeat(paParseRepeat_span, paParseRepeat_count, paParseRepeat_body)
+end
+function paParseWhile()
+    paParseWhile_span = paSpan()
+    paAdvance()
+    paParseWhile_condition = paParseExpression()
+    paEndOfStatement()
+    paLoopDepth += 1
+    paParseWhile_body = paParseBlockUntil(["End"])
+    paLoopDepth -= 1
+    paExpect("End", "to close 'while'")
+    paEndOfStatement()
+    return sWhile(paParseWhile_span, paParseWhile_condition, paParseWhile_body)
+end
+function paParseFor()
+    paParseFor_span = paSpan()
+    paAdvance()
+    paParseFor_name = paExpectIdentifier("after 'for'")
+    paExpect("In", "after loop variable")
+    paParseFor_iterable = paParseExpression()
+    paEndOfStatement()
+    paLoopDepth += 1
+    paParseFor_body = paParseBlockUntil(["End"])
+    paLoopDepth -= 1
+    paExpect("End", "to close 'for'")
+    paEndOfStatement()
+    return sForIn(paParseFor_span, paParseFor_name, paParseFor_iterable, paParseFor_body)
+end
+function paParseAssignOrExpr()
+    paParseAssignOrExpr_span = paSpan()
+    paParseAssignOrExpr_expr = paParseExpression()
+    if paMatches("Assign")
+        paParseAssignOrExpr_value = paParseExpression()
+        paEndOfStatement()
+        return sAssign(paParseAssignOrExpr_span, paToAssignable(paParseAssignOrExpr_expr, paParseAssignOrExpr_span), paParseAssignOrExpr_value)
+    end
+    if paCheck("CompoundAssign")
+        paParseAssignOrExpr_opSpan = paSpan()
+        paParseAssignOrExpr_op = paPeek().op
+        paAdvance()
+        paParseAssignOrExpr_value = paParseExpression()
+        paEndOfStatement()
+        return sCompoundAssign(paParseAssignOrExpr_opSpan, paToAssignable(paParseAssignOrExpr_expr, paParseAssignOrExpr_opSpan), paParseAssignOrExpr_op, paParseAssignOrExpr_value)
+    end
+    paEndOfStatement()
+    return sExprStmt(paParseAssignOrExpr_span, paParseAssignOrExpr_expr)
+end
+function paParseStatement()
+    paParseStatement_span = paSpan()
+    paParseStatement_t = paType()
+    if paParseStatement_t == "If"
+        return paParseIf()
+    end
+    if paParseStatement_t == "Function"
+        return paParseFunctionDef()
+    end
+    if paParseStatement_t == "Return"
+        paAdvance()
+        if paCheck("Newline") or paCheck("Eof")
+            paEndOfStatement()
+            return sReturn(paParseStatement_span, null)
+        end
+        paParseStatement_value = paParseExpression()
+        paEndOfStatement()
+        return sReturn(paParseStatement_span, paParseStatement_value)
+    end
+    if paParseStatement_t == "Repeat" and paRepeatIsCall()
+        return paParseAssignOrExpr()
+    end
+    if paParseStatement_t == "Repeat"
+        return paParseRepeat()
+    end
+    if paParseStatement_t == "While"
+        return paParseWhile()
+    end
+    if paParseStatement_t == "For"
+        return paParseFor()
+    end
+    if paParseStatement_t == "Break"
+        paAdvance()
+        paRequireInLoop("break")
+        paEndOfStatement()
+        return sBreak(paParseStatement_span)
+    end
+    if paParseStatement_t == "Continue"
+        paAdvance()
+        paRequireInLoop("continue")
+        paEndOfStatement()
+        return sContinue(paParseStatement_span)
+    end
+    if paParseStatement_t == "Import"
+        paAdvance()
+        paParseStatement_name = paExpectIdentifier("after 'import'")
+        paEndOfStatement()
+        return sImport(paParseStatement_span, paParseStatement_name)
+    end
+    return paParseAssignOrExpr()
+end
+function paParseExpression()
+    paParseExpression_condition = paParseCoalesce()
+    if paCheck("Question")
+        paParseExpression_span = paSpan()
+        paAdvance()
+        paParseExpression_whenTrue = paParseExpression()
+        paExpect("Colon", "after the true branch of '?'")
+        paParseExpression_whenFalse = paParseExpression()
+        return eTernary(paParseExpression_condition, paParseExpression_whenTrue, paParseExpression_whenFalse, paParseExpression_span)
+    end
+    return paParseExpression_condition
+end
+function paParseCoalesce()
+    paParseCoalesce_left = paParseOr()
+    if paCheck("NullCoalesce")
+        paParseCoalesce_span = paSpan()
+        paAdvance()
+        paParseCoalesce_right = paParseCoalesce()
+        return eBinary("??", paParseCoalesce_left, paParseCoalesce_right, paParseCoalesce_span)
+    end
+    return paParseCoalesce_left
+end
+function paParseOr()
+    paParseOr_left = paParseBitOr()
+    while true
+    paParseOr_t = paType()
+    if paParseOr_t == "Or" or paParseOr_t == "OrElse"
+        paParseOr_op = "or"
+    else
+        break
+    end
+    paParseOr_span = paSpan()
+    paAdvance()
+    paParseOr_right = paParseBitOr()
+    paParseOr_left = eBinary(paParseOr_op, paParseOr_left, paParseOr_right, paParseOr_span)
+end
+return paParseOr_left
+end
+function paParseBitOr()
+    paParseBitOr_left = paParseBitXor()
+    while paCheck("BitOr")
+    paParseBitOr_span = paSpan()
+    paAdvance()
+    paParseBitOr_right = paParseBitXor()
+    paParseBitOr_left = eBinary("|", paParseBitOr_left, paParseBitOr_right, paParseBitOr_span)
+end
+return paParseBitOr_left
+end
+function paParseBitXor()
+    paParseBitXor_left = paParseBitAnd()
+    while paCheck("BitXor")
+    paParseBitXor_span = paSpan()
+    paAdvance()
+    paParseBitXor_right = paParseBitAnd()
+    paParseBitXor_left = eBinary("^", paParseBitXor_left, paParseBitXor_right, paParseBitXor_span)
+end
+return paParseBitXor_left
+end
+function paParseBitAnd()
+    paParseBitAnd_left = paParseShift()
+    while paCheck("BitAnd")
+    paParseBitAnd_span = paSpan()
+    paAdvance()
+    paParseBitAnd_right = paParseShift()
+    paParseBitAnd_left = eBinary("&", paParseBitAnd_left, paParseBitAnd_right, paParseBitAnd_span)
+end
+return paParseBitAnd_left
+end
+function paParseShift()
+    paParseShift_left = paParseAnd()
+    while true
+    paParseShift_t = paType()
+    if paParseShift_t == "Shl"
+        paParseShift_op = "<<"
+    else if paParseShift_t == "Shr"
+        paParseShift_op = ">>"
+    else
+        break
+    end
+    paParseShift_span = paSpan()
+    paAdvance()
+    paParseShift_right = paParseAnd()
+    paParseShift_left = eBinary(paParseShift_op, paParseShift_left, paParseShift_right, paParseShift_span)
+end
+return paParseShift_left
+end
+function paParseAnd()
+    paParseAnd_left = paParseNot()
+    while true
+    paParseAnd_t = paType()
+    if paParseAnd_t == "And" or paParseAnd_t == "AndAlso"
+        paParseAnd_op = "and"
+    else
+        break
+    end
+    paParseAnd_span = paSpan()
+    paAdvance()
+    paParseAnd_right = paParseNot()
+    paParseAnd_left = eBinary(paParseAnd_op, paParseAnd_left, paParseAnd_right, paParseAnd_span)
+end
+return paParseAnd_left
+end
+function paParseNot()
+    if paCheck("Not") or paCheck("Bang")
+        paParseNot_span = paSpan()
+        paAdvance()
+        paParseNot_operand = paParseNot()
+        return eUnary("not", paParseNot_operand, paParseNot_span)
+    end
+    return paParseComparison()
+end
+function paParseComparison()
+    paParseComparison_left = paParseAdditive()
+    while true
+    paParseComparison_t = paType()
+    if paParseComparison_t != "Eq" and paParseComparison_t != "NotEq" and paParseComparison_t != "Gt" and paParseComparison_t != "Lt" and paParseComparison_t != "GtEq" and paParseComparison_t != "LtEq"
+        break
+    end
+    paParseComparison_op = paBinOpText(paParseComparison_t)
+    paParseComparison_span = paSpan()
+    paAdvance()
+    paParseComparison_right = paParseAdditive()
+    paParseComparison_left = eBinary(paParseComparison_op, paParseComparison_left, paParseComparison_right, paParseComparison_span)
+end
+return paParseComparison_left
+end
+function paParseAdditive()
+    paParseAdditive_left = paParseMultiplicative()
+    while true
+    paParseAdditive_t = paType()
+    if paParseAdditive_t == "Plus"
+        paParseAdditive_op = "+"
+    else if paParseAdditive_t == "Minus"
+        paParseAdditive_op = "-"
+    else
+        break
+    end
+    paParseAdditive_span = paSpan()
+    paAdvance()
+    paParseAdditive_right = paParseMultiplicative()
+    paParseAdditive_left = eBinary(paParseAdditive_op, paParseAdditive_left, paParseAdditive_right, paParseAdditive_span)
+end
+return paParseAdditive_left
+end
+function paParseMultiplicative()
+    paParseMultiplicative_left = paParseUnary()
+    while true
+    paParseMultiplicative_t = paType()
+    if paParseMultiplicative_t == "Star"
+        paParseMultiplicative_op = "*"
+    else if paParseMultiplicative_t == "Slash"
+        paParseMultiplicative_op = "/"
+    else if paParseMultiplicative_t == "Percent"
+        paParseMultiplicative_op = "%"
+    else if paParseMultiplicative_t == "FloorDiv" or paParseMultiplicative_t == "Div"
+        paParseMultiplicative_op = "//"
+    else
+        break
+    end
+    paParseMultiplicative_span = paSpan()
+    paAdvance()
+    paParseMultiplicative_right = paParseUnary()
+    paParseMultiplicative_left = eBinary(paParseMultiplicative_op, paParseMultiplicative_left, paParseMultiplicative_right, paParseMultiplicative_span)
+end
+return paParseMultiplicative_left
+end
+function paBinOpText(paBinOpText_type)
+    paBinOpText_ops = {Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%", FloorDiv: "//", Div: "//", Pow: "**", BitAnd: "&", BitOr: "|", BitXor: "^", Shl: "<<", Shr: ">>", Eq: "==", NotEq: "!=", Gt: ">", Lt: "<", GtEq: ">=", LtEq: "<=", And: "and", Or: "or", AndAlso: "and", OrElse: "or", NullCoalesce: "??"}
+    return paBinOpText_ops.get(paBinOpText_type)
+end
+function paParseUnary()
+    paParseUnary_t = paType()
+    if paParseUnary_t == "Minus" or paParseUnary_t == "Not" or paParseUnary_t == "Bang" or paParseUnary_t == "BitNot"
+        if paParseUnary_t == "Minus"
+            paParseUnary_op = "-"
+        else if paParseUnary_t == "BitNot"
+            paParseUnary_op = "~"
+        else
+            paParseUnary_op = "not"
+        end
+        paParseUnary_span = paSpan()
+        paAdvance()
+        paParseUnary_operand = paParseUnary()
+        return eUnary(paParseUnary_op, paParseUnary_operand, paParseUnary_span)
+    end
+    return paParsePower()
+end
+function paParsePower()
+    paParsePower_left = paParsePostfix()
+    if paCheck("Pow")
+        paParsePower_span = paSpan()
+        paAdvance()
+        paParsePower_right = paParseUnary()
+        return eBinary("**", paParsePower_left, paParsePower_right, paParsePower_span)
+    end
+    return paParsePower_left
+end
+function paParsePostfix()
+    paParsePostfix_expr = paParsePrimary()
+    while true
+    if paMatches("Dot")
+        paParsePostfix_name = paExpectMemberName("after '.'")
+        if paCheck("LParen")
+            paParsePostfix_args = paParseCallArgs()
+            paParsePostfix_expr = eMethodCall(paParsePostfix_expr, paParsePostfix_name, paParsePostfix_args)
+        else
+            paParsePostfix_expr = eProperty(paParsePostfix_expr, paParsePostfix_name)
+        end
+    else if paMatches("LBracket")
+        paParsePostfix_index = paParseExpression()
+        paExpect("RBracket", "to close index expression")
+        paParsePostfix_expr = eIndex(paParsePostfix_expr, paParsePostfix_index)
+    else if paCheck("LParen")
+        paParsePostfix_args = paParseCallArgs()
+        paParsePostfix_expr = eCall(paParsePostfix_expr, paParsePostfix_args)
+    else if paCheck("PlusPlus") or paCheck("MinusMinus")
+        paParsePostfix_span = paSpan()
+        paParsePostfix_op = "++"
+        if paCheck("MinusMinus")
+            paParsePostfix_op = "--"
+        end
+        assert(paIsAssignable(paParsePostfix_expr), "Invalid assignment target")
+        paAdvance()
+        paParsePostfix_expr = ePostfix(paParsePostfix_op, paParsePostfix_expr, paParsePostfix_span)
+    else
+        break
+    end
+end
+return paParsePostfix_expr
+end
+function paParseCallArgs()
+    paExpect("LParen", "to start argument list")
+    paParseCallArgs_args = []
+    if not paCheck("RParen")
+        while true
+        paParseCallArgs_args.add(paParseExpression())
+        if not paMatches("Comma")
+            break
+        end
+    end
+end
+paExpect("RParen", "to close argument list")
+return paParseCallArgs_args
+end
+function paParseArray()
+    paExpect("LBracket", "to start array literal")
+    paSkipNewlines()
+    paParseArray_items = []
+    if not paCheck("RBracket")
+        while true
+        paSkipNewlines()
+        paParseArray_items.add(paParseExpression())
+        paSkipNewlines()
+        if not paMatches("Comma")
+            break
+        end
+        paSkipNewlines()
+    end
+end
+paSkipNewlines()
+paExpect("RBracket", "to close array literal")
+return eArray(paParseArray_items)
+end
+function paParseObject()
+    paExpect("LBrace", "to start object literal")
+    paSkipNewlines()
+    paParseObject_fields = []
+    if not paCheck("RBrace")
+        while true
+        paSkipNewlines()
+        paParseObject_name = paExpectMemberName("as object key")
+        paExpect("Colon", "after object key")
+        paSkipNewlines()
+        paParseObject_value = paParseExpression()
+        paParseObject_fields.add({name: paParseObject_name, value: paParseObject_value})
+        paSkipNewlines()
+        if not paMatches("Comma")
+            break
+        end
+        paSkipNewlines()
+    end
+end
+paSkipNewlines()
+paExpect("RBrace", "to close object literal")
+return eObject(paParseObject_fields)
+end
+function paParseInterpolated(paParseInterpolated_parts, paParseInterpolated_outerSpan)
+    paParseInterpolated_hasExpression = false
+    for paParseInterpolated_part in paParseInterpolated_parts
+        if paParseInterpolated_part.type == "Expr"
+            paParseInterpolated_hasExpression = true
+        end
+    end
+    paParseInterpolated_acc = null
+    if paParseInterpolated_hasExpression
+        paParseInterpolated_acc = eString("")
+    end
+    for paParseInterpolated_part in paParseInterpolated_parts
+        if paParseInterpolated_part.type == "Literal"
+            paParseInterpolated_expr = eString(paParseInterpolated_part.value)
+            paParseInterpolated_span = paParseInterpolated_outerSpan
+        else
+            paParseInterpolated_innerTokens = paParseInterpolated_part.value
+            paParseInterpolated_span = paParseInterpolated_outerSpan
+            for paParseInterpolated_tok in paParseInterpolated_innerTokens
+                if paParseInterpolated_tok.type != "Newline" and paParseInterpolated_tok.type != "Eof"
+                    paParseInterpolated_span = paSpanAt(paParseInterpolated_tok.line, paParseInterpolated_tok.col)
+                    break
+                end
+            end
+            paParseInterpolated_savedTokens = paTokens
+            paParseInterpolated_savedPos = paPos
+            paParseInterpolated_savedLoopDepth = paLoopDepth
+            paTokens = paParseInterpolated_innerTokens
+            paPos = 0
+            paLoopDepth = 0
+            paSkipNewlines()
+            paParseInterpolated_expr = paParseExpression()
+            paSkipNewlines()
+            assert(paAtEnd(), "Unexpected token in interpolation")
+            paTokens = paParseInterpolated_savedTokens
+            paPos = paParseInterpolated_savedPos
+            paLoopDepth = paParseInterpolated_savedLoopDepth
+        end
+        if paParseInterpolated_acc == null
+            paParseInterpolated_acc = paParseInterpolated_expr
+        else
+            paParseInterpolated_acc = eBinary("+", paParseInterpolated_acc, paParseInterpolated_expr, paParseInterpolated_span)
+        end
+    end
+    if paParseInterpolated_acc == null
+        return eString("")
+    end
+    return paParseInterpolated_acc
+end
+function paParsePrimary()
+    paParsePrimary_span = paSpan()
+    paParsePrimary_nextIsCall = false
+    if paPos + 1 < len(paTokens) and paTokens[paPos + 1].type == "LParen"
+        paParsePrimary_nextIsCall = true
+    end
+    paParsePrimary_t = paType()
+    paParsePrimary_value = paPeek().value
+    if paParsePrimary_t == "Number"
+        paAdvance()
+        return eNumber(paParsePrimary_value)
+    end
+    if paParsePrimary_t == "String"
+        paAdvance()
+        return eString(paParsePrimary_value)
+    end
+    if paParsePrimary_t == "Interpolated"
+        paAdvance()
+        return paParseInterpolated(paParsePrimary_value, paParsePrimary_span)
+    end
+    if paParsePrimary_t == "True"
+        paAdvance()
+        return eBool(true)
+    end
+    if paParsePrimary_t == "False"
+        paAdvance()
+        return eBool(false)
+    end
+    if paParsePrimary_t == "Null"
+        paAdvance()
+        return eNull()
+    end
+    if paParsePrimary_t == "Identifier"
+        paAdvance()
+        return eVariable(paParsePrimary_value)
+    end
+    if paParsePrimary_t == "LParen"
+        paAdvance()
+        paSkipNewlines()
+        paParsePrimary_expr = paParseExpression()
+        paSkipNewlines()
+        paExpect("RParen", "to close parenthesized expression")
+        return paParsePrimary_expr
+    end
+    if paParsePrimary_t == "LBracket"
+        return paParseArray()
+    end
+    if paParsePrimary_t == "LBrace"
+        return paParseObject()
+    end
+    if paParsePrimary_nextIsCall
+        paParsePrimary_name = paKeywordName(paParsePrimary_t)
+        if paParsePrimary_name != null
+            paAdvance()
+            return eVariable(paParsePrimary_name)
+        end
+    end
+    assert(false, "Unexpected token " + paParsePrimary_t)
+end
+function parse(parse_tokens)
+    paTokens = parse_tokens
+    paPos = 0
+    paLoopDepth = 0
+    parse_statements = []
+    paSkipNewlines()
+    while not paAtEnd()
+    parse_statements.add(paParseStatement())
+    paSkipNewlines()
+end
+return {version: 1, statements: parse_statements}
+end
+$- ---------------------------------------------------------------------------
+   CLI. `args` currently contains the full process argv, so
+   `em run selfhost/compiler.enm <file>` yields
+   [em, run, selfhost/compiler.enm, <file>]. Use the last argument, and when
+   the script path is present scan for the first non-flag argument after it.
+   This also works if the parent later narrows `args` to script-only values.
+   --------------------------------------------------------------------------- -$
+argv = args()
+sourcePath = argv[len(argv) - 1]
+scriptIndex = -1
+for i in range(len(argv))
+    if argv[i].endsWith("compiler.enm")
+        scriptIndex = i
+        break
+    end
+end
+if scriptIndex >= 0
+    for i in range(scriptIndex + 1, len(argv))
+        candidate = argv[i]
+        if not candidate.startsWith("-") and candidate != ""
+            sourcePath = candidate
+            break
+        end
+    end
+end
+source = fs.read(sourcePath)
+ast = parse(lex(source))
+say(json.encode(ast))
