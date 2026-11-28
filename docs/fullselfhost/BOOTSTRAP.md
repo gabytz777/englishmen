@@ -1,10 +1,10 @@
 # Self-compilation bootstrap proof (C2)
 
 `tests/selfhost_self_compile.rs` is the round-3 proof that the toolchain can
-compile its own compile-only source. It is expected to fail on the C2 branch
-until C1 (`selfhost/bootstrap_compile.enm`), the import bridge (A1/A2), and the
-parent `--` pass-through are integrated. It must not be worked around by
-changing the commands below.
+compile its own compile-only source. After integrating C1
+(`selfhost/bootstrap_compile.enm`), the import bridge (A1/A2), B1/B2 image
+writing, and the parent `--` pass-through, both commands below run to
+completion. It must not be worked around by changing the commands.
 
 ## What the test proves
 
@@ -74,11 +74,13 @@ compile-only source takes its normal path rather than its inline self-test.
 * The Rust CLI remains the host substrate. The test depends on pass-through of
   `--` to the script's `args()`/`os.args()`; that is a parent integration step,
   together with `--write-emb` handling. The test does not use `--write-emb`.
-* Native modules (`fs`, `os`, `json`, `bytes`, `project`, `emb`) are oracles or
-  host substrate, not implementations being replaced here. The self-hosted VM
-  needs the A1 import bridge plus the A2 module objects for `fs.read`, `os.env`
-  and JSON encoding used by the bootstrap source; the pure wrappers are
-  preferred where available.
+* Native modules (`fs`, `os`, `json`, `bytes`, `project`, `emb`, `math`,
+  `cowsay`, `string`) are oracles or host substrate, not implementations being
+  replaced here. The self-hosted VM uses the A1 import bridge plus the A2 pure
+  module objects where available; native-backed wrappers cover the remaining
+  module calls. An optional `__arities` entry in the import table pads variadic
+  pure adapters such as `bytes.of`, `bytes.concat` and `bytes.slice` up to
+  Englishmen's fixed function arity.
 * Instruction and byte counts from the Rust compiler and the pure code generator
   are not guaranteed to be identical for every language construct. Equality is
   therefore asserted where it is practical and meaningful (the oracle program

@@ -149,6 +149,9 @@ Run options:
     --interpret               Use the tree-walking interpreter instead of the
                               compiler and VM
     --time                    Print elapsed wall-clock time to stderr
+    --write-emb <path>        Script flag used by self-hosting drivers to save
+                              a loadable .emb image
+    --                        Pass the remaining arguments to the script
 
 Build options:
     -o, --out <file>          Where to write the compiled program
@@ -229,13 +232,29 @@ fn cmd_run_fixed(path: &Path, rest: &[String]) -> ExitCode {
 fn cmd_run_path(path: &str, rest: &[String]) -> ExitCode {
     let interpret = rest.iter().any(|a| a == "--interpret");
     let time = rest.iter().any(|a| a == "--time");
-    if let Some(bad) = rest
-        .iter()
-        .find(|a| a.starts_with('-') && *a != "--interpret" && *a != "--time")
-    {
-        eprintln!("Error: Unknown option '{bad}'\n");
-        print_help();
-        return ExitCode::FAILURE;
+    // `--write-emb <path>` and `--` are script-level flags used by the
+    // self-hosting drivers. Let them through for source files; the interpreter
+    // builtin still sees the original argv.
+    let script_flags = Path::new(path).extension().and_then(|e| e.to_str()) != Some("emb");
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--interpret" | "--time" => i += 1,
+            "--write-emb" if script_flags => {
+                if i + 1 >= rest.len() {
+                    eprintln!("Error: '--write-emb' needs a file name\n");
+                    return ExitCode::FAILURE;
+                }
+                i += 2;
+            }
+            "--" if script_flags => i += 1,
+            bad if bad.starts_with('-') => {
+                eprintln!("Error: Unknown option '{bad}'\n");
+                print_help();
+                return ExitCode::FAILURE;
+            }
+            _ => i += 1,
+        }
     }
 
     let path = Path::new(path);

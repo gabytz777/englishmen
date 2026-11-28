@@ -12,6 +12,7 @@ $- ---------------------------------------------------------------------------
    field on compound assignments.
    --------------------------------------------------------------------------- -$
 lxSrc = ""
+lxChars = []
 lxPos = 0
 lxLine = 1
 lxCol = 1
@@ -19,20 +20,20 @@ lxTokens = []
 lxTokLine = 1
 lxTokCol = 1
 function lxPeek()
-    if lxPos >= len(lxSrc)
+    if lxPos >= len(lxChars)
         return null
     end
-    return lxSrc[lxPos]
+    return lxChars[lxPos]
 end
 function lxPeekAt(lxPeekAt_offset)
     lxPeekAt_i = lxPos + lxPeekAt_offset
-    if lxPeekAt_i >= len(lxSrc)
+    if lxPeekAt_i >= len(lxChars)
         return null
     end
-    return lxSrc[lxPeekAt_i]
+    return lxChars[lxPeekAt_i]
 end
 function lxAdvance()
-    lxAdvance_c = lxSrc[lxPos]
+    lxAdvance_c = lxChars[lxPos]
     lxPos += 1
     if charCode(lxAdvance_c) == 10
         lxLine += 1
@@ -82,13 +83,13 @@ function lxEndsExpression(lxEndsExpression_type)
     return lxEndsExpression_ends.indexOf(lxEndsExpression_type) >= 0
 end
 function lxSkipToEndOfLine()
-    while lxPos < len(lxSrc) and lxSrc[lxPos] != "\n"
+    while lxPos < len(lxChars) and lxChars[lxPos] != "\n"
     lxAdvance()
 end
 end
 function lxSkipWhitespaceAndComments()
-    while lxPos < len(lxSrc)
-    lxSkipWhitespaceAndComments_c = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxSkipWhitespaceAndComments_c = lxChars[lxPos]
     lxSkipWhitespaceAndComments_n = charCode(lxSkipWhitespaceAndComments_c)
     if lxSkipWhitespaceAndComments_n == 32 or lxSkipWhitespaceAndComments_n == 9 or lxSkipWhitespaceAndComments_n == 13
         lxAdvance()
@@ -96,8 +97,8 @@ function lxSkipWhitespaceAndComments()
         lxAdvance()
         lxAdvance()
         lxSkipWhitespaceAndComments_closed = false
-        while lxPos < len(lxSrc)
-        if lxSrc[lxPos] == "-" and lxPeekAt(1) == "$"
+        while lxPos < len(lxChars)
+        if lxChars[lxPos] == "-" and lxPeekAt(1) == "$"
             lxAdvance()
             lxAdvance()
             lxSkipWhitespaceAndComments_closed = true
@@ -112,13 +113,13 @@ end
 end
 end
 function lxReadNumber()
-    lxReadNumber_c = lxSrc[lxPos]
+    lxReadNumber_c = lxChars[lxPos]
     lxReadNumber_nextChar = lxPeekAt(1)
     if lxReadNumber_nextChar == null
         lxReadNumber_nextChar = ""
     end
     if lxReadNumber_c == "0" and "xXbBoO".indexOf(lxReadNumber_nextChar) >= 0
-        lxReadNumber_p = lxSrc[lxPos + 1]
+        lxReadNumber_p = lxChars[lxPos + 1]
         if lxReadNumber_p == "x" or lxReadNumber_p == "X"
             lxReadNumber_radix = 16
         else if lxReadNumber_p == "b" or lxReadNumber_p == "B"
@@ -129,8 +130,8 @@ function lxReadNumber()
         lxAdvance()
         lxAdvance()
         lxReadNumber_digits = ""
-        while lxPos < len(lxSrc)
-        lxReadNumber_d = lxSrc[lxPos]
+        while lxPos < len(lxChars)
+        lxReadNumber_d = lxChars[lxPos]
         if lxReadNumber_d == "_"
             lxAdvance()
         else if lxDigitValue(lxReadNumber_d) >= 0 and lxDigitValue(lxReadNumber_d) < lxReadNumber_radix
@@ -145,8 +146,8 @@ function lxReadNumber()
 end
 lxReadNumber_s = ""
 lxReadNumber_lastWasDigit = false
-while lxPos < len(lxSrc)
-lxReadNumber_d = lxSrc[lxPos]
+while lxPos < len(lxChars)
+lxReadNumber_d = lxChars[lxPos]
 if lxIsDigit(lxReadNumber_d)
     lxReadNumber_s += lxReadNumber_d
     lxAdvance()
@@ -161,8 +162,8 @@ end
 if lxPeek() == "." and lxIsDigit(lxPeekAt(1))
     lxReadNumber_s += "."
     lxAdvance()
-    while lxPos < len(lxSrc)
-    lxReadNumber_d = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxReadNumber_d = lxChars[lxPos]
     if lxIsDigit(lxReadNumber_d)
         lxReadNumber_s += lxReadNumber_d
         lxAdvance()
@@ -182,8 +183,8 @@ if lxReadNumber_d == "e" or lxReadNumber_d == "E"
         lxReadNumber_exponent += lxAdvance()
     end
     lxReadNumber_sawDigit = false
-    while lxPos < len(lxSrc)
-    lxReadNumber_d = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxReadNumber_d = lxChars[lxPos]
     if lxIsDigit(lxReadNumber_d)
         lxReadNumber_exponent += lxReadNumber_d
         lxAdvance()
@@ -203,27 +204,27 @@ function lxReadInterpolation(lxReadInterpolation_exprLine, lxReadInterpolation_e
     lxReadInterpolation_raw = ""
     lxReadInterpolation_depth = 0
     while true
-    assert(lxPos < len(lxSrc), "Unclosed interpolation")
+    assert(lxPos < len(lxChars), "Unclosed interpolation")
     lxReadInterpolation_c = lxPeek()
     if lxReadInterpolation_c == "\\"
         lxReadInterpolation_raw += lxReadInterpolation_c
         lxAdvance()
-        if lxPos < len(lxSrc)
-            lxReadInterpolation_raw += lxSrc[lxPos]
+        if lxPos < len(lxChars)
+            lxReadInterpolation_raw += lxChars[lxPos]
             lxAdvance()
         end
     else if lxReadInterpolation_c == "\""
         lxReadInterpolation_raw += "\""
         lxAdvance()
         while true
-        assert(lxPos < len(lxSrc), "Unterminated string literal")
+        assert(lxPos < len(lxChars), "Unterminated string literal")
         lxReadInterpolation_d = lxAdvance()
         lxReadInterpolation_raw += lxReadInterpolation_d
         if lxReadInterpolation_d == "\""
             break
         end
-        if lxReadInterpolation_d == "\\" and lxPos < len(lxSrc)
-            lxReadInterpolation_raw += lxSrc[lxPos]
+        if lxReadInterpolation_d == "\\" and lxPos < len(lxChars)
+            lxReadInterpolation_raw += lxChars[lxPos]
             lxAdvance()
         end
     end
@@ -232,7 +233,7 @@ else if lxReadInterpolation_c == "$" and lxPeekAt(1) == "-"
     lxReadInterpolation_raw += "-"
     lxAdvance()
     lxAdvance()
-    while lxPos < len(lxSrc)
+    while lxPos < len(lxChars)
     lxReadInterpolation_d = lxAdvance()
     lxReadInterpolation_raw += lxReadInterpolation_d
     if lxReadInterpolation_d == "-" and lxPeek() == "$"
@@ -258,6 +259,7 @@ else
 end
 end
 lxReadInterpolation_savedSrc = lxSrc
+lxReadInterpolation_savedChars = lxChars
 lxReadInterpolation_savedPos = lxPos
 lxReadInterpolation_savedLine = lxLine
 lxReadInterpolation_savedCol = lxCol
@@ -273,6 +275,7 @@ for lxReadInterpolation_i in range(len(lxReadInterpolation_inner))
     lxReadInterpolation_tok.line = lxReadInterpolation_exprLine + lxReadInterpolation_tok.line - 1
 end
 lxSrc = lxReadInterpolation_savedSrc
+lxChars = lxReadInterpolation_savedChars
 lxPos = lxReadInterpolation_savedPos
 lxLine = lxReadInterpolation_savedLine
 lxCol = lxReadInterpolation_savedCol
@@ -286,12 +289,12 @@ function lxReadString()
     lxReadString_literal = ""
     lxReadString_parts = []
     while true
-    assert(lxPos < len(lxSrc), "Unterminated string literal")
+    assert(lxPos < len(lxChars), "Unterminated string literal")
     lxReadString_c = lxAdvance()
     if lxReadString_c == "\""
         break
     else if lxReadString_c == "\\"
-        assert(lxPos < len(lxSrc), "Unterminated string literal")
+        assert(lxPos < len(lxChars), "Unterminated string literal")
         lxReadString_e = lxAdvance()
         if lxReadString_e == "n"
             lxReadString_literal += fromCharCode(10)
@@ -306,7 +309,7 @@ function lxReadString()
             lxAdvance()
             lxReadString_hex = ""
             lxReadString_closed = false
-            while lxPos < len(lxSrc)
+            while lxPos < len(lxChars)
             lxReadString_h = lxAdvance()
             if lxReadString_h == "\}"
                 lxReadString_closed = true
@@ -353,8 +356,8 @@ return lxMake("Interpolated", lxReadString_parts)
 end
 function lxReadIdentifier()
     lxReadIdentifier_s = ""
-    while lxPos < len(lxSrc)
-    lxReadIdentifier_c = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxReadIdentifier_c = lxChars[lxPos]
     if lxIsLetter(lxReadIdentifier_c) or lxIsDigit(lxReadIdentifier_c) or lxReadIdentifier_c == "_"
         lxReadIdentifier_s += lxReadIdentifier_c
         lxAdvance()
@@ -548,7 +551,11 @@ function lxReadSymbol()
 end
 function lex(source)
     lxSrc = source
-    if len(lxSrc) > 0 and charCode(lxSrc[0]) == 65279
+$- Indexing a string re-decodes it on every access in the native VM. Cache
+       one char array so lexing a large compiler source stays linear. -$
+    lxChars = lxSrc.chars()
+    if len(lxChars) > 0 and charCode(lxChars[0]) == 65279
+        lxChars = lxChars.slice(1)
         lxSrc = lxSrc.slice(1, len(lxSrc))
     end
     lxPos = 0
@@ -557,13 +564,13 @@ function lex(source)
     lxTokens = []
     while true
     lxSkipWhitespaceAndComments()
-    if lxPos >= len(lxSrc)
+    if lxPos >= len(lxChars)
         lxTokLine = lxLine
         lxTokCol = lxCol
         lxTokens.add(lxMake("Eof", null))
         break
     end
-    lex_c = lxSrc[lxPos]
+    lex_c = lxChars[lxPos]
     if lex_c == "\n"
         lxTokLine = lxLine
         lxTokCol = lxCol

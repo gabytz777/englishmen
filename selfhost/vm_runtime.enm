@@ -26,7 +26,7 @@ function rtArg(args, index, fallback)
 end
 function rtTypeName(value)
     if isObject(value)
-        kind = value.get("rtKind", "")
+        kind = rtObjectGet(value, "rtKind", "")
         if kind == "closure" or kind == "native"
             return "function"
         end
@@ -56,16 +56,16 @@ function rtDisplay(value)
         return value
     end
     if isObject(value)
-        kind = value.get("rtKind", "")
+        kind = rtObjectGet(value, "rtKind", "")
         if kind == "closure"
-            return "<function " + value.get("rtProto", {}).get("name", "?") + ">"
+            return "<function " + rtObjectGet(rtObjectGet(value, "rtProto", {}), "name", "?") + ">"
         end
         if kind == "native"
-            return "<native function " + value.get("rtName", "?") + ">"
+            return "<native function " + rtObjectGet(value, "rtName", "?") + ">"
         end
         parts = []
         for key in keys(value)
-            parts.add(key + ": " + rtDebugDisplay(value.get(key, null)))
+            parts.add(key + ": " + rtDebugDisplay(rtObjectGet(value, key, null)))
         end
         return "\{" + join(parts, ", ") + "\}"
     end
@@ -269,7 +269,7 @@ end
 function rtObjectValues(object)
     out = []
     for key in rtObjectKeys(object)
-        out.add(object.get(key, null))
+        out.add(rtObjectGet(object, key, null))
     end
     return out
 end
@@ -277,11 +277,22 @@ function rtObjectHas(object, key)
     found = keys(object).indexOf(key)
     return found >= 0
 end
+$- Module objects can define a `get` key, which shadows the native object.get
+   method. Read properties through entries() so runtime metadata lookups never
+   accidentally call a module function. -$
 function rtObjectGet(object, key, fallback)
-    if rtObjectHas(object, key)
-        return object.get(key, fallback)
+    if not isObject(object)
+        return fallback
     end
-    return fallback
+    rtObjectGet_pairs = entries(object)
+    rtObjectGet_i = 0
+    while rtObjectGet_i < len(rtObjectGet_pairs)
+    if rtDisplay(rtObjectGet_pairs[rtObjectGet_i][0]) == key
+        return rtObjectGet_pairs[rtObjectGet_i][1]
+    end
+    rtObjectGet_i += 1
+end
+return fallback
 end
 function rtObjectSet(object, key, value)
     object.set(key, value)
@@ -332,7 +343,7 @@ function rtEnvGet(env, name)
     cursor = env
     while cursor != null
     if rtObjectHas(cursor.rtVars, name)
-        return cursor.rtVars.get(name, null)
+        return rtObjectGet(cursor.rtVars, name, null)
     end
     cursor = cursor.rtParent
 end
@@ -359,7 +370,7 @@ function rtNative(name)
 end
 function rtGlobalEnv()
     env = rtEnvNew(null)
-    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format"]
+    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args"]
     for name in names
         rtEnvDefine(env, name, rtNative(name))
     end
@@ -378,7 +389,13 @@ function rtImportNormalizeTable(rtImportNormalizeTable_value)
     return rtImportNormalizeTable_value
 end
 function rtImportMissingMessage(rtImportMissingMessage_name, rtImportMissingMessage_table)
-    rtImportAvailableNames = sorted(keys(rtImportMissingMessage_table))
+    rtImportAllNames = sorted(keys(rtImportMissingMessage_table))
+    rtImportAvailableNames = []
+    for rtImportCandidate in rtImportAllNames
+        if rtImportCandidate != "__arities"
+            rtImportAvailableNames.add(rtImportCandidate)
+        end
+    end
     if len(rtImportAvailableNames) == 0
         return "module '" + rtImportMissingMessage_name + "' is not available; no imports were provided"
     end
@@ -386,21 +403,21 @@ function rtImportMissingMessage(rtImportMissingMessage_name, rtImportMissingMess
 end
 $- The IR view of a chunk: constants, functions and code are ordinary values. -$
 function rtChunkCode(chunk)
-    code = chunk.get("code", null)
+    code = rtObjectGet(chunk, "code", null)
     if isArray(code)
         return code
     end
     return []
 end
 function rtChunkConstants(chunk)
-    constants = chunk.get("constants", null)
+    constants = rtObjectGet(chunk, "constants", null)
     if isArray(constants)
         return constants
     end
     return []
 end
 function rtChunkFunctions(chunk)
-    functions = chunk.get("functions", null)
+    functions = rtObjectGet(chunk, "functions", null)
     if isArray(functions)
         return functions
     end
@@ -412,15 +429,15 @@ function rtConstValue(chunk, index)
         rtError("constant index " + toString(index) + " is out of range")
     end
     constant = constants[index]
-    tag = constant.get("tag", "")
+    tag = rtObjectGet(constant, "tag", "")
     if tag == "number"
-        return rtExpectNumber(constant.get("value", 0), "as a constant")
+        return rtExpectNumber(rtObjectGet(constant, "value", 0), "as a constant")
     end
     if tag == "string"
-        return rtExpectString(constant.get("value", ""), "as a constant")
+        return rtExpectString(rtObjectGet(constant, "value", ""), "as a constant")
     end
     if tag == "bool"
-        return constant.get("value", false) == true
+        return rtObjectGet(constant, "value", false) == true
     end
     if tag == "null"
         return null
@@ -432,7 +449,7 @@ function rtName(chunk, index)
     if index < 0 or index >= len(constants)
         rtError("name index " + toString(index) + " is out of range")
     end
-    value = constants[index].get("value", null)
+    value = rtObjectGet(constants[index], "value", null)
     return rtExpectString(value, "as a name")
 end
 function rtStackPush(value)
@@ -487,7 +504,7 @@ return false
 end
 function rtIsCallable(value)
     if isObject(value)
-        kind = value.get("rtKind", "")
+        kind = rtObjectGet(value, "rtKind", "")
         return kind == "closure" or kind == "native"
     end
     return isFunction(value)
@@ -499,42 +516,66 @@ function rtInvoke(callee, args, hint)
     end
     if isFunction(callee)
 $- Imported module objects hold pure Englishmen functions. Englishmen has
-           no function-apply primitive, so dispatch by argument count. -$
-        rtInvokeArgCount = len(args)
-        if rtInvokeArgCount == 0
-            return {rtPushed: false, rtValue: callee()}
+           no function-apply primitive, so dispatch by argument count. An
+           optional __arities table in the import table pads variadic adapters
+           such as bytes.of and bytes.slice up to their fixed Englishmen arity. -$
+        if rtVm != null
+            rtInvokeImports = rtObjectGet(rtVm, "imports", {})
+            rtInvokeArities = rtObjectGet(rtInvokeImports, "__arities", {})
+            if isObject(rtInvokeArities) and rtObjectHas(rtInvokeArities, hint)
+                rtInvokeTargetArity = rtObjectGet(rtInvokeArities, hint, 0)
+                while len(args) < rtInvokeTargetArity
+                args.add(null)
+            end
         end
-        if rtInvokeArgCount == 1
-            return {rtPushed: false, rtValue: callee(args[0])}
-        end
-        if rtInvokeArgCount == 2
-            return {rtPushed: false, rtValue: callee(args[0], args[1])}
-        end
-        if rtInvokeArgCount == 3
-            return {rtPushed: false, rtValue: callee(args[0], args[1], args[2])}
-        end
-        if rtInvokeArgCount == 4
-            return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3])}
-        end
-        rtError("host function '" + hint + "' with " + toString(rtInvokeArgCount) + " arguments cannot be called by the self-hosted VM")
     end
-    kind = callee.get("rtKind", "")
-    if kind == "native"
-        value = rtNativeCall(callee.get("rtName", ""), args)
-        return {rtPushed: false, rtValue: value}
+    rtInvokeArgCount = len(args)
+    if rtInvokeArgCount == 0
+        return {rtPushed: false, rtValue: callee()}
     end
-    proto = callee.get("rtProto", {})
-    params = proto.get("params", [])
-    if len(args) != len(params)
-        rtError("Function '" + proto.get("name", "?") + "' expects " + len(params) + " argument(s) but got " + len(args))
+    if rtInvokeArgCount == 1
+        return {rtPushed: false, rtValue: callee(args[0])}
     end
-    env = rtEnvNew(callee.get("rtEnv", null))
-    i = 0
-    while i < len(params)
-    rtEnvDefine(env, params[i], args[i])
-    i += 1
+    if rtInvokeArgCount == 2
+        return {rtPushed: false, rtValue: callee(args[0], args[1])}
+    end
+    if rtInvokeArgCount == 3
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2])}
+    end
+    if rtInvokeArgCount == 4
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3])}
+    end
+    if rtInvokeArgCount == 5
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4])}
+    end
+    if rtInvokeArgCount == 6
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4], args[5])}
+    end
+    if rtInvokeArgCount == 7
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4], args[5], args[6])}
+    end
+    if rtInvokeArgCount == 8
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7])}
+    end
+    rtError("host function '" + hint + "' with " + toString(rtInvokeArgCount) + " arguments cannot be called by the self-hosted VM")
 end
-unit = {rtKind: "function", rtChunk: proto.get("chunk", {})}
+kind = rtObjectGet(callee, "rtKind", "")
+if kind == "native"
+    value = rtNativeCall(rtObjectGet(callee, "rtName", ""), args)
+    return {rtPushed: false, rtValue: value}
+end
+proto = rtObjectGet(callee, "rtProto", {})
+params = rtObjectGet(proto, "params", [])
+if len(args) != len(params)
+    rtError("Function '" + rtObjectGet(proto, "name", "?") + "' expects " + len(params) + " argument(s) but got " + len(args))
+end
+env = rtEnvNew(rtObjectGet(callee, "rtEnv", null))
+i = 0
+while i < len(params)
+rtEnvDefine(env, params[i], args[i])
+i += 1
+end
+unit = {rtKind: "function", rtChunk: rtObjectGet(proto, "chunk", {})}
 rtVm.frames.add(rtFrameNew(unit, 0, env, len(rtVm.stack)))
 return {rtPushed: true, rtValue: null}
 end
@@ -940,7 +981,7 @@ if method == "lines"
     end
     result = []
     for line in out
-        if len(line) > 0 and line[len(line) - 1] == ""
+        if len(line) > 0 and line[len(line) - 1] == "\n"
             line = slice(line, 0, len(line) - 1)
         end
         result.add(line)
@@ -1276,14 +1317,14 @@ function rtObjectMethod(object, method, args)
             rtError("merge() expects an object to merge")
         end
         for key in rtObjectKeys(other)
-            rtObjectSet(object, key, other.get(key, null))
+            rtObjectSet(object, key, rtObjectGet(other, key, null))
         end
         return object
     end
     if method == "copy"
         out = {}
         for key in rtObjectKeys(object)
-            rtObjectSet(out, key, object.get(key, null))
+            rtObjectSet(out, key, rtObjectGet(object, key, null))
         end
         return out
     end
@@ -1295,7 +1336,7 @@ function rtObjectMethod(object, method, args)
         for key in args
             name = rtExpectString(key, "as a key")
             if rtObjectHas(object, name)
-                rtObjectSet(out, name, object.get(name, null))
+                rtObjectSet(out, name, rtObjectGet(object, name, null))
             end
         end
         return out
@@ -1304,7 +1345,7 @@ function rtObjectMethod(object, method, args)
         out = {}
         for key in rtObjectKeys(object)
             if keys(args).indexOf(key) < 0
-                rtObjectSet(out, key, object.get(key, null))
+                rtObjectSet(out, key, rtObjectGet(object, key, null))
             end
         end
         return out
@@ -1312,7 +1353,7 @@ function rtObjectMethod(object, method, args)
     if method == "entries"
         out = []
         for key in rtObjectKeys(object)
-            out.add([key, object.get(key, null)])
+            out.add([key, rtObjectGet(object, key, null)])
         end
         return out
     end
@@ -1356,7 +1397,7 @@ end
 $- Object fields that hold functions win over builtin methods, as in the VM. -$
 function rtMethodCall(receiver, method, args)
     if isObject(receiver) and rtObjectHas(receiver, method)
-        candidate = receiver.get(method, null)
+        candidate = rtObjectGet(receiver, method, null)
         if rtIsCallable(candidate)
             return rtInvoke(candidate, args, method)
         end
@@ -1576,6 +1617,23 @@ function rtNativeCall(name, args)
         end
         return format(rtArg(args, 0, ""), rtArg(args, 1, null))
     end
+$- The compile-only bootstrap uses these host-provided helpers. The driver
+   defines emProgramArgs and the emJson*Value functions before running its IR. -$
+    if name == "assert"
+        if not rtTruthy(rtArg(args, 0, false))
+            rtError(rtDisplay(rtArg(args, 1, "assertion failed")))
+        end
+        return null
+    end
+    if name == "jsonEncode"
+        return emJsonEncodeValue(rtArg(args, 0, null))
+    end
+    if name == "jsonDecode"
+        return emJsonDecodeValue(rtArg(args, 0, ""))
+    end
+    if name == "args"
+        return emProgramArgs
+    end
     rtError("native builtin '" + name + "' is not available in the self-hosted VM")
 end
 function rtBinary(op, left, right)
@@ -1679,7 +1737,7 @@ function rtGetProperty(base, name)
         rtError("Cannot access property '" + name + "' on a " + rtTypeName(base))
     end
     if rtObjectHas(base, name)
-        return base.get(name, null)
+        return rtObjectGet(base, name, null)
     end
     rtError("Unknown property '" + name + "'")
 end
@@ -1713,9 +1771,9 @@ function rtSetIndex(base, index, value)
     return null
 end
 function rtStep(op, chunk, frame)
-    name = op.get("op", "")
-    a = op.get("a", 0)
-    b = op.get("b", 0)
+    name = rtObjectGet(op, "op", "")
+    a = rtObjectGet(op, "a", 0)
+    b = rtObjectGet(op, "b", 0)
     if name == "LoadConst"
         rtStackPush(rtConstValue(chunk, a))
         return null
@@ -1765,7 +1823,7 @@ function rtStep(op, chunk, frame)
             if not rtObjectHas(base, property)
                 rtObjectSet(base, property, {})
             end
-            rtStackPush(base.get(property, null))
+            rtStackPush(rtObjectGet(base, property, null))
         else
             rtStackPush(rtGetProperty(base, property))
         end
@@ -1965,7 +2023,7 @@ if name == "Import"
         rtError(rtImportMissingMessage(rtImportNameValue, rtVm.imports))
         return null
     end
-    rtImportModuleValue = rtVm.imports.get(rtImportNameValue, null)
+    rtImportModuleValue = rtObjectGet(rtVm.imports, rtImportNameValue, null)
     rtEnvDefine(rtVm.globals, rtImportNameValue, rtImportModuleValue)
     return null
 end

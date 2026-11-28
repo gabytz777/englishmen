@@ -13,6 +13,7 @@ $- ---------------------------------------------------------------------------
    field on compound assignments.
    --------------------------------------------------------------------------- -$
 lxSrc = ""
+lxChars = []
 lxPos = 0
 lxLine = 1
 lxCol = 1
@@ -20,20 +21,20 @@ lxTokens = []
 lxTokLine = 1
 lxTokCol = 1
 function lxPeek()
-    if lxPos >= len(lxSrc)
+    if lxPos >= len(lxChars)
         return null
     end
-    return lxSrc[lxPos]
+    return lxChars[lxPos]
 end
 function lxPeekAt(lxPeekAt_offset)
     lxPeekAt_i = lxPos + lxPeekAt_offset
-    if lxPeekAt_i >= len(lxSrc)
+    if lxPeekAt_i >= len(lxChars)
         return null
     end
-    return lxSrc[lxPeekAt_i]
+    return lxChars[lxPeekAt_i]
 end
 function lxAdvance()
-    lxAdvance_c = lxSrc[lxPos]
+    lxAdvance_c = lxChars[lxPos]
     lxPos += 1
     if charCode(lxAdvance_c) == 10
         lxLine += 1
@@ -83,13 +84,13 @@ function lxEndsExpression(lxEndsExpression_type)
     return lxEndsExpression_ends.indexOf(lxEndsExpression_type) >= 0
 end
 function lxSkipToEndOfLine()
-    while lxPos < len(lxSrc) and lxSrc[lxPos] != "\n"
+    while lxPos < len(lxChars) and lxChars[lxPos] != "\n"
     lxAdvance()
 end
 end
 function lxSkipWhitespaceAndComments()
-    while lxPos < len(lxSrc)
-    lxSkipWhitespaceAndComments_c = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxSkipWhitespaceAndComments_c = lxChars[lxPos]
     lxSkipWhitespaceAndComments_n = charCode(lxSkipWhitespaceAndComments_c)
     if lxSkipWhitespaceAndComments_n == 32 or lxSkipWhitespaceAndComments_n == 9 or lxSkipWhitespaceAndComments_n == 13
         lxAdvance()
@@ -97,8 +98,8 @@ function lxSkipWhitespaceAndComments()
         lxAdvance()
         lxAdvance()
         lxSkipWhitespaceAndComments_closed = false
-        while lxPos < len(lxSrc)
-        if lxSrc[lxPos] == "-" and lxPeekAt(1) == "$"
+        while lxPos < len(lxChars)
+        if lxChars[lxPos] == "-" and lxPeekAt(1) == "$"
             lxAdvance()
             lxAdvance()
             lxSkipWhitespaceAndComments_closed = true
@@ -113,13 +114,13 @@ end
 end
 end
 function lxReadNumber()
-    lxReadNumber_c = lxSrc[lxPos]
+    lxReadNumber_c = lxChars[lxPos]
     lxReadNumber_nextChar = lxPeekAt(1)
     if lxReadNumber_nextChar == null
         lxReadNumber_nextChar = ""
     end
     if lxReadNumber_c == "0" and "xXbBoO".indexOf(lxReadNumber_nextChar) >= 0
-        lxReadNumber_p = lxSrc[lxPos + 1]
+        lxReadNumber_p = lxChars[lxPos + 1]
         if lxReadNumber_p == "x" or lxReadNumber_p == "X"
             lxReadNumber_radix = 16
         else if lxReadNumber_p == "b" or lxReadNumber_p == "B"
@@ -130,8 +131,8 @@ function lxReadNumber()
         lxAdvance()
         lxAdvance()
         lxReadNumber_digits = ""
-        while lxPos < len(lxSrc)
-        lxReadNumber_d = lxSrc[lxPos]
+        while lxPos < len(lxChars)
+        lxReadNumber_d = lxChars[lxPos]
         if lxReadNumber_d == "_"
             lxAdvance()
         else if lxDigitValue(lxReadNumber_d) >= 0 and lxDigitValue(lxReadNumber_d) < lxReadNumber_radix
@@ -146,8 +147,8 @@ function lxReadNumber()
 end
 lxReadNumber_s = ""
 lxReadNumber_lastWasDigit = false
-while lxPos < len(lxSrc)
-lxReadNumber_d = lxSrc[lxPos]
+while lxPos < len(lxChars)
+lxReadNumber_d = lxChars[lxPos]
 if lxIsDigit(lxReadNumber_d)
     lxReadNumber_s += lxReadNumber_d
     lxAdvance()
@@ -162,8 +163,8 @@ end
 if lxPeek() == "." and lxIsDigit(lxPeekAt(1))
     lxReadNumber_s += "."
     lxAdvance()
-    while lxPos < len(lxSrc)
-    lxReadNumber_d = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxReadNumber_d = lxChars[lxPos]
     if lxIsDigit(lxReadNumber_d)
         lxReadNumber_s += lxReadNumber_d
         lxAdvance()
@@ -183,8 +184,8 @@ if lxReadNumber_d == "e" or lxReadNumber_d == "E"
         lxReadNumber_exponent += lxAdvance()
     end
     lxReadNumber_sawDigit = false
-    while lxPos < len(lxSrc)
-    lxReadNumber_d = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxReadNumber_d = lxChars[lxPos]
     if lxIsDigit(lxReadNumber_d)
         lxReadNumber_exponent += lxReadNumber_d
         lxAdvance()
@@ -204,27 +205,27 @@ function lxReadInterpolation(lxReadInterpolation_exprLine, lxReadInterpolation_e
     lxReadInterpolation_raw = ""
     lxReadInterpolation_depth = 0
     while true
-    assert(lxPos < len(lxSrc), "Unclosed interpolation")
+    assert(lxPos < len(lxChars), "Unclosed interpolation")
     lxReadInterpolation_c = lxPeek()
     if lxReadInterpolation_c == "\\"
         lxReadInterpolation_raw += lxReadInterpolation_c
         lxAdvance()
-        if lxPos < len(lxSrc)
-            lxReadInterpolation_raw += lxSrc[lxPos]
+        if lxPos < len(lxChars)
+            lxReadInterpolation_raw += lxChars[lxPos]
             lxAdvance()
         end
     else if lxReadInterpolation_c == "\""
         lxReadInterpolation_raw += "\""
         lxAdvance()
         while true
-        assert(lxPos < len(lxSrc), "Unterminated string literal")
+        assert(lxPos < len(lxChars), "Unterminated string literal")
         lxReadInterpolation_d = lxAdvance()
         lxReadInterpolation_raw += lxReadInterpolation_d
         if lxReadInterpolation_d == "\""
             break
         end
-        if lxReadInterpolation_d == "\\" and lxPos < len(lxSrc)
-            lxReadInterpolation_raw += lxSrc[lxPos]
+        if lxReadInterpolation_d == "\\" and lxPos < len(lxChars)
+            lxReadInterpolation_raw += lxChars[lxPos]
             lxAdvance()
         end
     end
@@ -233,7 +234,7 @@ else if lxReadInterpolation_c == "$" and lxPeekAt(1) == "-"
     lxReadInterpolation_raw += "-"
     lxAdvance()
     lxAdvance()
-    while lxPos < len(lxSrc)
+    while lxPos < len(lxChars)
     lxReadInterpolation_d = lxAdvance()
     lxReadInterpolation_raw += lxReadInterpolation_d
     if lxReadInterpolation_d == "-" and lxPeek() == "$"
@@ -259,6 +260,7 @@ else
 end
 end
 lxReadInterpolation_savedSrc = lxSrc
+lxReadInterpolation_savedChars = lxChars
 lxReadInterpolation_savedPos = lxPos
 lxReadInterpolation_savedLine = lxLine
 lxReadInterpolation_savedCol = lxCol
@@ -274,6 +276,7 @@ for lxReadInterpolation_i in range(len(lxReadInterpolation_inner))
     lxReadInterpolation_tok.line = lxReadInterpolation_exprLine + lxReadInterpolation_tok.line - 1
 end
 lxSrc = lxReadInterpolation_savedSrc
+lxChars = lxReadInterpolation_savedChars
 lxPos = lxReadInterpolation_savedPos
 lxLine = lxReadInterpolation_savedLine
 lxCol = lxReadInterpolation_savedCol
@@ -287,12 +290,12 @@ function lxReadString()
     lxReadString_literal = ""
     lxReadString_parts = []
     while true
-    assert(lxPos < len(lxSrc), "Unterminated string literal")
+    assert(lxPos < len(lxChars), "Unterminated string literal")
     lxReadString_c = lxAdvance()
     if lxReadString_c == "\""
         break
     else if lxReadString_c == "\\"
-        assert(lxPos < len(lxSrc), "Unterminated string literal")
+        assert(lxPos < len(lxChars), "Unterminated string literal")
         lxReadString_e = lxAdvance()
         if lxReadString_e == "n"
             lxReadString_literal += fromCharCode(10)
@@ -307,7 +310,7 @@ function lxReadString()
             lxAdvance()
             lxReadString_hex = ""
             lxReadString_closed = false
-            while lxPos < len(lxSrc)
+            while lxPos < len(lxChars)
             lxReadString_h = lxAdvance()
             if lxReadString_h == "\}"
                 lxReadString_closed = true
@@ -354,8 +357,8 @@ return lxMake("Interpolated", lxReadString_parts)
 end
 function lxReadIdentifier()
     lxReadIdentifier_s = ""
-    while lxPos < len(lxSrc)
-    lxReadIdentifier_c = lxSrc[lxPos]
+    while lxPos < len(lxChars)
+    lxReadIdentifier_c = lxChars[lxPos]
     if lxIsLetter(lxReadIdentifier_c) or lxIsDigit(lxReadIdentifier_c) or lxReadIdentifier_c == "_"
         lxReadIdentifier_s += lxReadIdentifier_c
         lxAdvance()
@@ -549,7 +552,11 @@ function lxReadSymbol()
 end
 function lex(source)
     lxSrc = source
-    if len(lxSrc) > 0 and charCode(lxSrc[0]) == 65279
+$- Indexing a string re-decodes it on every access in the native VM. Cache
+       one char array so lexing a large compiler source stays linear. -$
+    lxChars = lxSrc.chars()
+    if len(lxChars) > 0 and charCode(lxChars[0]) == 65279
+        lxChars = lxChars.slice(1)
         lxSrc = lxSrc.slice(1, len(lxSrc))
     end
     lxPos = 0
@@ -558,13 +565,13 @@ function lex(source)
     lxTokens = []
     while true
     lxSkipWhitespaceAndComments()
-    if lxPos >= len(lxSrc)
+    if lxPos >= len(lxChars)
         lxTokLine = lxLine
         lxTokCol = lxCol
         lxTokens.add(lxMake("Eof", null))
         break
     end
-    lex_c = lxSrc[lxPos]
+    lex_c = lxChars[lxPos]
     if lex_c == "\n"
         lxTokLine = lxLine
         lxTokCol = lxCol
@@ -3098,6 +3105,1183 @@ assert(pjWrite(pjSelfTest_manifest) == pjSelfTest_expected, "pjWrite mismatch fo
 assert(jsonEncode(pjParse(pjSelfTest_expected)) == jsonEncode(project.parse(pjSelfTest_expected)), "mixed manifest round trip mismatch")
 deleteFile(pjSelfTest_path)
 end
+$- === inlined selfhost/lib_modules.enm === -$
+$- Pure Englishmen implementations of the native `string` and `json` modules.
+
+   This file is self-contained: it never imports another `.enm` file and every
+   globally visible helper is prefixed with `lm`. `lmStringModule()` and
+   `lmJsonModule()` return ordinary objects whose keys are native-style member
+   names and whose values are Englishmen functions. `lmAllModules()` bundles
+   both objects for the round-3 import bridge.
+
+   Optional native arguments are passed as `null` because Englishmen functions
+   have fixed arity. For example `string.slice(text, 1, null)` means the same
+   thing as native `string.slice(text, 1)`, and `string.pad(text, 5, null,
+   null)` uses the default fill and alignment.
+
+   Native `string` and `json` modules are imported only inside the self-test
+   guard at the bottom, where they act as reference oracles.
+-$
+import os
+$- ---------------------------------------------------------------------------
+   Shared argument helpers
+   --------------------------------------------------------------------------- -$
+function lmText(lmText_value)
+    assert(type(lmText_value) == "string", "Expected a string")
+    return lmText_value
+end
+function lmFinite(lmFinite_value)
+    if type(lmFinite_value) != "number"
+        return false
+    end
+    if isNaN(lmFinite_value)
+        return false
+    end
+    return lmFinite_value <= 100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 and lmFinite_value >= -100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+end
+function lmWhole(lmWhole_value)
+    if not lmFinite(lmWhole_value)
+        return false
+    end
+    return floor(lmWhole_value) == lmWhole_value
+end
+function lmIndex(lmIndex_value)
+    if not lmWhole(lmIndex_value) or lmIndex_value < 0
+        return false
+    end
+    return true
+end
+function lmChars(lmChars_source)
+    return split(lmChars_source, "")
+end
+function lmByteLength(lmByteLength_source)
+    lmByteLength_chars = lmChars(lmByteLength_source)
+    lmByteLength_total = 0
+    lmByteLength_i = 0
+    while lmByteLength_i < len(lmByteLength_chars)
+    lmByteLength_code = charCode(lmByteLength_chars[lmByteLength_i])
+    if lmByteLength_code <= 127
+        lmByteLength_total += 1
+    else if lmByteLength_code <= 2047
+        lmByteLength_total += 2
+    else if lmByteLength_code <= 65535
+        lmByteLength_total += 3
+    else
+        lmByteLength_total += 4
+    end
+    lmByteLength_i += 1
+end
+return lmByteLength_total
+end
+function lmClampIndex(lmClampIndex_length, lmClampIndex_value)
+    if not lmFinite(lmClampIndex_value)
+        if lmClampIndex_value < 0
+            return 0
+        end
+        return lmClampIndex_length
+    end
+    if lmClampIndex_value < 0
+        lmClampIndex_resolved = lmClampIndex_length - floor(-lmClampIndex_value)
+        if lmClampIndex_resolved < 0
+            return 0
+        end
+        return lmClampIndex_resolved
+    end
+    lmClampIndex_resolved = floor(lmClampIndex_value)
+    if lmClampIndex_resolved > lmClampIndex_length
+        return lmClampIndex_length
+    end
+    return lmClampIndex_resolved
+end
+function lmSliceChars(lmSliceChars_source, lmSliceChars_from, lmSliceChars_to)
+    lmSliceChars_chars = lmChars(lmSliceChars_source)
+    if lmSliceChars_to < lmSliceChars_from
+        lmSliceChars_to = lmSliceChars_from
+    end
+    return join(slice(lmSliceChars_chars, lmSliceChars_from, lmSliceChars_to), "")
+end
+function lmAsciiDigit(lmAsciiDigit_char)
+    lmAsciiDigit_code = charCode(lmAsciiDigit_char)
+    return lmAsciiDigit_code >= 48 and lmAsciiDigit_code <= 57
+end
+function lmNumericText(lmNumericText_source)
+    lmNumericText_chars = lmChars(lmNumericText_source)
+    lmNumericText_size = len(lmNumericText_chars)
+    lmNumericText_pos = 0
+    if lmNumericText_size == 0
+        return false
+    end
+    if lmNumericText_chars[0] == "+" or lmNumericText_chars[0] == "-"
+        lmNumericText_pos = 1
+    end
+    lmNumericText_before = 0
+    lmNumericText_after = 0
+    lmNumericText_dot = false
+    while lmNumericText_pos < lmNumericText_size
+    lmNumericText_char = lmNumericText_chars[lmNumericText_pos]
+    if lmAsciiDigit(lmNumericText_char)
+        if lmNumericText_dot
+            lmNumericText_after += 1
+        else
+            lmNumericText_before += 1
+        end
+        lmNumericText_pos += 1
+        continue
+    end
+    if lmNumericText_char == "." and not lmNumericText_dot
+        lmNumericText_dot = true
+        lmNumericText_pos += 1
+        continue
+    end
+    if lmNumericText_char == "e" or lmNumericText_char == "E"
+        lmNumericText_pos += 1
+        if lmNumericText_pos < lmNumericText_size
+            if lmNumericText_chars[lmNumericText_pos] == "+" or lmNumericText_chars[lmNumericText_pos] == "-"
+                lmNumericText_pos += 1
+            end
+        end
+        lmNumericText_exp = 0
+        while lmNumericText_pos < lmNumericText_size
+        if not lmAsciiDigit(lmNumericText_chars[lmNumericText_pos])
+            return false
+        end
+        lmNumericText_exp += 1
+        lmNumericText_pos += 1
+    end
+    if lmNumericText_exp == 0
+        return false
+    end
+    break
+end
+return false
+end
+if lmNumericText_before + lmNumericText_after == 0
+    return false
+end
+return lmNumericText_pos == lmNumericText_size
+end
+function lmRepeatText(lmRepeatText_source, lmRepeatText_count)
+    lmRepeatText_out = ""
+    lmRepeatText_i = 0
+    while lmRepeatText_i < lmRepeatText_count
+    lmRepeatText_out += lmRepeatText_source
+    lmRepeatText_i += 1
+end
+return lmRepeatText_out
+end
+function lmRepeatChar(lmRepeatChar_char, lmRepeatChar_count)
+    return lmRepeatText(lmRepeatChar_char, lmRepeatChar_count)
+end
+function lmIsUpperChar(lmIsUpperChar_char)
+    return lmIsUpperChar_char == upper(lmIsUpperChar_char) and lower(lmIsUpperChar_char) != lmIsUpperChar_char
+end
+function lmIsLowerChar(lmIsLowerChar_char)
+    return lmIsLowerChar_char == lower(lmIsLowerChar_char) and upper(lmIsLowerChar_char) != lmIsLowerChar_char
+end
+$- ---------------------------------------------------------------------------
+   String module functions
+   --------------------------------------------------------------------------- -$
+function lmStringLength(lmStringLength_source)
+    return len(lmText(lmStringLength_source))
+end
+function lmStringUpper(lmStringUpper_source)
+    return upper(lmText(lmStringUpper_source))
+end
+function lmStringLower(lmStringLower_source)
+    return lower(lmText(lmStringLower_source))
+end
+function lmStringTrim(lmStringTrim_source)
+    return trim(lmText(lmStringTrim_source))
+end
+function lmStringSplit(lmStringSplit_source, lmStringSplit_separator)
+    lmStringSplit_text = lmText(lmStringSplit_source)
+    if lmStringSplit_separator == null
+        return lmChars(lmStringSplit_text)
+    end
+    lmStringSplit_sep = lmText(lmStringSplit_separator)
+    if lmStringSplit_sep == ""
+        return lmChars(lmStringSplit_text)
+    end
+    return split(lmStringSplit_text, lmStringSplit_sep)
+end
+function lmStringJoin(lmStringJoin_items, lmStringJoin_separator)
+    assert(type(lmStringJoin_items) == "array", "Expected an array for join")
+    if lmStringJoin_separator == null
+        return join(lmStringJoin_items, "")
+    end
+    return join(lmStringJoin_items, lmText(lmStringJoin_separator))
+end
+function lmStringContains(lmStringContains_source, lmStringContains_needle)
+    return contains(lmText(lmStringContains_source), lmText(lmStringContains_needle))
+end
+function lmStringStartsWith(lmStringStartsWith_source, lmStringStartsWith_prefix)
+    return startsWith(lmText(lmStringStartsWith_source), lmText(lmStringStartsWith_prefix))
+end
+function lmStringEndsWith(lmStringEndsWith_source, lmStringEndsWith_suffix)
+    return endsWith(lmText(lmStringEndsWith_source), lmText(lmStringEndsWith_suffix))
+end
+function lmStringReplace(lmStringReplace_source, lmStringReplace_old, lmStringReplace_new)
+    return replace(lmText(lmStringReplace_source), lmText(lmStringReplace_old), lmText(lmStringReplace_new))
+end
+function lmStringReplaceAll(lmStringReplaceAll_source, lmStringReplaceAll_old, lmStringReplaceAll_new)
+    return lmStringReplace(lmStringReplaceAll_source, lmStringReplaceAll_old, lmStringReplaceAll_new)
+end
+function lmStringSlice(lmStringSlice_source, lmStringSlice_start, lmStringSlice_end)
+    lmStringSlice_text = lmText(lmStringSlice_source)
+    lmStringSlice_len = len(lmStringSlice_text)
+    if lmStringSlice_start == null
+        lmStringSlice_start = 0
+    end
+    if lmStringSlice_end == null
+        lmStringSlice_end = lmStringSlice_len
+    end
+    assert(type(lmStringSlice_start) == "number" and type(lmStringSlice_end) == "number", "string.slice expects numeric bounds")
+    lmStringSlice_from = lmClampIndex(lmStringSlice_len, lmStringSlice_start)
+    lmStringSlice_to = lmClampIndex(lmStringSlice_len, lmStringSlice_end)
+    return lmSliceChars(lmStringSlice_text, lmStringSlice_from, lmStringSlice_to)
+end
+function lmStringSubstring(lmStringSubstring_source, lmStringSubstring_start, lmStringSubstring_end)
+    lmStringSubstring_text = lmText(lmStringSubstring_source)
+    lmStringSubstring_len = len(lmStringSubstring_text)
+    assert(lmIndex(lmStringSubstring_start), "string.substring expects a non-negative whole start")
+    if lmStringSubstring_end == null
+        lmStringSubstring_end = lmStringSubstring_len
+    end
+    assert(lmIndex(lmStringSubstring_end), "string.substring expects a non-negative whole end")
+    assert(lmStringSubstring_start <= lmStringSubstring_end and lmStringSubstring_end <= lmStringSubstring_len, "string.substring expects 0 <= start <= end <= length")
+    return lmSliceChars(lmStringSubstring_text, lmStringSubstring_start, lmStringSubstring_end)
+end
+function lmStringIndexOf(lmStringIndexOf_source, lmStringIndexOf_needle)
+    lmStringIndexOf_text = lmText(lmStringIndexOf_source)
+    lmStringIndexOf_find = lmText(lmStringIndexOf_needle)
+    if lmStringIndexOf_find == ""
+        return 0
+    end
+    lmStringIndexOf_chars = lmChars(lmStringIndexOf_find)
+    lmStringIndexOf_needleLen = len(lmStringIndexOf_chars)
+    lmStringIndexOf_last = len(lmStringIndexOf_text) - lmStringIndexOf_needleLen
+    lmStringIndexOf_i = 0
+    while lmStringIndexOf_i <= lmStringIndexOf_last
+    if lmSliceChars(lmStringIndexOf_text, lmStringIndexOf_i, lmStringIndexOf_i + lmStringIndexOf_needleLen) == lmStringIndexOf_find
+        return lmStringIndexOf_i
+    end
+    lmStringIndexOf_i += 1
+end
+return -1
+end
+function lmStringLastIndexOf(lmStringLastIndexOf_source, lmStringLastIndexOf_needle)
+    lmStringLastIndexOf_text = lmText(lmStringLastIndexOf_source)
+    lmStringLastIndexOf_find = lmText(lmStringLastIndexOf_needle)
+    if lmStringLastIndexOf_find == ""
+        return len(lmStringLastIndexOf_text)
+    end
+    lmStringLastIndexOf_chars = lmChars(lmStringLastIndexOf_find)
+    lmStringLastIndexOf_needleLen = len(lmStringLastIndexOf_chars)
+    lmStringLastIndexOf_last = len(lmStringLastIndexOf_text) - lmStringLastIndexOf_needleLen
+    lmStringLastIndexOf_found = -1
+    lmStringLastIndexOf_i = 0
+    while lmStringLastIndexOf_i <= lmStringLastIndexOf_last
+    if lmSliceChars(lmStringLastIndexOf_text, lmStringLastIndexOf_i, lmStringLastIndexOf_i + lmStringLastIndexOf_needleLen) == lmStringLastIndexOf_find
+        lmStringLastIndexOf_found = lmStringLastIndexOf_i
+    end
+    lmStringLastIndexOf_i += 1
+end
+return lmStringLastIndexOf_found
+end
+function lmStringCharAt(lmStringCharAt_source, lmStringCharAt_index)
+    lmStringCharAt_text = lmText(lmStringCharAt_source)
+    assert(lmIndex(lmStringCharAt_index), "string.charAt expects a non-negative whole index")
+    lmStringCharAt_chars = lmChars(lmStringCharAt_text)
+    assert(lmStringCharAt_index < len(lmStringCharAt_chars), "string.charAt index is out of range")
+    return lmStringCharAt_chars[lmStringCharAt_index]
+end
+function lmStringToNumber(lmStringToNumber_source)
+    lmStringToNumber_text = trim(lmText(lmStringToNumber_source))
+    if not lmNumericText(lmStringToNumber_text)
+        return null
+    end
+    lmStringToNumber_value = parseFloat(lmStringToNumber_text)
+    if not lmFinite(lmStringToNumber_value)
+        return null
+    end
+    return lmStringToNumber_value
+end
+function lmStringCapitalize(lmStringCapitalize_source)
+    lmStringCapitalize_text = lmText(lmStringCapitalize_source)
+    if lmStringCapitalize_text == ""
+        return ""
+    end
+    lmStringCapitalize_chars = lmChars(lmStringCapitalize_text)
+    return upper(lmStringCapitalize_chars[0]) + lmSliceChars(lmStringCapitalize_text, 1, len(lmStringCapitalize_chars))
+end
+function lmStringTitleCase(lmStringTitleCase_source)
+    lmStringTitleCase_text = lmText(lmStringTitleCase_source)
+    lmStringTitleCase_chars = lmChars(lmStringTitleCase_text)
+    lmStringTitleCase_out = ""
+    lmStringTitleCase_start = true
+    lmStringTitleCase_i = 0
+    while lmStringTitleCase_i < len(lmStringTitleCase_chars)
+    lmStringTitleCase_char = lmStringTitleCase_chars[lmStringTitleCase_i]
+    if lmStringTitleCase_char.isBlank()
+        lmStringTitleCase_out += lmStringTitleCase_char
+        lmStringTitleCase_start = true
+    else if lmStringTitleCase_start
+        lmStringTitleCase_out += upper(lmStringTitleCase_char)
+        lmStringTitleCase_start = false
+    else
+        lmStringTitleCase_out += lower(lmStringTitleCase_char)
+    end
+    lmStringTitleCase_i += 1
+end
+return lmStringTitleCase_out
+end
+function lmStringReverse(lmStringReverse_source)
+    lmStringReverse_text = lmText(lmStringReverse_source)
+    lmStringReverse_chars = lmChars(lmStringReverse_text)
+    lmStringReverse_out = ""
+    lmStringReverse_i = len(lmStringReverse_chars) - 1
+    while lmStringReverse_i >= 0
+    lmStringReverse_out += lmStringReverse_chars[lmStringReverse_i]
+    lmStringReverse_i -= 1
+end
+return lmStringReverse_out
+end
+function lmStringRepeat(lmStringRepeat_source, lmStringRepeat_count)
+    lmStringRepeat_text = lmText(lmStringRepeat_source)
+    assert(lmIndex(lmStringRepeat_count), "string.repeat expects a non-negative whole count")
+    assert(lmByteLength(lmStringRepeat_text) * lmStringRepeat_count <= 10000000, "string.repeat would produce a string that is too long")
+    return lmRepeatText(lmStringRepeat_text, lmStringRepeat_count)
+end
+function lmStringPad(lmStringPad_source, lmStringPad_width, lmStringPad_fill, lmStringPad_align)
+    lmStringPad_text = lmText(lmStringPad_source)
+    assert(lmIndex(lmStringPad_width), "string.pad expects a non-negative whole width")
+    lmStringPad_fillText = " "
+    if lmStringPad_fill != null
+        lmStringPad_fillText = lmText(lmStringPad_fill)
+    end
+    lmStringPad_unit = " "
+    if lmStringPad_fillText != ""
+        lmStringPad_unit = lmChars(lmStringPad_fillText)[0]
+    end
+    lmStringPad_alignment = "left"
+    if lmStringPad_align != null
+        lmStringPad_alignment = lmText(lmStringPad_align)
+    end
+    lmStringPad_current = len(lmStringPad_text)
+    if lmStringPad_current >= lmStringPad_width
+        return lmStringPad_text
+    end
+    lmStringPad_missing = lmStringPad_width - lmStringPad_current
+    if lmStringPad_alignment == "left"
+        return lmStringPad_text + lmRepeatChar(lmStringPad_unit, lmStringPad_missing)
+    end
+    if lmStringPad_alignment == "right"
+        return lmRepeatChar(lmStringPad_unit, lmStringPad_missing) + lmStringPad_text
+    end
+    if lmStringPad_alignment != "both" and lmStringPad_alignment != "center"
+        assert(false, "string.pad alignment must be 'left', 'right' or 'center'")
+    end
+    lmStringPad_left = floor(lmStringPad_missing / 2)
+    if lmStringPad_missing % 2 == 1
+        lmStringPad_left += 1
+    end
+    lmStringPad_right = lmStringPad_missing - lmStringPad_left
+    return lmRepeatChar(lmStringPad_unit, lmStringPad_left) + lmStringPad_text + lmRepeatChar(lmStringPad_unit, lmStringPad_right)
+end
+function lmStringPadLeft(lmStringPadLeft_source, lmStringPadLeft_width, lmStringPadLeft_fill)
+    lmStringPadLeft_text = lmText(lmStringPadLeft_source)
+    assert(lmIndex(lmStringPadLeft_width), "padLeft expects a non-negative whole width")
+    lmStringPadLeft_target = lmStringPadLeft_width
+    if lmStringPadLeft_target > 100000
+        lmStringPadLeft_target = 100000
+    end
+    lmStringPadLeft_missing = lmStringPadLeft_target - len(lmStringPadLeft_text)
+    if lmStringPadLeft_missing <= 0
+        return lmStringPadLeft_text
+    end
+    lmStringPadLeft_unit = " "
+    if lmStringPadLeft_fill != null
+        lmStringPadLeft_unit = lmText(lmStringPadLeft_fill)
+    end
+    if lmStringPadLeft_unit == ""
+        lmStringPadLeft_unit = " "
+    end
+    lmStringPadLeft_padding = ""
+    while len(lmStringPadLeft_padding) < lmStringPadLeft_missing
+    lmStringPadLeft_padding += lmStringPadLeft_unit
+end
+return lmSliceChars(lmStringPadLeft_padding, 0, lmStringPadLeft_missing) + lmStringPadLeft_text
+end
+function lmStringPadRight(lmStringPadRight_source, lmStringPadRight_width, lmStringPadRight_fill)
+    lmStringPadRight_text = lmText(lmStringPadRight_source)
+    assert(lmIndex(lmStringPadRight_width), "padRight expects a non-negative whole width")
+    lmStringPadRight_target = lmStringPadRight_width
+    if lmStringPadRight_target > 100000
+        lmStringPadRight_target = 100000
+    end
+    lmStringPadRight_missing = lmStringPadRight_target - len(lmStringPadRight_text)
+    if lmStringPadRight_missing <= 0
+        return lmStringPadRight_text
+    end
+    lmStringPadRight_unit = " "
+    if lmStringPadRight_fill != null
+        lmStringPadRight_unit = lmText(lmStringPadRight_fill)
+    end
+    if lmStringPadRight_unit == ""
+        lmStringPadRight_unit = " "
+    end
+    lmStringPadRight_padding = ""
+    while len(lmStringPadRight_padding) < lmStringPadRight_missing
+    lmStringPadRight_padding += lmStringPadRight_unit
+end
+return lmStringPadRight_text + lmSliceChars(lmStringPadRight_padding, 0, lmStringPadRight_missing)
+end
+function lmStringIsDigit(lmStringIsDigit_source)
+    lmStringIsDigit_chars = lmChars(lmText(lmStringIsDigit_source))
+    if len(lmStringIsDigit_chars) == 0
+        return false
+    end
+    lmStringIsDigit_i = 0
+    while lmStringIsDigit_i < len(lmStringIsDigit_chars)
+    if not lmAsciiDigit(lmStringIsDigit_chars[lmStringIsDigit_i])
+        return false
+    end
+    lmStringIsDigit_i += 1
+end
+return true
+end
+function lmStringIsAlpha(lmStringIsAlpha_source)
+    lmStringIsAlpha_chars = lmChars(lmText(lmStringIsAlpha_source))
+    if len(lmStringIsAlpha_chars) == 0
+        return false
+    end
+    lmStringIsAlpha_i = 0
+    while lmStringIsAlpha_i < len(lmStringIsAlpha_chars)
+    if not lmStringIsAlpha_chars[lmStringIsAlpha_i].isAlpha()
+        return false
+    end
+    lmStringIsAlpha_i += 1
+end
+return true
+end
+function lmStringIsAlphanumeric(lmStringIsAlphanumeric_source)
+    lmStringIsAlphanumeric_chars = lmChars(lmText(lmStringIsAlphanumeric_source))
+    if len(lmStringIsAlphanumeric_chars) == 0
+        return false
+    end
+    lmStringIsAlphanumeric_i = 0
+    while lmStringIsAlphanumeric_i < len(lmStringIsAlphanumeric_chars)
+    lmStringIsAlphanumeric_char = lmStringIsAlphanumeric_chars[lmStringIsAlphanumeric_i]
+    if not lmStringIsAlphanumeric_char.isAlpha() and not lmAsciiDigit(lmStringIsAlphanumeric_char)
+        return false
+    end
+    lmStringIsAlphanumeric_i += 1
+end
+return true
+end
+function lmStringIsWhitespace(lmStringIsWhitespace_source)
+    lmStringIsWhitespace_chars = lmChars(lmText(lmStringIsWhitespace_source))
+    if len(lmStringIsWhitespace_chars) == 0
+        return false
+    end
+    lmStringIsWhitespace_i = 0
+    while lmStringIsWhitespace_i < len(lmStringIsWhitespace_chars)
+    if not lmStringIsWhitespace_chars[lmStringIsWhitespace_i].isBlank()
+        return false
+    end
+    lmStringIsWhitespace_i += 1
+end
+return true
+end
+function lmStringIsEmpty(lmStringIsEmpty_source)
+    return len(lmText(lmStringIsEmpty_source)) == 0
+end
+function lmStringIsBlank(lmStringIsBlank_source)
+    lmStringIsBlank_chars = lmChars(lmText(lmStringIsBlank_source))
+    lmStringIsBlank_i = 0
+    while lmStringIsBlank_i < len(lmStringIsBlank_chars)
+    if not lmStringIsBlank_chars[lmStringIsBlank_i].isBlank()
+        return false
+    end
+    lmStringIsBlank_i += 1
+end
+return true
+end
+function lmStringLines(lmStringLines_source)
+    lmStringLines_text = lmText(lmStringLines_source)
+    if lmStringLines_text == ""
+        return []
+    end
+    lmStringLines_raw = split(lmStringLines_text, "\n")
+    lmStringLines_count = len(lmStringLines_raw)
+    lmStringLines_dropLast = lmStringLines_count > 0 and lmStringLines_raw[lmStringLines_count - 1] == "" and lmStringLines_text.endsWith("\n")
+    lmStringLines_out = []
+    lmStringLines_i = 0
+    while lmStringLines_i < lmStringLines_count
+    lmStringLines_part = lmStringLines_raw[lmStringLines_i]
+    if lmStringLines_i < lmStringLines_count - 1 and lmStringLines_part.endsWith("\n")
+        lmStringLines_part = lmSliceChars(lmStringLines_part, 0, len(lmStringLines_part) - 1)
+    end
+    if not (lmStringLines_dropLast and lmStringLines_i == lmStringLines_count - 1)
+        lmStringLines_out.add(lmStringLines_part)
+    end
+    lmStringLines_i += 1
+end
+return lmStringLines_out
+end
+function lmStringChars(lmStringChars_source)
+    return lmChars(lmText(lmStringChars_source))
+end
+function lmStringSwapCase(lmStringSwapCase_source)
+    lmStringSwapCase_chars = lmChars(lmText(lmStringSwapCase_source))
+    lmStringSwapCase_out = ""
+    lmStringSwapCase_i = 0
+    while lmStringSwapCase_i < len(lmStringSwapCase_chars)
+    lmStringSwapCase_char = lmStringSwapCase_chars[lmStringSwapCase_i]
+    if lmIsUpperChar(lmStringSwapCase_char)
+        lmStringSwapCase_out += lower(lmStringSwapCase_char)
+    else if lmIsLowerChar(lmStringSwapCase_char)
+        lmStringSwapCase_out += upper(lmStringSwapCase_char)
+    else
+        lmStringSwapCase_out += lmStringSwapCase_char
+    end
+    lmStringSwapCase_i += 1
+end
+return lmStringSwapCase_out
+end
+function lmStringTruncate(lmStringTruncate_source, lmStringTruncate_width, lmStringTruncate_suffix)
+    lmStringTruncate_text = lmText(lmStringTruncate_source)
+    assert(lmIndex(lmStringTruncate_width), "truncate expects a non-negative whole width")
+    lmStringTruncate_target = lmStringTruncate_width
+    if lmStringTruncate_target > 100000
+        lmStringTruncate_target = 100000
+    end
+    if len(lmStringTruncate_text) <= lmStringTruncate_target
+        return lmStringTruncate_text
+    end
+    lmStringTruncate_tail = "..."
+    if lmStringTruncate_suffix != null
+        lmStringTruncate_tail = lmText(lmStringTruncate_suffix)
+    end
+    lmStringTruncate_chars = lmChars(lmStringTruncate_text)
+    lmStringTruncate_tailChars = lmChars(lmStringTruncate_tail)
+    lmStringTruncate_kept = lmStringTruncate_target - len(lmStringTruncate_tailChars)
+    if lmStringTruncate_kept < 0
+        lmStringTruncate_kept = 0
+    end
+    lmStringTruncate_out = lmSliceChars(lmStringTruncate_text, 0, lmStringTruncate_kept)
+    lmStringTruncate_left = lmStringTruncate_target - lmStringTruncate_kept
+    lmStringTruncate_tailI = 0
+    while lmStringTruncate_tailI < lmStringTruncate_left and lmStringTruncate_tailI < len(lmStringTruncate_tailChars)
+    lmStringTruncate_out += lmStringTruncate_tailChars[lmStringTruncate_tailI]
+    lmStringTruncate_tailI += 1
+end
+return lmStringTruncate_out
+end
+function lmStringModule()
+    return {length: lmStringLength, upper: lmStringUpper, lower: lmStringLower, trim: lmStringTrim, split: lmStringSplit, join: lmStringJoin, contains: lmStringContains, startsWith: lmStringStartsWith, endsWith: lmStringEndsWith, replace: lmStringReplace, replaceAll: lmStringReplaceAll, slice: lmStringSlice, substring: lmStringSubstring, indexOf: lmStringIndexOf, lastIndexOf: lmStringLastIndexOf, charAt: lmStringCharAt, toNumber: lmStringToNumber, capitalize: lmStringCapitalize, titleCase: lmStringTitleCase, reverse: lmStringReverse, repeat: lmStringRepeat, pad: lmStringPad, padLeft: lmStringPadLeft, padRight: lmStringPadRight, isDigit: lmStringIsDigit, isAlpha: lmStringIsAlpha, isAlphanumeric: lmStringIsAlphanumeric, isWhitespace: lmStringIsWhitespace, isEmpty: lmStringIsEmpty, isBlank: lmStringIsBlank, lines: lmStringLines, chars: lmStringChars, swapCase: lmStringSwapCase, truncate: lmStringTruncate}
+end
+$- ---------------------------------------------------------------------------
+   JSON encoding
+   --------------------------------------------------------------------------- -$
+function lmJsonHexDigit(lmJsonHexDigit_n)
+    lmJsonHexDigit_digits = "0123456789abcdef"
+    if lmJsonHexDigit_n < 0 or lmJsonHexDigit_n > 15
+        return -1
+    end
+    return lmJsonHexDigit_digits[lmJsonHexDigit_n]
+end
+function lmJsonHex4(lmJsonHex4_n)
+    lmJsonHex4_out = ""
+    lmJsonHex4_i = 3
+    while lmJsonHex4_i >= 0
+    lmJsonHex4_out = lmJsonHexDigit(floor(lmJsonHex4_n / pow(16, lmJsonHex4_i)) % 16) + lmJsonHex4_out
+    lmJsonHex4_i -= 1
+end
+return lmJsonHex4_out
+end
+function lmJsonQuote(lmJsonQuote_source)
+    lmJsonQuote_chars = lmChars(lmText(lmJsonQuote_source))
+    lmJsonQuote_out = "\""
+    lmJsonQuote_i = 0
+    while lmJsonQuote_i < len(lmJsonQuote_chars)
+    lmJsonQuote_char = lmJsonQuote_chars[lmJsonQuote_i]
+    if lmJsonQuote_char == "\""
+        lmJsonQuote_out += "\\\""
+    else if lmJsonQuote_char == "\\"
+        lmJsonQuote_out += "\\\\"
+    else if lmJsonQuote_char == "\n"
+        lmJsonQuote_out += "\\n"
+    else if lmJsonQuote_char == "\n"
+        lmJsonQuote_out += "\\r"
+    else if lmJsonQuote_char == "\t"
+        lmJsonQuote_out += "\\t"
+    else if lmJsonQuote_char == ""
+        lmJsonQuote_out += "\\b"
+    else if lmJsonQuote_char == ""
+        lmJsonQuote_out += "\\f"
+    else if charCode(lmJsonQuote_char) < 32
+        lmJsonQuote_out += "\\u00" + lmJsonHex4(charCode(lmJsonQuote_char))
+    else
+        lmJsonQuote_out += lmJsonQuote_char
+    end
+    lmJsonQuote_i += 1
+end
+return lmJsonQuote_out + "\""
+end
+function lmJsonEncodeInner(lmJsonEncodeInner_value, lmJsonEncodeInner_depth)
+    if lmJsonEncodeInner_depth > 100
+        assert(false, "JSON value is nested too deeply")
+    end
+    lmJsonEncodeInner_type = type(lmJsonEncodeInner_value)
+    if lmJsonEncodeInner_type == "null"
+        return "null"
+    end
+    if lmJsonEncodeInner_type == "boolean"
+        if lmJsonEncodeInner_value
+            return "true"
+        end
+        return "false"
+    end
+    if lmJsonEncodeInner_type == "number"
+        assert(lmFinite(lmJsonEncodeInner_value), "Cannot encode a non-finite number as JSON")
+        return toString(lmJsonEncodeInner_value)
+    end
+    if lmJsonEncodeInner_type == "string"
+        return lmJsonQuote(lmJsonEncodeInner_value)
+    end
+    if lmJsonEncodeInner_type == "array"
+        lmJsonEncodeInner_out = "["
+        lmJsonEncodeInner_i = 0
+        while lmJsonEncodeInner_i < len(lmJsonEncodeInner_value)
+        if lmJsonEncodeInner_i > 0
+            lmJsonEncodeInner_out += ","
+        end
+        lmJsonEncodeInner_out += lmJsonEncodeInner(lmJsonEncodeInner_value[lmJsonEncodeInner_i], lmJsonEncodeInner_depth + 1)
+        lmJsonEncodeInner_i += 1
+    end
+    return lmJsonEncodeInner_out + "]"
+end
+if lmJsonEncodeInner_type == "object"
+    lmJsonEncodeInner_out = "\{"
+    lmJsonEncodeInner_keys = keys(lmJsonEncodeInner_value)
+    lmJsonEncodeInner_i = 0
+    while lmJsonEncodeInner_i < len(lmJsonEncodeInner_keys)
+    if lmJsonEncodeInner_i > 0
+        lmJsonEncodeInner_out += ","
+    end
+    lmJsonEncodeInner_key = lmJsonEncodeInner_keys[lmJsonEncodeInner_i]
+    lmJsonEncodeInner_out += lmJsonQuote(lmJsonEncodeInner_key) + ":"
+    lmJsonEncodeInner_out += lmJsonEncodeInner(lmJsonEncodeInner_value.get(lmJsonEncodeInner_key), lmJsonEncodeInner_depth + 1)
+    lmJsonEncodeInner_i += 1
+end
+return lmJsonEncodeInner_out + "\}"
+end
+assert(false, "Cannot encode a " + lmJsonEncodeInner_type + " as JSON")
+end
+function lmJsonEncode(lmJsonEncode_value)
+    return lmJsonEncodeInner(lmJsonEncode_value, 0)
+end
+$- ---------------------------------------------------------------------------
+   JSON decoding
+   --------------------------------------------------------------------------- -$
+function lmJsonState(lmJsonState_text, lmJsonState_strict)
+    return {chars: split(lmJsonState_text, ""), pos: 0, strict: lmJsonState_strict, error: ""}
+end
+function lmJsonFail(lmJsonFail_state, lmJsonFail_message)
+    lmJsonFail_state.error = lmJsonFail_message
+    if lmJsonFail_state.strict
+        assert(false, lmJsonFail_message)
+    end
+    return null
+end
+function lmJsonSkipWs(lmJsonSkipWs_state)
+    while lmJsonSkipWs_state.pos < len(lmJsonSkipWs_state.chars)
+    lmJsonSkipWs_char = lmJsonSkipWs_state.chars[lmJsonSkipWs_state.pos]
+    if lmJsonSkipWs_char != " " and lmJsonSkipWs_char != "\t" and lmJsonSkipWs_char != "\n" and lmJsonSkipWs_char != "\n"
+        break
+    end
+    lmJsonSkipWs_state.pos += 1
+end
+end
+function lmJsonTail(lmJsonTail_state)
+    lmJsonTail_out = ""
+    lmJsonTail_i = lmJsonTail_state.pos
+    while lmJsonTail_i < len(lmJsonTail_state.chars)
+    lmJsonTail_out += lmJsonTail_state.chars[lmJsonTail_i]
+    lmJsonTail_i += 1
+end
+return lmJsonTail_out
+end
+function lmJsonConsumeLiteral(lmJsonConsumeLiteral_state, lmJsonConsumeLiteral_literal)
+    if startsWith(lmJsonTail(lmJsonConsumeLiteral_state), lmJsonConsumeLiteral_literal)
+        lmJsonConsumeLiteral_state.pos += len(lmJsonConsumeLiteral_literal)
+        return true
+    end
+    return false
+end
+function lmJsonHexValue(lmJsonHexValue_char)
+    lmJsonHexValue_digits = "0123456789abcdefABCDEF"
+    lmJsonHexValue_i = 0
+    while lmJsonHexValue_i < len(lmJsonHexValue_digits)
+    if lmJsonHexValue_digits[lmJsonHexValue_i] == lmJsonHexValue_char
+        if lmJsonHexValue_i < 16
+            return lmJsonHexValue_i
+        end
+        return lmJsonHexValue_i - 6
+    end
+    lmJsonHexValue_i += 1
+end
+return -1
+end
+function lmJsonParseHex4(lmJsonParseHex4_state)
+    if lmJsonParseHex4_state.pos + 4 > len(lmJsonParseHex4_state.chars)
+        return lmJsonFail(lmJsonParseHex4_state, "Incomplete Unicode escape in JSON string")
+    end
+    lmJsonParseHex4_value = 0
+    lmJsonParseHex4_i = 0
+    while lmJsonParseHex4_i < 4
+    lmJsonParseHex4_digit = lmJsonHexValue(lmJsonParseHex4_state.chars[lmJsonParseHex4_state.pos])
+    if lmJsonParseHex4_digit < 0
+        return lmJsonFail(lmJsonParseHex4_state, "Invalid Unicode escape in JSON string")
+    end
+    lmJsonParseHex4_value = lmJsonParseHex4_value * 16 + lmJsonParseHex4_digit
+    lmJsonParseHex4_state.pos += 1
+    lmJsonParseHex4_i += 1
+end
+return lmJsonParseHex4_value
+end
+function lmJsonParseString(lmJsonParseString_state)
+    lmJsonParseString_state.pos += 1
+    lmJsonParseString_out = ""
+    while true
+    if lmJsonParseString_state.pos >= len(lmJsonParseString_state.chars)
+        return lmJsonFail(lmJsonParseString_state, "Unterminated JSON string")
+    end
+    lmJsonParseString_char = lmJsonParseString_state.chars[lmJsonParseString_state.pos]
+    lmJsonParseString_state.pos += 1
+    if lmJsonParseString_char == "\""
+        return lmJsonParseString_out
+    end
+    if lmJsonParseString_char == "\\"
+        if lmJsonParseString_state.pos >= len(lmJsonParseString_state.chars)
+            return lmJsonFail(lmJsonParseString_state, "Unterminated JSON escape sequence")
+        end
+        lmJsonParseString_escape = lmJsonParseString_state.chars[lmJsonParseString_state.pos]
+        lmJsonParseString_state.pos += 1
+        if lmJsonParseString_escape == "\""
+            lmJsonParseString_out += "\""
+        else if lmJsonParseString_escape == "\\"
+            lmJsonParseString_out += "\\"
+        else if lmJsonParseString_escape == "/"
+            lmJsonParseString_out += "/"
+        else if lmJsonParseString_escape == "b"
+            lmJsonParseString_out += ""
+        else if lmJsonParseString_escape == "f"
+            lmJsonParseString_out += ""
+        else if lmJsonParseString_escape == "n"
+            lmJsonParseString_out += "\n"
+        else if lmJsonParseString_escape == "r"
+            lmJsonParseString_out += "\n"
+        else if lmJsonParseString_escape == "t"
+            lmJsonParseString_out += "\t"
+        else if lmJsonParseString_escape == "u"
+            lmJsonParseString_code = lmJsonParseHex4(lmJsonParseString_state)
+            if lmJsonParseString_state.error != ""
+                return null
+            end
+            if lmJsonParseString_code >= 55296 and lmJsonParseString_code <= 57343
+                if lmJsonParseString_code > 56319
+                    return lmJsonFail(lmJsonParseString_state, "Expected a high surrogate in JSON string")
+                end
+                if lmJsonParseString_state.pos + 1 >= len(lmJsonParseString_state.chars) or lmJsonParseString_state.chars[lmJsonParseString_state.pos] != "\\" or lmJsonParseString_state.chars[lmJsonParseString_state.pos + 1] != "u"
+                    return lmJsonFail(lmJsonParseString_state, "Expected a low surrogate in JSON string")
+                end
+                lmJsonParseString_state.pos += 2
+                lmJsonParseString_low = lmJsonParseHex4(lmJsonParseString_state)
+                if lmJsonParseString_state.error != ""
+                    return null
+                end
+                if lmJsonParseString_low < 56320 or lmJsonParseString_low > 57343
+                    return lmJsonFail(lmJsonParseString_state, "Invalid low surrogate in JSON string")
+                end
+                lmJsonParseString_code = 65536 + (lmJsonParseString_code - 55296) * 1024 + (lmJsonParseString_low - 56320)
+            end
+            if lmJsonParseString_code >= 55296 and lmJsonParseString_code <= 57343
+                return lmJsonFail(lmJsonParseString_state, "Invalid Unicode escape in JSON string")
+            end
+            lmJsonParseString_out += fromCharCode(lmJsonParseString_code)
+        else
+            return lmJsonFail(lmJsonParseString_state, "Invalid JSON escape sequence")
+        end
+    else if charCode(lmJsonParseString_char) < 32
+        return lmJsonFail(lmJsonParseString_state, "Control character in JSON string")
+    else
+        lmJsonParseString_out += lmJsonParseString_char
+    end
+end
+end
+function lmJsonValidNumber(lmJsonValidNumber_text)
+    lmJsonValidNumber_chars = lmChars(lmJsonValidNumber_text)
+    lmJsonValidNumber_size = len(lmJsonValidNumber_chars)
+    lmJsonValidNumber_pos = 0
+    if lmJsonValidNumber_size == 0
+        return false
+    end
+    if lmJsonValidNumber_chars[0] == "-"
+        lmJsonValidNumber_pos = 1
+    end
+    if lmJsonValidNumber_pos >= lmJsonValidNumber_size
+        return false
+    end
+    if lmJsonValidNumber_chars[lmJsonValidNumber_pos] == "0"
+        lmJsonValidNumber_pos += 1
+        if lmJsonValidNumber_pos < lmJsonValidNumber_size and lmAsciiDigit(lmJsonValidNumber_chars[lmJsonValidNumber_pos])
+            return false
+        end
+    else if lmAsciiDigit(lmJsonValidNumber_chars[lmJsonValidNumber_pos])
+        while lmJsonValidNumber_pos < lmJsonValidNumber_size and lmAsciiDigit(lmJsonValidNumber_chars[lmJsonValidNumber_pos])
+        lmJsonValidNumber_pos += 1
+    end
+else
+    return false
+end
+if lmJsonValidNumber_pos < lmJsonValidNumber_size and lmJsonValidNumber_chars[lmJsonValidNumber_pos] == "."
+    lmJsonValidNumber_pos += 1
+    if lmJsonValidNumber_pos >= lmJsonValidNumber_size or not lmAsciiDigit(lmJsonValidNumber_chars[lmJsonValidNumber_pos])
+        return false
+    end
+    while lmJsonValidNumber_pos < lmJsonValidNumber_size and lmAsciiDigit(lmJsonValidNumber_chars[lmJsonValidNumber_pos])
+    lmJsonValidNumber_pos += 1
+end
+end
+if lmJsonValidNumber_pos < lmJsonValidNumber_size
+    lmJsonValidNumber_exp = lmJsonValidNumber_chars[lmJsonValidNumber_pos]
+    if lmJsonValidNumber_exp == "e" or lmJsonValidNumber_exp == "E"
+        lmJsonValidNumber_pos += 1
+        if lmJsonValidNumber_pos < lmJsonValidNumber_size
+            lmJsonValidNumber_sign = lmJsonValidNumber_chars[lmJsonValidNumber_pos]
+            if lmJsonValidNumber_sign == "+" or lmJsonValidNumber_sign == "-"
+                lmJsonValidNumber_pos += 1
+            end
+        end
+        if lmJsonValidNumber_pos >= lmJsonValidNumber_size or not lmAsciiDigit(lmJsonValidNumber_chars[lmJsonValidNumber_pos])
+            return false
+        end
+        while lmJsonValidNumber_pos < lmJsonValidNumber_size and lmAsciiDigit(lmJsonValidNumber_chars[lmJsonValidNumber_pos])
+        lmJsonValidNumber_pos += 1
+    end
+end
+end
+return lmJsonValidNumber_pos == lmJsonValidNumber_size
+end
+function lmJsonParseNumber(lmJsonParseNumber_state)
+    lmJsonParseNumber_start = lmJsonParseNumber_state.pos
+    while lmJsonParseNumber_state.pos < len(lmJsonParseNumber_state.chars)
+    lmJsonParseNumber_char = lmJsonParseNumber_state.chars[lmJsonParseNumber_state.pos]
+    if lmAsciiDigit(lmJsonParseNumber_char) or lmJsonParseNumber_char == "-" or lmJsonParseNumber_char == "+" or lmJsonParseNumber_char == "." or lmJsonParseNumber_char == "e" or lmJsonParseNumber_char == "E"
+        lmJsonParseNumber_state.pos += 1
+        continue
+    end
+    break
+end
+lmJsonParseNumber_text = lmJsonTailSlice(lmJsonParseNumber_state, lmJsonParseNumber_start, lmJsonParseNumber_state.pos)
+if not lmJsonValidNumber(lmJsonParseNumber_text)
+    return lmJsonFail(lmJsonParseNumber_state, "Invalid JSON number '" + lmJsonParseNumber_text + "'")
+end
+return parseFloat(lmJsonParseNumber_text)
+end
+function lmJsonTailSlice(lmJsonTailSlice_state, lmJsonTailSlice_from, lmJsonTailSlice_to)
+    return join(slice(lmJsonTailSlice_state.chars, lmJsonTailSlice_from, lmJsonTailSlice_to), "")
+end
+function lmJsonParseArray(lmJsonParseArray_state)
+    lmJsonParseArray_state.pos += 1
+    lmJsonParseArray_items = []
+    lmJsonSkipWs(lmJsonParseArray_state)
+    if lmJsonParseArray_state.pos < len(lmJsonParseArray_state.chars) and lmJsonParseArray_state.chars[lmJsonParseArray_state.pos] == "]"
+        lmJsonParseArray_state.pos += 1
+        return lmJsonParseArray_items
+    end
+    while true
+    lmJsonSkipWs(lmJsonParseArray_state)
+    lmJsonParseArray_value = lmJsonParseValue(lmJsonParseArray_state)
+    if lmJsonParseArray_state.error != ""
+        return null
+    end
+    lmJsonParseArray_items.add(lmJsonParseArray_value)
+    lmJsonSkipWs(lmJsonParseArray_state)
+    if lmJsonParseArray_state.pos >= len(lmJsonParseArray_state.chars)
+        return lmJsonFail(lmJsonParseArray_state, "Expected ',' or ']' at position " + toString(lmJsonParseArray_state.pos))
+    end
+    lmJsonParseArray_char = lmJsonParseArray_state.chars[lmJsonParseArray_state.pos]
+    lmJsonParseArray_state.pos += 1
+    if lmJsonParseArray_char == "]"
+        return lmJsonParseArray_items
+    end
+    if lmJsonParseArray_char != ","
+        return lmJsonFail(lmJsonParseArray_state, "Expected ',' or ']' at position " + toString(lmJsonParseArray_state.pos - 1))
+    end
+end
+end
+function lmJsonParseObject(lmJsonParseObject_state)
+    lmJsonParseObject_state.pos += 1
+    lmJsonParseObject_fields = {}
+    lmJsonSkipWs(lmJsonParseObject_state)
+    if lmJsonParseObject_state.pos < len(lmJsonParseObject_state.chars) and lmJsonParseObject_state.chars[lmJsonParseObject_state.pos] == "\}"
+        lmJsonParseObject_state.pos += 1
+        return lmJsonParseObject_fields
+    end
+    while true
+    lmJsonSkipWs(lmJsonParseObject_state)
+    if lmJsonParseObject_state.pos >= len(lmJsonParseObject_state.chars) or lmJsonParseObject_state.chars[lmJsonParseObject_state.pos] != "\""
+        return lmJsonFail(lmJsonParseObject_state, "Expected a string key at position " + toString(lmJsonParseObject_state.pos))
+    end
+    lmJsonParseObject_key = lmJsonParseString(lmJsonParseObject_state)
+    if lmJsonParseObject_state.error != ""
+        return null
+    end
+    lmJsonSkipWs(lmJsonParseObject_state)
+    if lmJsonParseObject_state.pos >= len(lmJsonParseObject_state.chars) or lmJsonParseObject_state.chars[lmJsonParseObject_state.pos] != ":"
+        return lmJsonFail(lmJsonParseObject_state, "Expected ':' at position " + toString(lmJsonParseObject_state.pos))
+    end
+    lmJsonParseObject_state.pos += 1
+    lmJsonSkipWs(lmJsonParseObject_state)
+    lmJsonParseObject_value = lmJsonParseValue(lmJsonParseObject_state)
+    if lmJsonParseObject_state.error != ""
+        return null
+    end
+    lmJsonParseObject_fields.set(lmJsonParseObject_key, lmJsonParseObject_value)
+    lmJsonSkipWs(lmJsonParseObject_state)
+    if lmJsonParseObject_state.pos >= len(lmJsonParseObject_state.chars)
+        return lmJsonFail(lmJsonParseObject_state, "Expected ',' or '\}' at position " + toString(lmJsonParseObject_state.pos))
+    end
+    lmJsonParseObject_char = lmJsonParseObject_state.chars[lmJsonParseObject_state.pos]
+    lmJsonParseObject_state.pos += 1
+    if lmJsonParseObject_char == "\}"
+        return lmJsonParseObject_fields
+    end
+    if lmJsonParseObject_char != ","
+        return lmJsonFail(lmJsonParseObject_state, "Expected ',' or '\}' at position " + toString(lmJsonParseObject_state.pos - 1))
+    end
+end
+end
+function lmJsonParseValue(lmJsonParseValue_state)
+    if lmJsonParseValue_state.error != ""
+        return null
+    end
+    lmJsonSkipWs(lmJsonParseValue_state)
+    if lmJsonParseValue_state.pos >= len(lmJsonParseValue_state.chars)
+        return lmJsonFail(lmJsonParseValue_state, "Unexpected JSON character at position " + toString(lmJsonParseValue_state.pos))
+    end
+    lmJsonParseValue_char = lmJsonParseValue_state.chars[lmJsonParseValue_state.pos]
+    if lmJsonParseValue_char == "\""
+        return lmJsonParseString(lmJsonParseValue_state)
+    end
+    if lmJsonParseValue_char == "\{"
+        return lmJsonParseObject(lmJsonParseValue_state)
+    end
+    if lmJsonParseValue_char == "["
+        return lmJsonParseArray(lmJsonParseValue_state)
+    end
+    if lmJsonParseValue_char == "t"
+        if lmJsonConsumeLiteral(lmJsonParseValue_state, "true")
+            return true
+        end
+        return lmJsonFail(lmJsonParseValue_state, "Unexpected JSON character at position " + toString(lmJsonParseValue_state.pos))
+    end
+    if lmJsonParseValue_char == "f"
+        if lmJsonConsumeLiteral(lmJsonParseValue_state, "false")
+            return false
+        end
+        return lmJsonFail(lmJsonParseValue_state, "Unexpected JSON character at position " + toString(lmJsonParseValue_state.pos))
+    end
+    if lmJsonParseValue_char == "n"
+        if lmJsonConsumeLiteral(lmJsonParseValue_state, "null")
+            return null
+        end
+        return lmJsonFail(lmJsonParseValue_state, "Unexpected JSON character at position " + toString(lmJsonParseValue_state.pos))
+    end
+    if lmJsonParseValue_char == "-" or lmAsciiDigit(lmJsonParseValue_char)
+        return lmJsonParseNumber(lmJsonParseValue_state)
+    end
+    return lmJsonFail(lmJsonParseValue_state, "Unexpected JSON character at position " + toString(lmJsonParseValue_state.pos))
+end
+function lmJsonDecode(lmJsonDecode_text)
+    assert(type(lmJsonDecode_text) == "string", "json.decode expects a string")
+    lmJsonDecode_state = lmJsonState(lmJsonDecode_text, true)
+    lmJsonDecode_value = lmJsonParseValue(lmJsonDecode_state)
+    lmJsonSkipWs(lmJsonDecode_state)
+    assert(lmJsonDecode_state.pos == len(lmJsonDecode_state.chars), "Unexpected trailing JSON characters at position " + toString(lmJsonDecode_state.pos))
+    return lmJsonDecode_value
+end
+function lmJsonIsValid(lmJsonIsValid_text)
+    if type(lmJsonIsValid_text) != "string"
+        return false
+    end
+    lmJsonIsValid_state = lmJsonState(lmJsonIsValid_text, false)
+    lmJsonParseValue(lmJsonIsValid_state)
+    if lmJsonIsValid_state.error != ""
+        return false
+    end
+    lmJsonSkipWs(lmJsonIsValid_state)
+    return lmJsonIsValid_state.pos == len(lmJsonIsValid_state.chars)
+end
+$- ---------------------------------------------------------------------------
+   JSON paths and pretty printing
+   --------------------------------------------------------------------------- -$
+function lmJsonIndent(lmJsonIndent_level)
+    return lmRepeatText("  ", lmJsonIndent_level)
+end
+function lmJsonPrettyInner(lmJsonPrettyInner_value, lmJsonPrettyInner_level)
+    if lmJsonPrettyInner_level > 100
+        assert(false, "JSON value is nested too deeply")
+    end
+    lmJsonPrettyInner_type = type(lmJsonPrettyInner_value)
+    if lmJsonPrettyInner_type == "array"
+        if len(lmJsonPrettyInner_value) == 0
+            return "[]"
+        end
+        lmJsonPrettyInner_out = "[\n"
+        lmJsonPrettyInner_i = 0
+        while lmJsonPrettyInner_i < len(lmJsonPrettyInner_value)
+        lmJsonPrettyInner_out += lmJsonIndent(lmJsonPrettyInner_level + 1)
+        lmJsonPrettyInner_out += lmJsonPrettyInner(lmJsonPrettyInner_value[lmJsonPrettyInner_i], lmJsonPrettyInner_level + 1)
+        if lmJsonPrettyInner_i + 1 < len(lmJsonPrettyInner_value)
+            lmJsonPrettyInner_out += ","
+        end
+        lmJsonPrettyInner_out += "\n"
+        lmJsonPrettyInner_i += 1
+    end
+    return lmJsonPrettyInner_out + lmJsonIndent(lmJsonPrettyInner_level) + "]"
+end
+if lmJsonPrettyInner_type == "object"
+    lmJsonPrettyInner_keys = keys(lmJsonPrettyInner_value)
+    if len(lmJsonPrettyInner_keys) == 0
+        return "\{\}"
+    end
+    lmJsonPrettyInner_out = "\{\n"
+    lmJsonPrettyInner_i = 0
+    while lmJsonPrettyInner_i < len(lmJsonPrettyInner_keys)
+    lmJsonPrettyInner_out += lmJsonIndent(lmJsonPrettyInner_level + 1)
+    lmJsonPrettyInner_key = lmJsonPrettyInner_keys[lmJsonPrettyInner_i]
+    lmJsonPrettyInner_out += lmJsonQuote(lmJsonPrettyInner_key) + ": "
+    lmJsonPrettyInner_out += lmJsonPrettyInner(lmJsonPrettyInner_value.get(lmJsonPrettyInner_key), lmJsonPrettyInner_level + 1)
+    if lmJsonPrettyInner_i + 1 < len(lmJsonPrettyInner_keys)
+        lmJsonPrettyInner_out += ","
+    end
+    lmJsonPrettyInner_out += "\n"
+    lmJsonPrettyInner_i += 1
+end
+return lmJsonPrettyInner_out + lmJsonIndent(lmJsonPrettyInner_level) + "\}"
+end
+return lmJsonEncodeInner(lmJsonPrettyInner_value, lmJsonPrettyInner_level)
+end
+function lmJsonPretty(lmJsonPretty_value)
+    return lmJsonPrettyInner(lmJsonPretty_value, 0)
+end
+function lmJsonArrayIndex(lmJsonArrayIndex_segment)
+    if not lmNumericText(lmJsonArrayIndex_segment)
+        return -1
+    end
+    lmJsonArrayIndex_number = parseFloat(lmJsonArrayIndex_segment)
+    if not lmIndex(lmJsonArrayIndex_number)
+        return -1
+    end
+    return lmJsonArrayIndex_number
+end
+function lmJsonGet(lmJsonGet_root, lmJsonGet_path)
+    assert(type(lmJsonGet_path) == "string", "json.get expects a path string")
+    if lmJsonGet_path == ""
+        return lmJsonGet_root
+    end
+    lmJsonGet_segments = split(lmJsonGet_path, ".")
+    lmJsonGet_current = lmJsonGet_root
+    lmJsonGet_i = 0
+    while lmJsonGet_i < len(lmJsonGet_segments)
+    lmJsonGet_segment = lmJsonGet_segments[lmJsonGet_i]
+    if type(lmJsonGet_current) == "object"
+        lmJsonGet_current = lmJsonGet_current.get(lmJsonGet_segment, null)
+    else if type(lmJsonGet_current) == "array"
+        lmJsonGet_index = lmJsonArrayIndex(lmJsonGet_segment)
+        if lmJsonGet_index < 0 or lmJsonGet_index >= len(lmJsonGet_current)
+            lmJsonGet_current = null
+        else
+            lmJsonGet_current = lmJsonGet_current[lmJsonGet_index]
+        end
+    else
+        lmJsonGet_current = null
+    end
+    lmJsonGet_i += 1
+end
+return lmJsonGet_current
+end
+function lmJsonSetAt(lmJsonSetAt_container, lmJsonSetAt_segments, lmJsonSetAt_pos, lmJsonSetAt_value)
+    lmJsonSetAt_segment = lmJsonSetAt_segments[lmJsonSetAt_pos]
+    lmJsonSetAt_last = lmJsonSetAt_pos == len(lmJsonSetAt_segments) - 1
+    if type(lmJsonSetAt_container) == "object"
+        if lmJsonSetAt_last
+            lmJsonSetAt_container.set(lmJsonSetAt_segment, lmJsonSetAt_value)
+            return
+        end
+        lmJsonSetAt_child = lmJsonSetAt_container.get(lmJsonSetAt_segment, null)
+        if type(lmJsonSetAt_child) == "object" or type(lmJsonSetAt_child) == "array"
+            lmJsonSetAt(lmJsonSetAt_child, lmJsonSetAt_segments, lmJsonSetAt_pos + 1, lmJsonSetAt_value)
+            return
+        end
+        if type(lmJsonSetAt_child) != "null"
+            assert(false, "Cannot descend into a " + type(lmJsonSetAt_child) + " at '" + lmJsonSetAt_segment + "' for json.set")
+        end
+        lmJsonSetAt_child = {}
+        lmJsonSetAt_container.set(lmJsonSetAt_segment, lmJsonSetAt_child)
+        lmJsonSetAt(lmJsonSetAt_child, lmJsonSetAt_segments, lmJsonSetAt_pos + 1, lmJsonSetAt_value)
+        return
+    end
+    if type(lmJsonSetAt_container) == "array"
+        lmJsonSetAt_index = lmJsonArrayIndex(lmJsonSetAt_segment)
+        assert(lmJsonSetAt_index >= 0, "Expected an array index in path, found '" + lmJsonSetAt_segment + "'")
+        if lmJsonSetAt_last
+            if lmJsonSetAt_index < len(lmJsonSetAt_container)
+                lmJsonSetAt_container[lmJsonSetAt_index] = lmJsonSetAt_value
+            else if lmJsonSetAt_index == len(lmJsonSetAt_container)
+                lmJsonSetAt_container.add(lmJsonSetAt_value)
+            else
+                assert(false, "json.set array index is past the end of the array")
+            end
+            return
+        end
+        assert(lmJsonSetAt_index < len(lmJsonSetAt_container), "json.set array index is past the end of the array")
+        lmJsonSetAt_child = lmJsonSetAt_container[lmJsonSetAt_index]
+        if type(lmJsonSetAt_child) != "object" and type(lmJsonSetAt_child) != "array"
+            assert(false, "Cannot descend into a non-container for json.set")
+        end
+        lmJsonSetAt(lmJsonSetAt_child, lmJsonSetAt_segments, lmJsonSetAt_pos + 1, lmJsonSetAt_value)
+        return
+    end
+    assert(false, "json.set cannot descend into a " + type(lmJsonSetAt_container) + " at '" + lmJsonSetAt_segment + "'")
+end
+function lmJsonSet(lmJsonSet_root, lmJsonSet_path, lmJsonSet_value)
+    assert(type(lmJsonSet_path) == "string", "json.set expects a path string")
+    if lmJsonSet_path == ""
+        return lmJsonSet_value
+    end
+    lmJsonSet_result = lmJsonSet_root
+    if lmJsonSet_result == null
+        lmJsonSet_result = {}
+    end
+    assert(type(lmJsonSet_result) == "object" or type(lmJsonSet_result) == "array", "json.set expects an object, array or null root")
+    lmJsonSet_segments = split(lmJsonSet_path, ".")
+    lmJsonSetAt(lmJsonSet_result, lmJsonSet_segments, 0, lmJsonSet_value)
+    return lmJsonSet_result
+end
+function lmJsonModule()
+    return {encode: lmJsonEncode, decode: lmJsonDecode, pretty: lmJsonPretty, isValid: lmJsonIsValid, get: lmJsonGet, set: lmJsonSet}
+end
+function lmAllModules()
+    return {string: lmStringModule(), json: lmJsonModule()}
+end
+$- ---------------------------------------------------------------------------
+   Self-tests: native modules are oracles only below this point.
+   --------------------------------------------------------------------------- -$
 $- === inlined selfhost/vm_core.enm === -$
 $- Pure-Englishmen core of the Englishmen bytecode VM.
 
@@ -3108,10 +4292,8 @@ $- Pure-Englishmen core of the Englishmen bytecode VM.
    here. Native modules are not used by the implementation; `os` is imported
    only for the selftest guard at the bottom.
 
-   Running the core returns an array with one entry per `Say` argument. On an
-   invalid IR or a runtime fault it returns a structured error object instead:
-   {__vmError: true, kind: "...", error: "...", op: "...", line: n, col: n}.
-   Use `vmIsError(value)` to distinguish it from a legitimate output object.
+   Execution entry points are omitted from this compile-only bootstrap;
+   the Rust host remains the oracle for validating generated bytecode.
 
    C2 can layer a runtime over this core by setting these optional hooks:
    vmCallHook(callee, name, args)     -> value or structured error
@@ -4188,8 +5370,6 @@ function vmStep()
     vmStep_frame.ip = vmStep_ip + 1
     vmExec(vmStep_instr)
 end
-$- Compile-only variant: no VM entry point is inlined. -$
-$- Compile-only variant: VM self-tests are omitted. -$
 $- === inlined selfhost/vm_runtime.enm === -$
 $-!
     selfhost/vm_runtime.enm
@@ -4219,7 +5399,7 @@ function rtArg(args, index, fallback)
 end
 function rtTypeName(value)
     if isObject(value)
-        kind = value.get("rtKind", "")
+        kind = rtObjectGet(value, "rtKind", "")
         if kind == "closure" or kind == "native"
             return "function"
         end
@@ -4249,16 +5429,16 @@ function rtDisplay(value)
         return value
     end
     if isObject(value)
-        kind = value.get("rtKind", "")
+        kind = rtObjectGet(value, "rtKind", "")
         if kind == "closure"
-            return "<function " + value.get("rtProto", {}).get("name", "?") + ">"
+            return "<function " + rtObjectGet(rtObjectGet(value, "rtProto", {}), "name", "?") + ">"
         end
         if kind == "native"
-            return "<native function " + value.get("rtName", "?") + ">"
+            return "<native function " + rtObjectGet(value, "rtName", "?") + ">"
         end
         parts = []
         for key in keys(value)
-            parts.add(key + ": " + rtDebugDisplay(value.get(key, null)))
+            parts.add(key + ": " + rtDebugDisplay(rtObjectGet(value, key, null)))
         end
         return "\{" + join(parts, ", ") + "\}"
     end
@@ -4462,7 +5642,7 @@ end
 function rtObjectValues(object)
     out = []
     for key in rtObjectKeys(object)
-        out.add(object.get(key, null))
+        out.add(rtObjectGet(object, key, null))
     end
     return out
 end
@@ -4470,11 +5650,22 @@ function rtObjectHas(object, key)
     found = keys(object).indexOf(key)
     return found >= 0
 end
+$- Module objects can define a `get` key, which shadows the native object.get
+   method. Read properties through entries() so runtime metadata lookups never
+   accidentally call a module function. -$
 function rtObjectGet(object, key, fallback)
-    if rtObjectHas(object, key)
-        return object.get(key, fallback)
+    if not isObject(object)
+        return fallback
     end
-    return fallback
+    rtObjectGet_pairs = entries(object)
+    rtObjectGet_i = 0
+    while rtObjectGet_i < len(rtObjectGet_pairs)
+    if rtDisplay(rtObjectGet_pairs[rtObjectGet_i][0]) == key
+        return rtObjectGet_pairs[rtObjectGet_i][1]
+    end
+    rtObjectGet_i += 1
+end
+return fallback
 end
 function rtObjectSet(object, key, value)
     object.set(key, value)
@@ -4525,7 +5716,7 @@ function rtEnvGet(env, name)
     cursor = env
     while cursor != null
     if rtObjectHas(cursor.rtVars, name)
-        return cursor.rtVars.get(name, null)
+        return rtObjectGet(cursor.rtVars, name, null)
     end
     cursor = cursor.rtParent
 end
@@ -4552,29 +5743,54 @@ function rtNative(name)
 end
 function rtGlobalEnv()
     env = rtEnvNew(null)
-    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format"]
+    names = ["say", "print", "len", "type", "toString", "toNumber", "toBool", "isNumber", "isString", "isArray", "isObject", "isBool", "isNull", "isFunction", "isNaN", "parseInt", "parseFloat", "range", "sum", "average", "min", "max", "abs", "clamp", "sorted", "reversed", "zip", "take", "drop", "keys", "values", "entries", "fromEntries", "first", "last", "indexOf", "contains", "slice", "pow", "sqrt", "floor", "ceil", "round", "sign", "trim", "upper", "lower", "split", "join", "replace", "startsWith", "endsWith", "repeat", "padStart", "padEnd", "charCode", "fromCharCode", "random", "randomInt", "seed", "format", "assert", "jsonEncode", "jsonDecode", "args"]
     for name in names
         rtEnvDefine(env, name, rtNative(name))
     end
     return env
 end
+$- The import table maps module names to module objects. A2 builds those objects
+   from pure Englishmen functions, so they are ordinary function values here. -$
+function rtImportNormalizeTable(rtImportNormalizeTable_value)
+    if isNull(rtImportNormalizeTable_value)
+        return {}
+    end
+    if not isObject(rtImportNormalizeTable_value)
+        rtError("import table must be an object mapping module names to module objects")
+        return {}
+    end
+    return rtImportNormalizeTable_value
+end
+function rtImportMissingMessage(rtImportMissingMessage_name, rtImportMissingMessage_table)
+    rtImportAllNames = sorted(keys(rtImportMissingMessage_table))
+    rtImportAvailableNames = []
+    for rtImportCandidate in rtImportAllNames
+        if rtImportCandidate != "__arities"
+            rtImportAvailableNames.add(rtImportCandidate)
+        end
+    end
+    if len(rtImportAvailableNames) == 0
+        return "module '" + rtImportMissingMessage_name + "' is not available; no imports were provided"
+    end
+    return "module '" + rtImportMissingMessage_name + "' is not available; available modules: " + join(rtImportAvailableNames, ", ")
+end
 $- The IR view of a chunk: constants, functions and code are ordinary values. -$
 function rtChunkCode(chunk)
-    code = chunk.get("code", null)
+    code = rtObjectGet(chunk, "code", null)
     if isArray(code)
         return code
     end
     return []
 end
 function rtChunkConstants(chunk)
-    constants = chunk.get("constants", null)
+    constants = rtObjectGet(chunk, "constants", null)
     if isArray(constants)
         return constants
     end
     return []
 end
 function rtChunkFunctions(chunk)
-    functions = chunk.get("functions", null)
+    functions = rtObjectGet(chunk, "functions", null)
     if isArray(functions)
         return functions
     end
@@ -4586,15 +5802,15 @@ function rtConstValue(chunk, index)
         rtError("constant index " + toString(index) + " is out of range")
     end
     constant = constants[index]
-    tag = constant.get("tag", "")
+    tag = rtObjectGet(constant, "tag", "")
     if tag == "number"
-        return rtExpectNumber(constant.get("value", 0), "as a constant")
+        return rtExpectNumber(rtObjectGet(constant, "value", 0), "as a constant")
     end
     if tag == "string"
-        return rtExpectString(constant.get("value", ""), "as a constant")
+        return rtExpectString(rtObjectGet(constant, "value", ""), "as a constant")
     end
     if tag == "bool"
-        return constant.get("value", false) == true
+        return rtObjectGet(constant, "value", false) == true
     end
     if tag == "null"
         return null
@@ -4606,7 +5822,7 @@ function rtName(chunk, index)
     if index < 0 or index >= len(constants)
         rtError("name index " + toString(index) + " is out of range")
     end
-    value = constants[index].get("value", null)
+    value = rtObjectGet(constants[index], "value", null)
     return rtExpectString(value, "as a name")
 end
 function rtStackPush(value)
@@ -4661,7 +5877,7 @@ return false
 end
 function rtIsCallable(value)
     if isObject(value)
-        kind = value.get("rtKind", "")
+        kind = rtObjectGet(value, "rtKind", "")
         return kind == "closure" or kind == "native"
     end
     return isFunction(value)
@@ -4672,25 +5888,67 @@ function rtInvoke(callee, args, hint)
         rtError("'" + hint + "' is not callable (found " + rtTypeName(callee) + ")")
     end
     if isFunction(callee)
-        rtError("host functions cannot be called by the self-hosted VM")
+$- Imported module objects hold pure Englishmen functions. Englishmen has
+           no function-apply primitive, so dispatch by argument count. An
+           optional __arities table in the import table pads variadic adapters
+           such as bytes.of and bytes.slice up to their fixed Englishmen arity. -$
+        if rtVm != null
+            rtInvokeImports = rtObjectGet(rtVm, "imports", {})
+            rtInvokeArities = rtObjectGet(rtInvokeImports, "__arities", {})
+            if isObject(rtInvokeArities) and rtObjectHas(rtInvokeArities, hint)
+                rtInvokeTargetArity = rtObjectGet(rtInvokeArities, hint, 0)
+                while len(args) < rtInvokeTargetArity
+                args.add(null)
+            end
+        end
     end
-    kind = callee.get("rtKind", "")
-    if kind == "native"
-        value = rtNativeCall(callee.get("rtName", ""), args)
-        return {rtPushed: false, rtValue: value}
+    rtInvokeArgCount = len(args)
+    if rtInvokeArgCount == 0
+        return {rtPushed: false, rtValue: callee()}
     end
-    proto = callee.get("rtProto", {})
-    params = proto.get("params", [])
-    if len(args) != len(params)
-        rtError("Function '" + proto.get("name", "?") + "' expects " + len(params) + " argument(s) but got " + len(args))
+    if rtInvokeArgCount == 1
+        return {rtPushed: false, rtValue: callee(args[0])}
     end
-    env = rtEnvNew(callee.get("rtEnv", null))
-    i = 0
-    while i < len(params)
-    rtEnvDefine(env, params[i], args[i])
-    i += 1
+    if rtInvokeArgCount == 2
+        return {rtPushed: false, rtValue: callee(args[0], args[1])}
+    end
+    if rtInvokeArgCount == 3
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2])}
+    end
+    if rtInvokeArgCount == 4
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3])}
+    end
+    if rtInvokeArgCount == 5
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4])}
+    end
+    if rtInvokeArgCount == 6
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4], args[5])}
+    end
+    if rtInvokeArgCount == 7
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4], args[5], args[6])}
+    end
+    if rtInvokeArgCount == 8
+        return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7])}
+    end
+    rtError("host function '" + hint + "' with " + toString(rtInvokeArgCount) + " arguments cannot be called by the self-hosted VM")
 end
-unit = {rtKind: "function", rtChunk: proto.get("chunk", {})}
+kind = rtObjectGet(callee, "rtKind", "")
+if kind == "native"
+    value = rtNativeCall(rtObjectGet(callee, "rtName", ""), args)
+    return {rtPushed: false, rtValue: value}
+end
+proto = rtObjectGet(callee, "rtProto", {})
+params = rtObjectGet(proto, "params", [])
+if len(args) != len(params)
+    rtError("Function '" + rtObjectGet(proto, "name", "?") + "' expects " + len(params) + " argument(s) but got " + len(args))
+end
+env = rtEnvNew(rtObjectGet(callee, "rtEnv", null))
+i = 0
+while i < len(params)
+rtEnvDefine(env, params[i], args[i])
+i += 1
+end
+unit = {rtKind: "function", rtChunk: rtObjectGet(proto, "chunk", {})}
 rtVm.frames.add(rtFrameNew(unit, 0, env, len(rtVm.stack)))
 return {rtPushed: true, rtValue: null}
 end
@@ -5432,14 +6690,14 @@ function rtObjectMethod(object, method, args)
             rtError("merge() expects an object to merge")
         end
         for key in rtObjectKeys(other)
-            rtObjectSet(object, key, other.get(key, null))
+            rtObjectSet(object, key, rtObjectGet(other, key, null))
         end
         return object
     end
     if method == "copy"
         out = {}
         for key in rtObjectKeys(object)
-            rtObjectSet(out, key, object.get(key, null))
+            rtObjectSet(out, key, rtObjectGet(object, key, null))
         end
         return out
     end
@@ -5451,7 +6709,7 @@ function rtObjectMethod(object, method, args)
         for key in args
             name = rtExpectString(key, "as a key")
             if rtObjectHas(object, name)
-                rtObjectSet(out, name, object.get(name, null))
+                rtObjectSet(out, name, rtObjectGet(object, name, null))
             end
         end
         return out
@@ -5460,7 +6718,7 @@ function rtObjectMethod(object, method, args)
         out = {}
         for key in rtObjectKeys(object)
             if keys(args).indexOf(key) < 0
-                rtObjectSet(out, key, object.get(key, null))
+                rtObjectSet(out, key, rtObjectGet(object, key, null))
             end
         end
         return out
@@ -5468,7 +6726,7 @@ function rtObjectMethod(object, method, args)
     if method == "entries"
         out = []
         for key in rtObjectKeys(object)
-            out.add([key, object.get(key, null)])
+            out.add([key, rtObjectGet(object, key, null)])
         end
         return out
     end
@@ -5512,7 +6770,7 @@ end
 $- Object fields that hold functions win over builtin methods, as in the VM. -$
 function rtMethodCall(receiver, method, args)
     if isObject(receiver) and rtObjectHas(receiver, method)
-        candidate = receiver.get(method, null)
+        candidate = rtObjectGet(receiver, method, null)
         if rtIsCallable(candidate)
             return rtInvoke(candidate, args, method)
         end
@@ -5732,6 +6990,23 @@ function rtNativeCall(name, args)
         end
         return format(rtArg(args, 0, ""), rtArg(args, 1, null))
     end
+$- The compile-only bootstrap uses these host-provided helpers. The driver
+   defines emProgramArgs and the emJson*Value functions before running its IR. -$
+    if name == "assert"
+        if not rtTruthy(rtArg(args, 0, false))
+            rtError(rtDisplay(rtArg(args, 1, "assertion failed")))
+        end
+        return null
+    end
+    if name == "jsonEncode"
+        return emJsonEncodeValue(rtArg(args, 0, null))
+    end
+    if name == "jsonDecode"
+        return emJsonDecodeValue(rtArg(args, 0, ""))
+    end
+    if name == "args"
+        return emProgramArgs
+    end
     rtError("native builtin '" + name + "' is not available in the self-hosted VM")
 end
 function rtBinary(op, left, right)
@@ -5835,7 +7110,7 @@ function rtGetProperty(base, name)
         rtError("Cannot access property '" + name + "' on a " + rtTypeName(base))
     end
     if rtObjectHas(base, name)
-        return base.get(name, null)
+        return rtObjectGet(base, name, null)
     end
     rtError("Unknown property '" + name + "'")
 end
@@ -5869,9 +7144,9 @@ function rtSetIndex(base, index, value)
     return null
 end
 function rtStep(op, chunk, frame)
-    name = op.get("op", "")
-    a = op.get("a", 0)
-    b = op.get("b", 0)
+    name = rtObjectGet(op, "op", "")
+    a = rtObjectGet(op, "a", 0)
+    b = rtObjectGet(op, "b", 0)
     if name == "LoadConst"
         rtStackPush(rtConstValue(chunk, a))
         return null
@@ -5921,7 +7196,7 @@ function rtStep(op, chunk, frame)
             if not rtObjectHas(base, property)
                 rtObjectSet(base, property, {})
             end
-            rtStackPush(base.get(property, null))
+            rtStackPush(rtObjectGet(base, property, null))
         else
             rtStackPush(rtGetProperty(base, property))
         end
@@ -6116,7 +7391,14 @@ if name == "ReturnNull"
     return null
 end
 if name == "Import"
-    rtError("module '" + rtName(chunk, a) + "' needs a native module; imports are not self-hosted yet")
+    rtImportNameValue = rtName(chunk, a)
+    if not rtObjectHas(rtVm.imports, rtImportNameValue)
+        rtError(rtImportMissingMessage(rtImportNameValue, rtVm.imports))
+        return null
+    end
+    rtImportModuleValue = rtObjectGet(rtVm.imports, rtImportNameValue, null)
+    rtEnvDefine(rtVm.globals, rtImportNameValue, rtImportModuleValue)
+    return null
 end
 rtError("unknown instruction '" + name + "'")
 end
@@ -6137,7 +7419,6 @@ function rtExecute()
 end
 return null
 end
-$- Compile-only variant: VM execution entry points and CLI are omitted. -$
 $- === compile-only bootstrap driver ===
    Reads one .enm source path, runs the pure Englishmen lexer, parser, AST ->
    IR code generator and encoder, then prints exactly one JSON summary line.
