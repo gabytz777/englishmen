@@ -1,0 +1,767 @@
+$- Pure-Englishmen AST -> emb IR code generator.
+   Self-contained: no local .enm imports. The native `os` and `emb` modules are
+   used only by the self-test guard at the bottom, never by the generator. -$
+import os
+import emb
+$- A compilation context is one chunk. Functions get a fresh context so their
+   constant pools, jumps and nested prototypes stay independent. -$
+function cgCtx()
+    return {constants: [], functions: [], code: [], breaks: [], heads: [], pops: []}
+end
+function cgField(cgField_node, cgField_key, cgField_fallback)
+    if cgField_node == null or type(cgField_node) != "object"
+        return cgField_fallback
+    end
+    cgField_value = cgField_node.get(cgField_key, null)
+    if cgField_value == null
+        return cgField_fallback
+    end
+    return cgField_value
+end
+function cgNeed(cgNeed_node, cgNeed_key, cgNeed_context)
+    assert(cgNeed_node != null and type(cgNeed_node) == "object", "cgCodegen: expected an object for " + cgNeed_context)
+    assert(cgNeed_node.has(cgNeed_key), "cgCodegen: missing '" + cgNeed_key + "' in " + cgNeed_context)
+    return cgNeed_node.get(cgNeed_key)
+end
+function cgExpectString(cgExpectString_value, cgExpectString_context)
+    assert(type(cgExpectString_value) == "string", "cgCodegen: expected a string for " + cgExpectString_context + ", found " + type(cgExpectString_value))
+    return cgExpectString_value
+end
+function cgExpectArray(cgExpectArray_value, cgExpectArray_context)
+    assert(type(cgExpectArray_value) == "array", "cgCodegen: expected an array for " + cgExpectArray_context + ", found " + type(cgExpectArray_value))
+    return cgExpectArray_value
+end
+function cgSpanOf(cgSpanOf_node, cgSpanOf_fallback)
+    if cgSpanOf_node == null or type(cgSpanOf_node) != "object"
+        return cgSpanOf_fallback
+    end
+    cgSpanOf_span = cgSpanOf_node.get("span", null)
+    if type(cgSpanOf_span) != "object"
+        return cgSpanOf_fallback
+    end
+    cgSpanOf_line = cgSpanOf_span.get("line", cgSpanOf_fallback.line)
+    cgSpanOf_col = cgSpanOf_span.get("col", cgSpanOf_fallback.col)
+    assert(type(cgSpanOf_line) == "number", "cgCodegen: span line must be a number")
+    assert(type(cgSpanOf_col) == "number", "cgCodegen: span col must be a number")
+    assert(cgSpanOf_line >= 1 and floor(cgSpanOf_line) == cgSpanOf_line, "cgCodegen: span line must be a positive whole number")
+    assert(cgSpanOf_col >= 1 and floor(cgSpanOf_col) == cgSpanOf_col, "cgCodegen: span col must be a positive whole number")
+    return {line: cgSpanOf_line, col: cgSpanOf_col}
+end
+$- Constant pool: intern scalars exactly like Chunk::add_const / add_name. -$
+function cgConstEqual(cgConstEqual_left, cgConstEqual_right)
+    cgConstEqual_leftTag = cgConstEqual_left.get("tag", null)
+    cgConstEqual_rightTag = cgConstEqual_right.get("tag", null)
+    if cgConstEqual_leftTag != cgConstEqual_rightTag
+        return false
+    end
+    if cgConstEqual_leftTag == "null"
+        return true
+    end
+    return cgConstEqual_left.get("value", null) == cgConstEqual_right.get("value", null)
+end
+function cgIntern(cgIntern_ctx, cgIntern_constant)
+    assert(type(cgIntern_constant) == "object", "cgCodegen: expected a constant object")
+    cgIntern_i = 0
+    while cgIntern_i < len(cgIntern_ctx.constants)
+    if cgConstEqual(cgIntern_ctx.constants[cgIntern_i], cgIntern_constant)
+        return cgIntern_i
+    end
+    cgIntern_i += 1
+end
+cgIntern_index = len(cgIntern_ctx.constants)
+cgIntern_ctx.constants.add(cgIntern_constant)
+return cgIntern_index
+end
+function cgConst(cgConst_ctx, cgConst_tag, cgConst_value)
+    if cgConst_tag == "null"
+        return cgIntern(cgConst_ctx, {tag: "null"})
+    end
+    return cgIntern(cgConst_ctx, {tag: cgConst_tag, value: cgConst_value})
+end
+function cgName(cgName_ctx, cgName_name)
+    return cgConst(cgName_ctx, "string", cgName_name)
+end
+$- Instruction stream. Jump operands are patched in place once targets are known. -$
+function cgEmit(cgEmit_ctx, cgEmit_op, cgEmit_a, cgEmit_b, cgEmit_span)
+    assert(type(cgEmit_op) == "string", "cgCodegen: opcode must be a string")
+    assert(type(cgEmit_a) == "number" and cgEmit_a >= 0 and floor(cgEmit_a) == cgEmit_a, "cgCodegen: operand 'a' must be a whole number")
+    assert(type(cgEmit_b) == "number" and cgEmit_b >= 0 and floor(cgEmit_b) == cgEmit_b, "cgCodegen: operand 'b' must be a whole number")
+    cgEmit_instruction = {op: cgEmit_op, a: cgEmit_a, b: cgEmit_b, line: cgEmit_span.line, col: cgEmit_span.col}
+    cgEmit_index = len(cgEmit_ctx.code)
+    cgEmit_ctx.code.add(cgEmit_instruction)
+    return cgEmit_index
+end
+function cgHere(cgHere_ctx)
+    return len(cgHere_ctx.code)
+end
+function cgPatch(cgPatch_ctx, cgPatch_index, cgPatch_target)
+    assert(cgPatch_index >= 0 and cgPatch_index < len(cgPatch_ctx.code), "cgCodegen: jump index out of range")
+    assert(type(cgPatch_target) == "number" and cgPatch_target >= 0 and floor(cgPatch_target) == cgPatch_target, "cgCodegen: jump target must be a whole number")
+    cgPatch_instruction = cgPatch_ctx.code[cgPatch_index]
+    cgPatch_op = cgPatch_instruction.op
+    assert(cgPatch_op == "Jump" or cgPatch_op == "JumpIfFalse" or cgPatch_op == "JumpIfFalsePeek" or cgPatch_op == "JumpIfTruePeek" or cgPatch_op == "JumpIfNullPeek" or cgPatch_op == "RepeatNext" or cgPatch_op == "IterNext", "cgCodegen: cannot patch non-jump op '" + cgPatch_op + "'")
+$- IterNext stores (nameIndex, target); every other jump stores the target in a. -$
+    if cgPatch_op == "IterNext"
+        cgPatch_instruction.b = cgPatch_target
+    else
+        cgPatch_instruction.a = cgPatch_target
+    end
+end
+$- Loop bookkeeping: one head, one break list (including the exit jump) and one
+   number of stack values a `break` must discard. -$
+function cgOpenLoop(cgOpenLoop_ctx, cgOpenLoop_head, cgOpenLoop_pops, cgOpenLoop_exitIndex)
+    cgOpenLoop_ctx.heads.add(cgOpenLoop_head)
+    cgOpenLoop_ctx.pops.add(cgOpenLoop_pops)
+    cgOpenLoop_ctx.breaks.add([cgOpenLoop_exitIndex])
+end
+function cgCloseLoop(cgCloseLoop_ctx, cgCloseLoop_span)
+    assert(len(cgCloseLoop_ctx.heads) > 0, "cgCodegen: unmatched loop")
+    cgCloseLoop_head = cgCloseLoop_ctx.heads.pop()
+    cgCloseLoop_unused = cgCloseLoop_ctx.pops.pop()
+    cgCloseLoop_pending = cgCloseLoop_ctx.breaks.pop()
+    cgEmit(cgCloseLoop_ctx, "Jump", cgCloseLoop_head, 0, cgCloseLoop_span)
+    cgCloseLoop_endAddress = cgHere(cgCloseLoop_ctx)
+    cgCloseLoop_i = 0
+    while cgCloseLoop_i < len(cgCloseLoop_pending)
+    cgPatch(cgCloseLoop_ctx, cgCloseLoop_pending[cgCloseLoop_i], cgCloseLoop_endAddress)
+    cgCloseLoop_i += 1
+end
+end
+$- Scalar operand for an eager binary operator. Logical operators are emitted
+   as short-circuiting jump sequences instead. -$
+function cgArithmeticOp(cgArithmeticOp_op)
+    if cgArithmeticOp_op == "+"
+        return "Add"
+    end
+    if cgArithmeticOp_op == "-"
+        return "Sub"
+    end
+    if cgArithmeticOp_op == "*"
+        return "Mul"
+    end
+    if cgArithmeticOp_op == "/"
+        return "Div"
+    end
+    if cgArithmeticOp_op == "%"
+        return "Mod"
+    end
+    if cgArithmeticOp_op == "//"
+        return "FloorDiv"
+    end
+    if cgArithmeticOp_op == "**"
+        return "Pow"
+    end
+    if cgArithmeticOp_op == "&"
+        return "BitAnd"
+    end
+    if cgArithmeticOp_op == "|"
+        return "BitOr"
+    end
+    if cgArithmeticOp_op == "^"
+        return "BitXor"
+    end
+    if cgArithmeticOp_op == "<<"
+        return "Shl"
+    end
+    if cgArithmeticOp_op == ">>"
+        return "Shr"
+    end
+    if cgArithmeticOp_op == "=="
+        return "Eq"
+    end
+    if cgArithmeticOp_op == "!="
+        return "NotEq"
+    end
+    if cgArithmeticOp_op == ">"
+        return "Gt"
+    end
+    if cgArithmeticOp_op == "<"
+        return "Lt"
+    end
+    if cgArithmeticOp_op == ">="
+        return "GtEq"
+    end
+    if cgArithmeticOp_op == "<="
+        return "LtEq"
+    end
+    if cgArithmeticOp_op == "and" or cgArithmeticOp_op == "or" or cgArithmeticOp_op == "??"
+        assert(false, "cgCodegen: logical operator '" + cgArithmeticOp_op + "' is not an arithmetic operator")
+    end
+    assert(false, "cgCodegen: unsupported binary operator '" + cgArithmeticOp_op + "'")
+end
+function cgDescribeCallee(cgDescribeCallee_callee)
+    if type(cgDescribeCallee_callee) == "object"
+        cgDescribeCallee_kind = cgDescribeCallee_callee.get("kind", null)
+        if cgDescribeCallee_kind == "Variable" or cgDescribeCallee_kind == "PropertyAccess"
+            return cgDescribeCallee_callee.get("name", "value")
+        end
+    end
+    return "value"
+end
+$- Push the base of a property assignment, creating missing objects like the
+   Rust compiler's object_base does. -$
+function cgObjectBase(cgObjectBase_ctx, cgObjectBase_expr, cgObjectBase_span)
+    if type(cgObjectBase_expr) == "object" and cgObjectBase_expr.get("kind", null) == "Variable"
+        cgObjectBase_name = cgExpectString(cgNeed(cgObjectBase_expr, "name", "property base"), "property base name")
+        cgEmit(cgObjectBase_ctx, "GetVarOrObject", cgName(cgObjectBase_ctx, cgObjectBase_name), 0, cgObjectBase_span)
+        return null
+    end
+    if type(cgObjectBase_expr) == "object" and cgObjectBase_expr.get("kind", null) == "PropertyAccess"
+        cgObjectBase(cgObjectBase_ctx, cgNeed(cgObjectBase_expr, "base", "nested property base"), cgObjectBase_span)
+        cgObjectBase_name = cgExpectString(cgNeed(cgObjectBase_expr, "name", "nested property base"), "property name")
+        cgEmit(cgObjectBase_ctx, "GetPropOrObject", cgName(cgObjectBase_ctx, cgObjectBase_name), 0, cgObjectBase_span)
+        return null
+    end
+    cgExpr(cgObjectBase_ctx, cgObjectBase_expr, cgObjectBase_span)
+end
+$- The right-hand side is already on the stack when an assignment store runs. -$
+function cgAssign(cgAssign_ctx, cgAssign_target, cgAssign_span)
+    assert(type(cgAssign_target) == "object", "cgCodegen: expected an assignment target object")
+    cgAssign_kind = cgNeed(cgAssign_target, "kind", "assignment target")
+    if cgAssign_kind == "Variable"
+        cgAssign_name = cgExpectString(cgNeed(cgAssign_target, "name", "Variable target"), "target name")
+        cgEmit(cgAssign_ctx, "SetVar", cgName(cgAssign_ctx, cgAssign_name), 0, cgAssign_span)
+        return null
+    end
+    if cgAssign_kind == "Property"
+        cgObjectBase(cgAssign_ctx, cgNeed(cgAssign_target, "base", "Property target"), cgAssign_span)
+        cgAssign_name = cgExpectString(cgNeed(cgAssign_target, "name", "Property target"), "property name")
+        cgEmit(cgAssign_ctx, "SetProp", cgName(cgAssign_ctx, cgAssign_name), 0, cgAssign_span)
+        return null
+    end
+    if cgAssign_kind == "Index"
+        cgExpr(cgAssign_ctx, cgNeed(cgAssign_target, "base", "Index target"), cgAssign_span)
+        cgExpr(cgAssign_ctx, cgNeed(cgAssign_target, "index", "Index target"), cgAssign_span)
+        cgEmit(cgAssign_ctx, "SetIndex", 0, 0, cgAssign_span)
+        return null
+    end
+    assert(false, "cgCodegen: unsupported assignment target '" + toString(cgAssign_kind) + "'")
+end
+function cgCompoundAssign(cgCompoundAssign_ctx, cgCompoundAssign_target, cgCompoundAssign_op, cgCompoundAssign_value, cgCompoundAssign_span)
+    cgCompoundAssign_instruction = cgArithmeticOp(cgCompoundAssign_op)
+    assert(type(cgCompoundAssign_target) == "object", "cgCodegen: expected a compound assignment target object")
+    cgCompoundAssign_kind = cgNeed(cgCompoundAssign_target, "kind", "compound assignment target")
+    if cgCompoundAssign_kind == "Variable"
+        cgCompoundAssign_name = cgExpectString(cgNeed(cgCompoundAssign_target, "name", "Variable target"), "target name")
+        cgCompoundAssign_nameIndex = cgName(cgCompoundAssign_ctx, cgCompoundAssign_name)
+        cgEmit(cgCompoundAssign_ctx, "GetVar", cgCompoundAssign_nameIndex, 0, cgCompoundAssign_span)
+        cgExpr(cgCompoundAssign_ctx, cgCompoundAssign_value, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, cgCompoundAssign_instruction, 0, 0, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, "SetVar", cgCompoundAssign_nameIndex, 0, cgCompoundAssign_span)
+        return null
+    end
+    if cgCompoundAssign_kind == "Property"
+        cgObjectBase(cgCompoundAssign_ctx, cgNeed(cgCompoundAssign_target, "base", "Property target"), cgCompoundAssign_span)
+        cgCompoundAssign_name = cgExpectString(cgNeed(cgCompoundAssign_target, "name", "Property target"), "property name")
+        cgCompoundAssign_nameIndex = cgName(cgCompoundAssign_ctx, cgCompoundAssign_name)
+        cgEmit(cgCompoundAssign_ctx, "GetPropKeep", cgCompoundAssign_nameIndex, 0, cgCompoundAssign_span)
+        cgExpr(cgCompoundAssign_ctx, cgCompoundAssign_value, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, cgCompoundAssign_instruction, 0, 0, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, "Rotate", 1, 0, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, "SetProp", cgCompoundAssign_nameIndex, 0, cgCompoundAssign_span)
+        return null
+    end
+    if cgCompoundAssign_kind == "Index"
+        cgExpr(cgCompoundAssign_ctx, cgNeed(cgCompoundAssign_target, "base", "Index target"), cgCompoundAssign_span)
+        cgExpr(cgCompoundAssign_ctx, cgNeed(cgCompoundAssign_target, "index", "Index target"), cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, "GetIndexKeep", 0, 0, cgCompoundAssign_span)
+        cgExpr(cgCompoundAssign_ctx, cgCompoundAssign_value, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, cgCompoundAssign_instruction, 0, 0, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, "Rotate", 2, 0, cgCompoundAssign_span)
+        cgEmit(cgCompoundAssign_ctx, "SetIndex", 0, 0, cgCompoundAssign_span)
+        return null
+    end
+    assert(false, "cgCodegen: unsupported compound assignment target '" + toString(cgCompoundAssign_kind) + "'")
+end
+$- Expressions. Each node emits instructions only into the current chunk. -$
+function cgBinary(cgBinary_ctx, cgBinary_expr, cgBinary_span)
+    cgBinary_op = cgExpectString(cgNeed(cgBinary_expr, "op", "Binary"), "binary operator")
+    cgBinary_left = cgNeed(cgBinary_expr, "left", "Binary")
+    cgBinary_right = cgNeed(cgBinary_expr, "right", "Binary")
+    if cgBinary_op == "and" or cgBinary_op == "or"
+        cgExpr(cgBinary_ctx, cgBinary_left, cgBinary_span)
+        cgEmit(cgBinary_ctx, "ToBool", 0, 0, cgBinary_span)
+        cgBinary_jumpOp = "JumpIfFalsePeek"
+        if cgBinary_op == "or"
+            cgBinary_jumpOp = "JumpIfTruePeek"
+        end
+        cgBinary_jump = cgEmit(cgBinary_ctx, cgBinary_jumpOp, 0, 0, cgBinary_span)
+        cgEmit(cgBinary_ctx, "Pop", 0, 0, cgBinary_span)
+        cgExpr(cgBinary_ctx, cgBinary_right, cgBinary_span)
+        cgEmit(cgBinary_ctx, "ToBool", 0, 0, cgBinary_span)
+        cgPatch(cgBinary_ctx, cgBinary_jump, cgHere(cgBinary_ctx))
+        return null
+    end
+    if cgBinary_op == "??"
+        cgExpr(cgBinary_ctx, cgBinary_left, cgBinary_span)
+        cgBinary_nullJump = cgEmit(cgBinary_ctx, "JumpIfNullPeek", 0, 0, cgBinary_span)
+        cgBinary_endJump = cgEmit(cgBinary_ctx, "Jump", 0, 0, cgBinary_span)
+        cgPatch(cgBinary_ctx, cgBinary_nullJump, cgHere(cgBinary_ctx))
+        cgEmit(cgBinary_ctx, "Pop", 0, 0, cgBinary_span)
+        cgExpr(cgBinary_ctx, cgBinary_right, cgBinary_span)
+        cgPatch(cgBinary_ctx, cgBinary_endJump, cgHere(cgBinary_ctx))
+        return null
+    end
+    cgBinary_instruction = cgArithmeticOp(cgBinary_op)
+    cgExpr(cgBinary_ctx, cgBinary_left, cgBinary_span)
+    cgExpr(cgBinary_ctx, cgBinary_right, cgBinary_span)
+    cgEmit(cgBinary_ctx, cgBinary_instruction, 0, 0, cgBinary_span)
+end
+function cgPostfix(cgPostfix_ctx, cgPostfix_expr, cgPostfix_span)
+    cgPostfix_op = cgExpectString(cgNeed(cgPostfix_expr, "op", "Postfix"), "postfix operator")
+    assert(cgPostfix_op == "++" or cgPostfix_op == "--", "cgCodegen: unsupported postfix operator '" + cgPostfix_op + "'")
+    cgPostfix_instruction = "Add"
+    if cgPostfix_op == "--"
+        cgPostfix_instruction = "Sub"
+    end
+    cgPostfix_target = cgNeed(cgPostfix_expr, "target", "Postfix")
+    assert(type(cgPostfix_target) == "object", "cgCodegen: expected a postfix target object")
+    cgPostfix_kind = cgNeed(cgPostfix_target, "kind", "postfix target")
+    if cgPostfix_kind == "Variable"
+        cgPostfix_name = cgExpectString(cgNeed(cgPostfix_target, "name", "Variable target"), "target name")
+        cgPostfix_nameIndex = cgName(cgPostfix_ctx, cgPostfix_name)
+        cgEmit(cgPostfix_ctx, "GetVar", cgPostfix_nameIndex, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "Dup", 0, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "LoadConst", cgConst(cgPostfix_ctx, "number", 1), 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, cgPostfix_instruction, 0, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "SetVar", cgPostfix_nameIndex, 0, cgPostfix_span)
+        return null
+    end
+    if cgPostfix_kind == "Property"
+        cgObjectBase(cgPostfix_ctx, cgNeed(cgPostfix_target, "base", "Property target"), cgPostfix_span)
+        cgPostfix_name = cgExpectString(cgNeed(cgPostfix_target, "name", "Property target"), "property name")
+        cgPostfix_nameIndex = cgName(cgPostfix_ctx, cgPostfix_name)
+        cgEmit(cgPostfix_ctx, "GetPropKeep", cgPostfix_nameIndex, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "Dup", 0, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "LoadConst", cgConst(cgPostfix_ctx, "number", 1), 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, cgPostfix_instruction, 0, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "Rotate", 2, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "Rotate", 2, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "SetProp", cgPostfix_nameIndex, 0, cgPostfix_span)
+        return null
+    end
+    if cgPostfix_kind == "Index"
+        cgExpr(cgPostfix_ctx, cgNeed(cgPostfix_target, "base", "Index target"), cgPostfix_span)
+        cgExpr(cgPostfix_ctx, cgNeed(cgPostfix_target, "index", "Index target"), cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "GetIndexKeep", 0, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "Dup", 0, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "LoadConst", cgConst(cgPostfix_ctx, "number", 1), 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, cgPostfix_instruction, 0, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "Rotate", 3, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "Rotate", 3, 0, cgPostfix_span)
+        cgEmit(cgPostfix_ctx, "SetIndex", 0, 0, cgPostfix_span)
+        return null
+    end
+    assert(false, "cgCodegen: unsupported postfix target '" + toString(cgPostfix_kind) + "'")
+end
+function cgExpr(cgExpr_ctx, cgExpr_expr, cgExpr_inheritedSpan)
+    assert(type(cgExpr_expr) == "object", "cgCodegen: expected an expression object")
+    cgExpr_kind = cgNeed(cgExpr_expr, "kind", "expression")
+    cgExpr_span = cgSpanOf(cgExpr_expr, cgExpr_inheritedSpan)
+    if cgExpr_kind == "Number"
+        cgExpr_value = cgNeed(cgExpr_expr, "value", "Number")
+        assert(type(cgExpr_value) == "number", "cgCodegen: Number value must be a number")
+        cgEmit(cgExpr_ctx, "LoadConst", cgConst(cgExpr_ctx, "number", cgExpr_value), 0, cgExpr_span)
+        return null
+    end
+    if cgExpr_kind == "String"
+        cgExpr_value = cgNeed(cgExpr_expr, "value", "String")
+        cgExpectString(cgExpr_value, "String value")
+        cgEmit(cgExpr_ctx, "LoadConst", cgConst(cgExpr_ctx, "string", cgExpr_value), 0, cgExpr_span)
+        return null
+    end
+    if cgExpr_kind == "Bool"
+        cgExpr_value = cgNeed(cgExpr_expr, "value", "Bool")
+        assert(type(cgExpr_value) == "boolean", "cgCodegen: Bool value must be a boolean")
+        cgEmit(cgExpr_ctx, "LoadConst", cgConst(cgExpr_ctx, "bool", cgExpr_value), 0, cgExpr_span)
+        return null
+    end
+    if cgExpr_kind == "Null"
+        cgEmit(cgExpr_ctx, "LoadConst", cgConst(cgExpr_ctx, "null", null), 0, cgExpr_span)
+        return null
+    end
+    if cgExpr_kind == "Variable"
+        cgExpr_name = cgExpectString(cgNeed(cgExpr_expr, "name", "Variable"), "variable name")
+        cgEmit(cgExpr_ctx, "GetVar", cgName(cgExpr_ctx, cgExpr_name), 0, cgExpr_span)
+        return null
+    end
+    if cgExpr_kind == "PropertyAccess"
+        cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "base", "PropertyAccess"), cgExpr_span)
+        cgExpr_name = cgExpectString(cgNeed(cgExpr_expr, "name", "PropertyAccess"), "property name")
+        cgEmit(cgExpr_ctx, "GetProp", cgName(cgExpr_ctx, cgExpr_name), 0, cgExpr_span)
+        return null
+    end
+    if cgExpr_kind == "Index"
+        cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "base", "Index"), cgExpr_span)
+        cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "index", "Index"), cgExpr_span)
+        cgEmit(cgExpr_ctx, "GetIndex", 0, 0, cgExpr_span)
+        return null
+    end
+    if cgExpr_kind == "Array"
+        cgExpr_items = cgExpectArray(cgNeed(cgExpr_expr, "items", "Array"), "Array items")
+        cgExpr_i = 0
+        while cgExpr_i < len(cgExpr_items)
+        cgExpr(cgExpr_ctx, cgExpr_items[cgExpr_i], cgExpr_span)
+        cgExpr_i += 1
+    end
+    cgEmit(cgExpr_ctx, "MakeArray", len(cgExpr_items), 0, cgExpr_span)
+    return null
+end
+if cgExpr_kind == "Object"
+    cgExpr_fields = cgExpectArray(cgNeed(cgExpr_expr, "fields", "Object"), "Object fields")
+    cgExpr_i = 0
+    while cgExpr_i < len(cgExpr_fields)
+    cgExpr_field = cgExpr_fields[cgExpr_i]
+    assert(type(cgExpr_field) == "object", "cgCodegen: expected an object field entry")
+    cgExpr_key = cgExpectString(cgNeed(cgExpr_field, "name", "object field"), "object field name")
+    cgConst(cgExpr_ctx, "string", cgExpr_key)
+    cgExpr(cgExpr_ctx, cgNeed(cgExpr_field, "value", "object field"), cgExpr_span)
+    cgExpr_i += 1
+end
+cgEmit(cgExpr_ctx, "MakeObject", len(cgExpr_fields), 0, cgExpr_span)
+return null
+end
+if cgExpr_kind == "Call"
+    cgExpr_callee = cgNeed(cgExpr_expr, "callee", "Call")
+    cgExpr_args = cgExpectArray(cgNeed(cgExpr_expr, "args", "Call"), "Call arguments")
+    cgExpr_isSay = type(cgExpr_callee) == "object" and cgExpr_callee.get("kind", null) == "Variable" and cgExpr_callee.get("name", null) == "say"
+    if not cgExpr_isSay
+        cgExpr(cgExpr_ctx, cgExpr_callee, cgExpr_span)
+    end
+    cgExpr_i = 0
+    while cgExpr_i < len(cgExpr_args)
+    cgExpr(cgExpr_ctx, cgExpr_args[cgExpr_i], cgExpr_span)
+    cgExpr_i += 1
+end
+if cgExpr_isSay
+    cgEmit(cgExpr_ctx, "Say", len(cgExpr_args), 0, cgExpr_span)
+else
+    cgEmit(cgExpr_ctx, "Call", len(cgExpr_args), cgName(cgExpr_ctx, cgDescribeCallee(cgExpr_callee)), cgExpr_span)
+end
+return null
+end
+if cgExpr_kind == "MethodCall"
+    cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "receiver", "MethodCall"), cgExpr_span)
+    cgExpr_name = cgExpectString(cgNeed(cgExpr_expr, "name", "MethodCall"), "method name")
+    cgExpr_args = cgExpectArray(cgNeed(cgExpr_expr, "args", "MethodCall"), "MethodCall arguments")
+    cgExpr_i = 0
+    while cgExpr_i < len(cgExpr_args)
+    cgExpr(cgExpr_ctx, cgExpr_args[cgExpr_i], cgExpr_span)
+    cgExpr_i += 1
+end
+cgEmit(cgExpr_ctx, "MethodCall", cgName(cgExpr_ctx, cgExpr_name), len(cgExpr_args), cgExpr_span)
+return null
+end
+if cgExpr_kind == "Binary"
+    cgBinary(cgExpr_ctx, cgExpr_expr, cgExpr_span)
+    return null
+end
+if cgExpr_kind == "Unary"
+    cgExpr_op = cgExpectString(cgNeed(cgExpr_expr, "op", "Unary"), "unary operator")
+    cgExpr_instruction = ""
+    if cgExpr_op == "-"
+        cgExpr_instruction = "Neg"
+    else if cgExpr_op == "not"
+        cgExpr_instruction = "Not"
+    else if cgExpr_op == "~"
+        cgExpr_instruction = "BitNot"
+    else
+        assert(false, "cgCodegen: unsupported unary operator '" + cgExpr_op + "'")
+    end
+    cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "operand", "Unary"), cgExpr_span)
+    cgEmit(cgExpr_ctx, cgExpr_instruction, 0, 0, cgExpr_span)
+    return null
+end
+if cgExpr_kind == "Ternary"
+    cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "condition", "Ternary"), cgExpr_span)
+    cgExpr_falseJump = cgEmit(cgExpr_ctx, "JumpIfFalse", 0, 0, cgExpr_span)
+    cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "whenTrue", "Ternary"), cgExpr_span)
+    cgExpr_endJump = cgEmit(cgExpr_ctx, "Jump", 0, 0, cgExpr_span)
+    cgPatch(cgExpr_ctx, cgExpr_falseJump, cgHere(cgExpr_ctx))
+    cgExpr(cgExpr_ctx, cgNeed(cgExpr_expr, "whenFalse", "Ternary"), cgExpr_span)
+    cgPatch(cgExpr_ctx, cgExpr_endJump, cgHere(cgExpr_ctx))
+    return null
+end
+if cgExpr_kind == "Postfix"
+    cgPostfix(cgExpr_ctx, cgExpr_expr, cgExpr_span)
+    return null
+end
+assert(false, "cgCodegen: unsupported expression kind '" + toString(cgExpr_kind) + "'")
+end
+$- Statements. Every statement lowers into the current chunk. -$
+function cgStmt(cgStmt_ctx, cgStmt_stmt, cgStmt_inheritedSpan)
+    assert(type(cgStmt_stmt) == "object", "cgCodegen: expected a statement object")
+    cgStmt_kind = cgNeed(cgStmt_stmt, "kind", "statement")
+    cgStmt_span = cgSpanOf(cgStmt_stmt, cgStmt_inheritedSpan)
+    if cgStmt_kind == "Assign"
+        cgExpr(cgStmt_ctx, cgNeed(cgStmt_stmt, "value", "Assign"), cgStmt_span)
+        cgAssign(cgStmt_ctx, cgNeed(cgStmt_stmt, "target", "Assign"), cgStmt_span)
+        return null
+    end
+    if cgStmt_kind == "CompoundAssign"
+        cgStmt_op = cgExpectString(cgNeed(cgStmt_stmt, "op", "CompoundAssign"), "compound assignment operator")
+        cgCompoundAssign(cgStmt_ctx, cgNeed(cgStmt_stmt, "target", "CompoundAssign"), cgStmt_op, cgNeed(cgStmt_stmt, "value", "CompoundAssign"), cgStmt_span)
+        return null
+    end
+    if cgStmt_kind == "ExprStmt"
+        cgExpr(cgStmt_ctx, cgNeed(cgStmt_stmt, "expr", "ExprStmt"), cgStmt_span)
+        cgEmit(cgStmt_ctx, "Pop", 0, 0, cgStmt_span)
+        return null
+    end
+    if cgStmt_kind == "If"
+        cgStmt_branches = cgExpectArray(cgNeed(cgStmt_stmt, "branches", "If"), "If branches")
+        assert(len(cgStmt_branches) > 0, "cgCodegen: If statement needs at least one branch")
+        cgStmt_endJumps = []
+        cgStmt_i = 0
+        while cgStmt_i < len(cgStmt_branches)
+        cgStmt_branch = cgStmt_branches[cgStmt_i]
+        assert(type(cgStmt_branch) == "object", "cgCodegen: expected an If branch object")
+        cgExpr(cgStmt_ctx, cgNeed(cgStmt_branch, "condition", "If branch"), cgStmt_span)
+        cgStmt_skip = cgEmit(cgStmt_ctx, "JumpIfFalse", 0, 0, cgStmt_span)
+        cgBlock(cgStmt_ctx, cgExpectArray(cgNeed(cgStmt_branch, "body", "If branch"), "If branch body"), cgStmt_span)
+        cgStmt_endJumps.add(cgEmit(cgStmt_ctx, "Jump", 0, 0, cgStmt_span))
+        cgPatch(cgStmt_ctx, cgStmt_skip, cgHere(cgStmt_ctx))
+        cgStmt_i += 1
+    end
+    cgStmt_elseBody = cgStmt_stmt.get("else", null)
+    if cgStmt_elseBody != null
+        cgBlock(cgStmt_ctx, cgExpectArray(cgStmt_elseBody, "If else body"), cgStmt_span)
+    end
+    cgStmt_endAddress = cgHere(cgStmt_ctx)
+    cgStmt_i = 0
+    while cgStmt_i < len(cgStmt_endJumps)
+    cgPatch(cgStmt_ctx, cgStmt_endJumps[cgStmt_i], cgStmt_endAddress)
+    cgStmt_i += 1
+end
+return null
+end
+if cgStmt_kind == "FunctionDef"
+    cgStmt_name = cgExpectString(cgNeed(cgStmt_stmt, "name", "FunctionDef"), "function name")
+    cgStmt_params = cgExpectArray(cgNeed(cgStmt_stmt, "params", "FunctionDef"), "function parameters")
+    cgStmt_body = cgExpectArray(cgNeed(cgStmt_stmt, "body", "FunctionDef"), "function body")
+    cgStmt_copiedParams = []
+    cgStmt_i = 0
+    while cgStmt_i < len(cgStmt_params)
+    cgStmt_param = cgExpectString(cgStmt_params[cgStmt_i], "function parameter")
+    cgStmt_j = 0
+    while cgStmt_j < len(cgStmt_copiedParams)
+    assert(cgStmt_copiedParams[cgStmt_j] != cgStmt_param, "cgCodegen: function '" + cgStmt_name + "' has two parameters named '" + cgStmt_param + "'")
+    cgStmt_j += 1
+end
+cgStmt_copiedParams.add(cgStmt_param)
+cgStmt_i += 1
+end
+cgStmt_inner = cgCtx()
+cgBlock(cgStmt_inner, cgStmt_body, cgStmt_span)
+cgEmit(cgStmt_inner, "ReturnNull", 0, 0, cgStmt_span)
+cgStmt_prototype = {name: cgStmt_name, params: cgStmt_copiedParams, chunk: {constants: cgStmt_inner.constants, functions: cgStmt_inner.functions, code: cgStmt_inner.code}}
+cgStmt_functionIndex = len(cgStmt_ctx.functions)
+cgStmt_ctx.functions.add(cgStmt_prototype)
+cgEmit(cgStmt_ctx, "MakeClosure", cgStmt_functionIndex, 0, cgStmt_span)
+cgEmit(cgStmt_ctx, "DefineVar", cgName(cgStmt_ctx, cgStmt_name), 0, cgStmt_span)
+return null
+end
+if cgStmt_kind == "Return"
+    cgStmt_value = cgStmt_stmt.get("value", null)
+    if cgStmt_value == null
+        cgEmit(cgStmt_ctx, "ReturnNull", 0, 0, cgStmt_span)
+    else
+        cgExpr(cgStmt_ctx, cgStmt_value, cgStmt_span)
+        cgEmit(cgStmt_ctx, "Return", 0, 0, cgStmt_span)
+    end
+    return null
+end
+if cgStmt_kind == "While"
+    cgStmt_condition = cgNeed(cgStmt_stmt, "condition", "While")
+    cgStmt_body = cgExpectArray(cgNeed(cgStmt_stmt, "body", "While"), "While body")
+    cgStmt_head = cgHere(cgStmt_ctx)
+    cgExpr(cgStmt_ctx, cgStmt_condition, cgStmt_span)
+    cgStmt_exitIndex = cgEmit(cgStmt_ctx, "JumpIfFalse", 0, 0, cgStmt_span)
+    cgOpenLoop(cgStmt_ctx, cgStmt_head, 0, cgStmt_exitIndex)
+    cgBlock(cgStmt_ctx, cgStmt_body, cgStmt_span)
+    cgCloseLoop(cgStmt_ctx, cgStmt_span)
+    return null
+end
+if cgStmt_kind == "Repeat"
+    cgStmt_count = cgNeed(cgStmt_stmt, "count", "Repeat")
+    cgStmt_body = cgExpectArray(cgNeed(cgStmt_stmt, "body", "Repeat"), "Repeat body")
+    cgExpr(cgStmt_ctx, cgStmt_count, cgStmt_span)
+    cgEmit(cgStmt_ctx, "RepeatSetup", 0, 0, cgStmt_span)
+    cgStmt_head = cgHere(cgStmt_ctx)
+    cgStmt_exitIndex = cgEmit(cgStmt_ctx, "RepeatNext", 0, 0, cgStmt_span)
+    cgOpenLoop(cgStmt_ctx, cgStmt_head, 1, cgStmt_exitIndex)
+    cgBlock(cgStmt_ctx, cgStmt_body, cgStmt_span)
+    cgCloseLoop(cgStmt_ctx, cgStmt_span)
+    return null
+end
+if cgStmt_kind == "ForIn"
+    cgStmt_name = cgExpectString(cgNeed(cgStmt_stmt, "name", "ForIn"), "loop variable")
+    cgStmt_iterable = cgNeed(cgStmt_stmt, "iterable", "ForIn")
+    cgStmt_body = cgExpectArray(cgNeed(cgStmt_stmt, "body", "ForIn"), "ForIn body")
+    cgExpr(cgStmt_ctx, cgStmt_iterable, cgStmt_span)
+    cgEmit(cgStmt_ctx, "IterSetup", 0, 0, cgStmt_span)
+    cgStmt_nameIndex = cgName(cgStmt_ctx, cgStmt_name)
+    cgStmt_head = cgHere(cgStmt_ctx)
+    cgStmt_exitIndex = cgEmit(cgStmt_ctx, "IterNext", cgStmt_nameIndex, 0, cgStmt_span)
+    cgOpenLoop(cgStmt_ctx, cgStmt_head, 2, cgStmt_exitIndex)
+    cgBlock(cgStmt_ctx, cgStmt_body, cgStmt_span)
+    cgCloseLoop(cgStmt_ctx, cgStmt_span)
+    return null
+end
+if cgStmt_kind == "Break"
+    assert(len(cgStmt_ctx.heads) > 0, "cgCodegen: 'break' can only be used inside a loop")
+    cgStmt_pops = cgStmt_ctx.pops[len(cgStmt_ctx.pops) - 1]
+    cgStmt_i = 0
+    while cgStmt_i < cgStmt_pops
+    cgEmit(cgStmt_ctx, "Pop", 0, 0, cgStmt_span)
+    cgStmt_i += 1
+end
+cgStmt_jumpIndex = cgEmit(cgStmt_ctx, "Jump", 0, 0, cgStmt_span)
+cgStmt_breaks = cgStmt_ctx.breaks[len(cgStmt_ctx.breaks) - 1]
+cgStmt_breaks.add(cgStmt_jumpIndex)
+return null
+end
+if cgStmt_kind == "Continue"
+    assert(len(cgStmt_ctx.heads) > 0, "cgCodegen: 'continue' can only be used inside a loop")
+    cgEmit(cgStmt_ctx, "Jump", cgStmt_ctx.heads[len(cgStmt_ctx.heads) - 1], 0, cgStmt_span)
+    return null
+end
+if cgStmt_kind == "Import"
+    cgStmt_name = cgExpectString(cgNeed(cgStmt_stmt, "name", "Import"), "module name")
+    cgEmit(cgStmt_ctx, "Import", cgName(cgStmt_ctx, cgStmt_name), 0, cgStmt_span)
+    return null
+end
+assert(false, "cgCodegen: unsupported statement kind '" + toString(cgStmt_kind) + "'")
+end
+function cgBlock(cgBlock_ctx, cgBlock_statements, cgBlock_inheritedSpan)
+    cgExpectArray(cgBlock_statements, "statement block")
+    cgBlock_i = 0
+    while cgBlock_i < len(cgBlock_statements)
+    cgStmt(cgBlock_ctx, cgBlock_statements[cgBlock_i], cgBlock_inheritedSpan)
+    cgBlock_i += 1
+end
+end
+$- Public entry point: AST envelope -> version 2 emb IR. -$
+function cgCodegen(cgCodegen_ast)
+    assert(type(cgCodegen_ast) == "object", "cgCodegen: expected an AST envelope object")
+    cgCodegen_version = cgNeed(cgCodegen_ast, "version", "AST envelope")
+    assert(cgCodegen_version == 1, "cgCodegen: unsupported AST version " + toString(cgCodegen_version))
+    cgCodegen_statements = cgExpectArray(cgNeed(cgCodegen_ast, "statements", "AST envelope"), "AST statements")
+    cgCodegen_ctx = cgCtx()
+    cgBlock(cgCodegen_ctx, cgCodegen_statements, {line: 1, col: 1})
+    cgEmit(cgCodegen_ctx, "ReturnNull", 0, 0, {line: 1, col: 1})
+    return {version: 2, constants: cgCodegen_ctx.constants, functions: cgCodegen_ctx.functions, code: cgCodegen_ctx.code}
+end
+$- ---------------------------------------------------------------------------
+   Inline self-tests. These build AST fixtures by hand and assert IR shape.
+   Native `emb` is used only as an oracle that the generated IR is encodable.
+   --------------------------------------------------------------------------- -$
+if os.env("EM_SELFTEST", "") == "1"
+    function cgTNum(cgTNum_n)
+        return {kind: "Number", value: cgTNum_n}
+    end
+    function cgTStr(cgTStr_text)
+        return {kind: "String", value: cgTStr_text}
+    end
+    function cgTBool(cgTBool_value)
+        return {kind: "Bool", value: cgTBool_value}
+    end
+    function cgTNull()
+        return {kind: "Null"}
+    end
+    function cgTVar(cgTVar_name)
+        return {kind: "Variable", name: cgTVar_name}
+    end
+    function cgTSpan(cgTSpan_line, cgTSpan_col)
+        return {line: cgTSpan_line, col: cgTSpan_col}
+    end
+    function cgTOps(cgTOps_ir)
+        cgTOps_names = []
+        for cgTOps_instruction in cgTOps_ir.code
+            cgTOps_names.add(cgTOps_instruction.op)
+        end
+        return cgTOps_names
+    end
+$- Literals, `say`, variable store/load and the trailing ReturnNull. -$
+    cgTOps_ast1 = {version: 1, statements: [{kind: "ExprStmt", span: cgTSpan(1, 1), expr: {kind: "Call", callee: cgTVar("say"), args: [cgTNum(1), cgTStr("x"), cgTBool(true), cgTNull()]}}, {kind: "Assign", span: cgTSpan(2, 1), target: {kind: "Variable", name: "x"}, value: cgTNum(2)}, {kind: "ExprStmt", span: cgTSpan(3, 1), expr: cgTVar("x")}]}
+    cgTOps_ir1 = cgCodegen(cgTOps_ast1)
+    assert(cgTOps_ir1.version == 2, "selftest: IR version")
+    assert(type(cgTOps_ir1.constants) == "array" and type(cgTOps_ir1.functions) == "array" and type(cgTOps_ir1.code) == "array", "selftest: IR chunk shape")
+    assert(len(cgTOps_ir1.code) == 11, "selftest: literal code length")
+    assert(cgTOps_ir1.code[0].op == "LoadConst" and cgTOps_ir1.code[0].a == 0 and cgTOps_ir1.code[0].line == 1, "selftest: first literal")
+    assert(cgTOps_ir1.code[1].op == "LoadConst" and cgTOps_ir1.code[1].a == 1, "selftest: string literal")
+    assert(cgTOps_ir1.code[2].op == "LoadConst" and cgTOps_ir1.code[2].a == 2, "selftest: bool literal")
+    assert(cgTOps_ir1.code[3].op == "LoadConst" and cgTOps_ir1.code[3].a == 3, "selftest: null literal")
+    assert(cgTOps_ir1.code[4].op == "Say" and cgTOps_ir1.code[4].a == 4, "selftest: say arity")
+    assert(cgTOps_ir1.code[5].op == "Pop", "selftest: say expression statement")
+    assert(cgTOps_ir1.code[6].op == "LoadConst" and cgTOps_ir1.code[6].a == 4, "selftest: assigned number")
+    assert(cgTOps_ir1.code[7].op == "SetVar" and cgTOps_ir1.code[7].a == 1, "selftest: SetVar shares the interned name")
+    assert(cgTOps_ir1.code[8].op == "GetVar" and cgTOps_ir1.code[8].a == 1, "selftest: GetVar name index")
+    assert(cgTOps_ir1.code[9].op == "Pop" and cgTOps_ir1.code[10].op == "ReturnNull", "selftest: expression statement and epilogue")
+    assert(cgTOps_ir1.constants[0].tag == "number" and cgTOps_ir1.constants[1].tag == "string", "selftest: constant tags")
+    assert(cgTOps_ir1.constants[2].tag == "bool" and cgTOps_ir1.constants[3].tag == "null", "selftest: scalar tags")
+    assert(len(cgTOps_ir1.constants) == 5 and cgTOps_ir1.constants[1].value == "x", "selftest: interned name reuses string constant")
+    assert(len(emb.encode(cgTOps_ir1)) > 0, "selftest: IR is encodable")
+$- Eager binary operators, unary operators and compound/postfix updates. -$
+    cgTOps_innerSum = {kind: "Binary", op: "+", left: cgTVar("a"), right: cgTNum(3), span: cgTSpan(1, 9)}
+    cgTOps_product = {kind: "Binary", op: "*", left: cgTOps_innerSum, right: {kind: "Unary", op: "-", operand: cgTVar("b"), span: cgTSpan(1, 20)}, span: cgTSpan(1, 5)}
+    cgTOps_ast2 = {version: 1, statements: [{kind: "Assign", span: cgTSpan(1, 1), target: {kind: "Variable", name: "y"}, value: cgTOps_product}, {kind: "CompoundAssign", span: cgTSpan(2, 1), target: {kind: "Variable", name: "y"}, op: "+", value: cgTNum(2)}, {kind: "ExprStmt", span: cgTSpan(3, 1), expr: {kind: "Postfix", op: "++", target: {kind: "Variable", name: "y"}, span: cgTSpan(3, 1)}}]}
+    cgTOps_ir2 = cgCodegen(cgTOps_ast2)
+    cgTOps_ops2 = cgTOps(cgTOps_ir2)
+    assert(cgTOps_ops2[2] == "Add" and cgTOps_ops2[4] == "Neg" and cgTOps_ops2[5] == "Mul", "selftest: binary and unary ops")
+    assert(cgTOps_ops2[6] == "SetVar" and cgTOps_ops2[9] == "Add" and cgTOps_ops2[10] == "SetVar", "selftest: compound assign")
+    assert(cgTOps_ops2[12] == "Dup" and cgTOps_ops2[14] == "Add" and cgTOps_ops2[15] == "SetVar", "selftest: postfix increment")
+    assert(cgTOps_ops2[len(cgTOps_ops2) - 2] == "Pop" and cgTOps_ops2[len(cgTOps_ops2) - 1] == "ReturnNull", "selftest: epilogue")
+$- Short-circuit `and` and if/else jump patching. -$
+    cgTOps_logical = {kind: "Binary", op: "and", left: cgTVar("p"), right: cgTBool(true), span: cgTSpan(1, 6)}
+    cgTOps_ast3 = {version: 1, statements: [{kind: "If", span: cgTSpan(1, 1), branches: [{condition: cgTOps_logical, body: [{kind: "Assign", span: cgTSpan(2, 1), target: {kind: "Variable", name: "x"}, value: cgTNum(1)}]}], else: [{kind: "Assign", span: cgTSpan(4, 1), target: {kind: "Variable", name: "x"}, value: cgTNum(2)}]}]}
+    cgTOps_ir3 = cgCodegen(cgTOps_ast3)
+    assert(cgTOps_ir3.code[2].op == "JumpIfFalsePeek" and cgTOps_ir3.code[2].a == 6, "selftest: and jump target")
+    assert(cgTOps_ir3.code[6].op == "JumpIfFalse" and cgTOps_ir3.code[6].a == 10, "selftest: if branch skip")
+    assert(cgTOps_ir3.code[9].op == "Jump" and cgTOps_ir3.code[9].a == 12, "selftest: if end jump")
+    assert(cgTOps_ir3.code[12].op == "ReturnNull" and len(cgTOps_ir3.code) == 13, "selftest: if code length")
+    assert(len(emb.encode(cgTOps_ir3)) > 0, "selftest: if IR is encodable")
+$- while/repeat/for loops with break and continue. -$
+    cgTOps_ast4 = {version: 1, statements: [{kind: "While", span: cgTSpan(1, 1), condition: cgTVar("c"), body: [{kind: "Break", span: cgTSpan(2, 1)}, {kind: "Continue", span: cgTSpan(3, 1)}]}, {kind: "Repeat", span: cgTSpan(4, 1), count: cgTNum(3), body: [{kind: "Break", span: cgTSpan(5, 1)}]}, {kind: "ForIn", span: cgTSpan(6, 1), name: "i", iterable: cgTVar("arr"), body: [{kind: "Break", span: cgTSpan(7, 1)}, {kind: "Continue", span: cgTSpan(8, 1)}]}]}
+    cgTOps_ir4 = cgCodegen(cgTOps_ast4)
+    assert(cgTOps_ir4.code[1].op == "JumpIfFalse" and cgTOps_ir4.code[1].a == 5, "selftest: while exit")
+    assert(cgTOps_ir4.code[2].op == "Jump" and cgTOps_ir4.code[2].a == 5, "selftest: while break")
+    assert(cgTOps_ir4.code[3].op == "Jump" and cgTOps_ir4.code[3].a == 0, "selftest: continue jumps to while head")
+    assert(cgTOps_ir4.code[4].op == "Jump" and cgTOps_ir4.code[4].a == 0, "selftest: while back edge")
+    assert(cgTOps_ir4.code[6].op == "RepeatSetup", "selftest: repeat setup")
+    assert(cgTOps_ir4.code[7].op == "RepeatNext" and cgTOps_ir4.code[7].a == 11, "selftest: repeat exit")
+    assert(cgTOps_ir4.code[8].op == "Pop" and cgTOps_ir4.code[9].a == 11, "selftest: repeat break pops counter")
+    assert(cgTOps_ir4.code[10].op == "Jump" and cgTOps_ir4.code[10].a == 7, "selftest: repeat back edge")
+    assert(cgTOps_ir4.code[12].op == "IterSetup" and cgTOps_ir4.code[13].op == "IterNext", "selftest: for setup")
+    assert(cgTOps_ir4.code[13].a == 3 and cgTOps_ir4.code[13].b == 19, "selftest: for exit")
+    assert(cgTOps_ir4.code[14].op == "Pop" and cgTOps_ir4.code[15].op == "Pop", "selftest: for break pops two iterator values")
+    assert(cgTOps_ir4.code[16].op == "Jump" and cgTOps_ir4.code[16].a == 19, "selftest: for break")
+    assert(cgTOps_ir4.code[17].op == "Jump" and cgTOps_ir4.code[17].a == 13, "selftest: for continue")
+    assert(cgTOps_ir4.code[18].op == "Jump" and cgTOps_ir4.code[18].a == 13, "selftest: for back edge")
+    assert(len(cgTOps_ir4.code) == 20, "selftest: loop code length")
+    assert(len(emb.encode(cgTOps_ir4)) > 0, "selftest: loop IR is encodable")
+$- Function declarations get their own chunk; calls use name constants. -$
+    cgTOps_ast5 = {version: 1, statements: [{kind: "FunctionDef", span: cgTSpan(1, 1), name: "f", params: ["a", "b"], body: [{kind: "Return", span: cgTSpan(2, 1), value: {kind: "Binary", op: "+", left: cgTVar("a"), right: cgTVar("b"), span: cgTSpan(2, 8)}}]}, {kind: "ExprStmt", span: cgTSpan(4, 1), expr: {kind: "Call", callee: cgTVar("f"), args: [cgTNum(1), cgTNum(2)]}}]}
+    cgTOps_ir5 = cgCodegen(cgTOps_ast5)
+    assert(len(cgTOps_ir5.functions) == 1, "selftest: one function prototype")
+    assert(cgTOps_ir5.functions[0].name == "f", "selftest: function name")
+    assert(len(cgTOps_ir5.functions[0].params) == 2 and cgTOps_ir5.functions[0].params[1] == "b", "selftest: function params")
+    cgTOps_chunk5 = cgTOps_ir5.functions[0].chunk
+    assert(not cgTOps_chunk5.has("version"), "selftest: nested chunk has no version")
+    assert(type(cgTOps_chunk5.constants) == "array" and type(cgTOps_chunk5.functions) == "array" and type(cgTOps_chunk5.code) == "array", "selftest: nested chunk shape")
+    assert(cgTOps_chunk5.code[len(cgTOps_chunk5.code) - 2].op == "Return", "selftest: function return")
+    assert(cgTOps_chunk5.code[len(cgTOps_chunk5.code) - 1].op == "ReturnNull", "selftest: function epilogue")
+    assert(cgTOps_ir5.code[0].op == "MakeClosure" and cgTOps_ir5.code[0].a == 0, "selftest: closure index")
+    assert(cgTOps_ir5.code[1].op == "DefineVar" and cgTOps_ir5.code[1].a == 0, "selftest: function definition")
+    assert(cgTOps_ir5.code[5].op == "Call" and cgTOps_ir5.code[5].a == 2 and cgTOps_ir5.code[5].b == 0, "selftest: call operands")
+    assert(len(emb.encode(cgTOps_ir5)) > 0, "selftest: function IR is encodable")
+$- Ternary and `??` are lazy and must not fall through into both branches. -$
+    cgTOps_ast6 = {version: 1, statements: [{kind: "ExprStmt", span: cgTSpan(1, 1), expr: {kind: "Ternary", condition: cgTVar("q"), whenTrue: cgTNum(1), whenFalse: cgTNum(2), span: cgTSpan(1, 1)}}, {kind: "ExprStmt", span: cgTSpan(2, 1), expr: {kind: "Binary", op: "??", left: cgTVar("q"), right: cgTNum(3), span: cgTSpan(2, 1)}}]}
+    cgTOps_ir6 = cgCodegen(cgTOps_ast6)
+    assert(cgTOps_ir6.code[1].op == "JumpIfFalse" and cgTOps_ir6.code[1].a == 4, "selftest: ternary false branch")
+    assert(cgTOps_ir6.code[3].op == "Jump" and cgTOps_ir6.code[3].a == 5, "selftest: ternary end")
+    assert(cgTOps_ir6.code[7].op == "JumpIfNullPeek" and cgTOps_ir6.code[7].a == 9, "selftest: coalesce null branch")
+    assert(cgTOps_ir6.code[8].op == "Jump" and cgTOps_ir6.code[8].a == 11, "selftest: coalesce end")
+    assert(len(emb.encode(cgTOps_ir6)) > 0, "selftest: lazy IR is encodable")
+    say("ok")
+end
