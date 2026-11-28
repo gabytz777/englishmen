@@ -365,6 +365,25 @@ function rtGlobalEnv()
     end
     return env
 end
+$- The import table maps module names to module objects. A2 builds those objects
+   from pure Englishmen functions, so they are ordinary function values here. -$
+function rtImportNormalizeTable(rtImportNormalizeTable_value)
+    if isNull(rtImportNormalizeTable_value)
+        return {}
+    end
+    if not isObject(rtImportNormalizeTable_value)
+        rtError("import table must be an object mapping module names to module objects")
+        return {}
+    end
+    return rtImportNormalizeTable_value
+end
+function rtImportMissingMessage(rtImportMissingMessage_name, rtImportMissingMessage_table)
+    rtImportAvailableNames = sorted(keys(rtImportMissingMessage_table))
+    if len(rtImportAvailableNames) == 0
+        return "module '" + rtImportMissingMessage_name + "' is not available; no imports were provided"
+    end
+    return "module '" + rtImportMissingMessage_name + "' is not available; available modules: " + join(rtImportAvailableNames, ", ")
+end
 $- The IR view of a chunk: constants, functions and code are ordinary values. -$
 function rtChunkCode(chunk)
     code = chunk.get("code", null)
@@ -479,7 +498,25 @@ function rtInvoke(callee, args, hint)
         rtError("'" + hint + "' is not callable (found " + rtTypeName(callee) + ")")
     end
     if isFunction(callee)
-        rtError("host functions cannot be called by the self-hosted VM")
+$- Imported module objects hold pure Englishmen functions. Englishmen has
+           no function-apply primitive, so dispatch by argument count. -$
+        rtInvokeArgCount = len(args)
+        if rtInvokeArgCount == 0
+            return {rtPushed: false, rtValue: callee()}
+        end
+        if rtInvokeArgCount == 1
+            return {rtPushed: false, rtValue: callee(args[0])}
+        end
+        if rtInvokeArgCount == 2
+            return {rtPushed: false, rtValue: callee(args[0], args[1])}
+        end
+        if rtInvokeArgCount == 3
+            return {rtPushed: false, rtValue: callee(args[0], args[1], args[2])}
+        end
+        if rtInvokeArgCount == 4
+            return {rtPushed: false, rtValue: callee(args[0], args[1], args[2], args[3])}
+        end
+        rtError("host function '" + hint + "' with " + toString(rtInvokeArgCount) + " arguments cannot be called by the self-hosted VM")
     end
     kind = callee.get("rtKind", "")
     if kind == "native"
@@ -1923,7 +1960,14 @@ if name == "ReturnNull"
     return null
 end
 if name == "Import"
-    rtError("module '" + rtName(chunk, a) + "' needs a native module; imports are not self-hosted yet")
+    rtImportNameValue = rtName(chunk, a)
+    if not rtObjectHas(rtVm.imports, rtImportNameValue)
+        rtError(rtImportMissingMessage(rtImportNameValue, rtVm.imports))
+        return null
+    end
+    rtImportModuleValue = rtVm.imports.get(rtImportNameValue, null)
+    rtEnvDefine(rtVm.globals, rtImportNameValue, rtImportModuleValue)
+    return null
 end
 rtError("unknown instruction '" + name + "'")
 end
@@ -1944,16 +1988,27 @@ function rtExecute()
 end
 return null
 end
-function vmRunWithRuntime(ir)
-    rtVm = {stack: [], frames: [], output: [], globals: rtGlobalEnv()}
+function vmRunWithImports(ir, imports)
+    rtVm = {stack: [], frames: [], output: [], globals: rtGlobalEnv(), imports: rtImportNormalizeTable(imports)}
     unit = {rtKind: "program", rtChunk: ir}
     rtVm.frames.add(rtFrameNew(unit, 0, rtVm.globals, 0))
     rtExecute()
     return rtVm.output
 end
+function vmRunWithRuntime(ir)
+    return vmRunWithImports(ir, {})
+end
 $- ---------------------------------------------------------------------------
    Inline self-tests. With EM_SELFTEST=1 the whole file prints exactly `ok`.
    --------------------------------------------------------------------------- -$
+rtCapturedImportError = ""
+function rtFixtureGreet(rtFixtureGreet_name)
+    return "greeting: " + rtFixtureGreet_name
+end
+function rtCaptureImportError(rtCaptureImportError_message)
+    rtCapturedImportError = rtCaptureImportError_message
+    return null
+end
 function rtSelfTest()
     assert(rtLen("héllo") == 5, "rtLen string")
     assert(rtLen([1, 2, 3]) == 3, "rtLen array")
@@ -1981,6 +2036,21 @@ function rtSelfTest()
     methodIr = {version: 2, constants: [{tag: "string", value: "abc"}, {tag: "string", value: "upper"}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "MethodCall", a: 1, b: 0}, {op: "Say", a: 1}, {op: "ReturnNull"}]}
     output = vmRunWithRuntime(methodIr)
     assert(len(output) == 1 and output[0] == "ABC", "IR fixture: method call")
+$- Import a module object, then call one of its pure functions through IR. -$
+    rtImportFixtureIr = {version: 2, constants: [{tag: "string", value: "greeting"}, {tag: "string", value: "greet"}, {tag: "string", value: "Ada"}], functions: [], code: [{op: "Import", a: 0}, {op: "GetVar", a: 0}, {op: "GetProp", a: 1}, {op: "LoadConst", a: 2}, {op: "Call", a: 1, b: 1}, {op: "Say", a: 1}, {op: "ReturnNull"}]}
+    output = vmRunWithImports(rtImportFixtureIr, {greeting: {greet: rtFixtureGreet}})
+    assert(len(output) == 1 and output[0] == "greeting: Ada", "IR fixture: imported module call")
+$- Capture rtError so a missing import can be checked without aborting the
+       self-test. Production rtError still raises immediately. -$
+    rtMissingImportFixtureIr = {version: 2, constants: [{tag: "string", value: "absent"}], functions: [], code: [{op: "Import", a: 0}, {op: "ReturnNull"}]}
+    rtCapturedImportError = ""
+    rtSavedImportError = rtError
+    rtError = rtCaptureImportError
+    vmRunWithImports(rtMissingImportFixtureIr, {greeting: {}, string: {}})
+    rtError = rtSavedImportError
+    assert(contains(rtCapturedImportError, "absent"), "missing import names the module")
+    assert(contains(rtCapturedImportError, "greeting"), "missing import lists available module names")
+    assert(contains(rtCapturedImportError, "string"), "missing import lists every available module")
     return null
 end
 function rtCli()
@@ -1996,7 +2066,7 @@ $- os.args() begins with the `run` subcommand and the script path. -$
 end
 if os.env("EM_SELFTEST", "") == "1"
 $- rtVm is needed by the direct rtSay assertion; start from a fresh state. -$
-    rtVm = {stack: [], frames: [], output: [], globals: rtGlobalEnv()}
+    rtVm = {stack: [], frames: [], output: [], globals: rtGlobalEnv(), imports: {}}
     rtSelfTest()
     say("ok")
 else
