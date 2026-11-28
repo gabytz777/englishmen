@@ -1,0 +1,1814 @@
+$- Englishmen self-hosted parser (contract v1). -$
+$- Englishmen cannot import local .enm files yet, so the lexer lives here too. -$
+import fs
+import json
+lexFailure = null
+parseState = {tokens: [], pos: 0, loopDepth: 0, err: null}
+function lx_token(lx, type, value, line, col)
+    t = {type: type, value: value, line: line, col: col}
+    lx.tokens.add(t)
+    return t
+end
+function lx_fail(lx, line, col, message)
+    lx.err = {error: message, line: line, col: col}
+    return null
+end
+function lx_peek(lx, offset)
+    index = lx.i + offset
+    if index < 0 or index >= len(lx.chars)
+        return ""
+    end
+    return lx.chars[index]
+end
+function lx_advance(lx)
+    c = lx_peek(lx, 0)
+    if c == ""
+        return ""
+    end
+    lx.i += 1
+    if c == "\n"
+        lx.line += 1
+        lx.col = 1
+    else
+        lx.col += 1
+    end
+    return c
+end
+function lx_code(c)
+    n = charCode(c)
+    if n == null
+        return -1
+    end
+    return n
+end
+function lx_is_digit(c)
+    n = lx_code(c)
+    return n >= 48 and n <= 57
+end
+function lx_is_alpha(c)
+    n = lx_code(c)
+    return (n >= 97 and n <= 122) or (n >= 65 and n <= 90) or c == "_"
+end
+function lx_digit_value(c)
+    n = lx_code(c)
+    if n >= 48 and n <= 57
+        return n - 48
+    end
+    if n >= 97 and n <= 102
+        return n - 87
+    end
+    if n >= 65 and n <= 70
+        return n - 55
+    end
+    return -1
+end
+function lx_keyword_type(word)
+    if word == "if"
+        return "If"
+    end
+    if word == "else"
+        return "Else"
+    end
+    if word == "end"
+        return "End"
+    end
+    if word == "function"
+        return "Function"
+    end
+    if word == "return"
+        return "Return"
+    end
+    if word == "repeat"
+        return "Repeat"
+    end
+    if word == "while"
+        return "While"
+    end
+    if word == "for"
+        return "For"
+    end
+    if word == "in"
+        return "In"
+    end
+    if word == "import"
+        return "Import"
+    end
+    if word == "and"
+        return "And"
+    end
+    if word == "or"
+        return "Or"
+    end
+    if word == "not"
+        return "Not"
+    end
+    if word == "break"
+        return "Break"
+    end
+    if word == "continue"
+        return "Continue"
+    end
+    if word == "div"
+        return "Div"
+    end
+    if word == "true"
+        return "True"
+    end
+    if word == "false"
+        return "False"
+    end
+    if word == "null"
+        return "Null"
+    end
+    return null
+end
+function lx_ends_expression(type)
+    return type == "Number" or type == "String" or type == "Interpolated" or type == "Identifier" or type == "True" or type == "False" or type == "Null" or type == "RParen" or type == "RBracket" or type == "RBrace" or type == "PlusPlus" or type == "MinusMinus"
+end
+function lx_skip_to_eol(lx)
+    while lx_peek(lx, 0) != "" and lx_peek(lx, 0) != "\n"
+    lx_advance(lx)
+end
+end
+function lx_skip_space(lx)
+    while true
+    c = lx_peek(lx, 0)
+    if c == " " or c == "\t" or c == ""
+        lx_advance(lx)
+    else if c == "$" and lx_peek(lx, 1) == "-"
+        cl = lx.line
+        cc = lx.col
+        lx_advance(lx)
+        lx_advance(lx)
+        closed = false
+        while lx_peek(lx, 0) != ""
+        ch = lx_advance(lx)
+        if ch == "-" and lx_peek(lx, 0) == "$"
+            lx_advance(lx)
+            closed = true
+            break
+        end
+    end
+    if not closed
+        lx_fail(lx, cl, cc, "Unterminated comment")
+        return null
+    end
+else
+    return true
+end
+end
+end
+function lx_read_number(lx, line, col)
+    c = lx_peek(lx, 0)
+    next = lx_peek(lx, 1)
+    if c == "0" and (next == "x" or next == "X" or next == "b" or next == "B" or next == "o" or next == "O")
+        radix = 10
+        if next == "x" or next == "X"
+            radix = 16
+        else if next == "b" or next == "B"
+            radix = 2
+        else
+            radix = 8
+        end
+        lx_advance(lx)
+        lx_advance(lx)
+        digits = ""
+        while lx_peek(lx, 0) != ""
+        d = lx_peek(lx, 0)
+        if d == "_"
+            lx_advance(lx)
+        else if lx_digit_value(d) >= 0 and lx_digit_value(d) < radix
+            digits += d
+            lx_advance(lx)
+        else
+            break
+        end
+    end
+    if digits == ""
+        lx_fail(lx, line, col, "Invalid numeric literal")
+        return null
+    end
+    return lx_token(lx, "Number", parseInt(digits, radix), line, col)
+end
+text = ""
+lastWasDigit = false
+while lx_peek(lx, 0) != ""
+c = lx_peek(lx, 0)
+if lx_is_digit(c)
+    text += c
+    lx_advance(lx)
+    lastWasDigit = true
+else if c == "_" and lastWasDigit and lx_is_digit(lx_peek(lx, 1))
+    lx_advance(lx)
+    lastWasDigit = false
+else
+    break
+end
+end
+if lx_peek(lx, 0) == "." and lx_is_digit(lx_peek(lx, 1))
+    text += "."
+    lx_advance(lx)
+    while lx_peek(lx, 0) != ""
+    c = lx_peek(lx, 0)
+    if lx_is_digit(c)
+        text += c
+        lx_advance(lx)
+    else if c == "_" and lx_is_digit(lx_peek(lx, 1))
+        lx_advance(lx)
+    else
+        break
+    end
+end
+end
+if lx_peek(lx, 0) == "e" or lx_peek(lx, 0) == "E"
+    expLine = lx.line
+    expCol = lx.col
+    lx_advance(lx)
+    exponent = ""
+    if lx_peek(lx, 0) == "+" or lx_peek(lx, 0) == "-"
+        exponent += lx_advance(lx)
+    end
+    sawDigit = false
+    while lx_peek(lx, 0) != ""
+    c = lx_peek(lx, 0)
+    if lx_is_digit(c)
+        exponent += c
+        lx_advance(lx)
+        sawDigit = true
+    else if c == "_" and sawDigit and lx_is_digit(lx_peek(lx, 1))
+        lx_advance(lx)
+    else
+        break
+    end
+end
+if not sawDigit
+    lx_fail(lx, expLine, expCol, "Invalid exponent in numeric literal")
+    return null
+end
+text += "e"
+text += exponent
+end
+return lx_token(lx, "Number", parseFloat(text), line, col)
+end
+function lx_read_interpolation(lx, stringLine, stringCol, exprLine, exprCol)
+    raw = ""
+    depth = 0
+    closed = false
+    while lx_peek(lx, 0) != ""
+    c = lx_peek(lx, 0)
+    if c == "\\"
+        raw += lx_advance(lx)
+        if lx_peek(lx, 0) != ""
+            raw += lx_advance(lx)
+        end
+    else if c == "\""
+        raw += lx_advance(lx)
+        while lx_peek(lx, 0) != ""
+        q = lx_advance(lx)
+        raw += q
+        if q == "\""
+            break
+        end
+        if q == "\\" and lx_peek(lx, 0) != ""
+            raw += lx_advance(lx)
+        end
+    end
+else if c == "$" and lx_peek(lx, 1) == "-"
+    raw += lx_advance(lx)
+    raw += lx_advance(lx)
+    while lx_peek(lx, 0) != ""
+    h = lx_advance(lx)
+    raw += h
+    if h == "-" and lx_peek(lx, 0) == "$"
+        raw += lx_advance(lx)
+        break
+    end
+end
+else if c == "\{"
+depth += 1
+raw += lx_advance(lx)
+else if c == "\}"
+lx_advance(lx)
+if depth == 0
+    closed = true
+    break
+end
+depth -= 1
+raw += "\}"
+else
+    raw += lx_advance(lx)
+end
+end
+if not closed
+    lx_fail(lx, exprLine, exprCol, "Unclosed interpolation")
+    return null
+end
+fragment = lex(raw)
+if lexFailure != null
+    lx.err = lexFailure
+    return null
+end
+fixed = []
+for t in fragment
+    line = exprLine + t.line - 1
+    col = t.col
+    if t.line == 1
+        col = exprCol + t.col - 1
+    end
+    fixedTok = {type: t.type, value: t.value, line: line, col: col}
+    if t.type == "CompoundAssign"
+        fixedTok.op = t.op
+    end
+    fixed.add(fixedTok)
+end
+return fixed
+end
+function lx_read_string(lx, line, col)
+    lx_advance(lx)
+    literal = ""
+    parts = []
+    while true
+    c = lx_advance(lx)
+    if c == ""
+        lx_fail(lx, line, col, "Unterminated string literal")
+        return null
+    end
+    if c == "\""
+        break
+    end
+    if c == "\\"
+        e = lx_advance(lx)
+        if e == ""
+            lx_fail(lx, line, col, "Unterminated string literal")
+            return null
+        end
+        if e == "n"
+            literal += "\n"
+        else if e == "t"
+            literal += "\t"
+        else if e == "r"
+            literal += ""
+        else if e == "0"
+            literal += fromCharCode(0)
+        else if e == "u"
+            if lx_peek(lx, 0) != "\{"
+                lx_fail(lx, line, col, "Invalid unicode escape")
+                return null
+            end
+            lx_advance(lx)
+            hex = ""
+            closed = false
+            while lx_peek(lx, 0) != ""
+            h = lx_advance(lx)
+            if h == "\}"
+                closed = true
+                break
+            end
+            if lx_digit_value(h) < 0
+                lx_fail(lx, line, col, "Invalid unicode escape")
+                return null
+            end
+            hex += h
+        end
+        code = -1
+        if closed and len(hex) > 0
+            code = parseInt(hex, 16)
+        end
+        if not closed or code < 0 or code > 1114111 or (code >= 55296 and code <= 57343)
+            lx_fail(lx, line, col, "Invalid unicode escape")
+            return null
+        end
+        literal += fromCharCode(code)
+    else if e == "\""
+        literal += "\""
+    else if e == "\\"
+        literal += "\\"
+    else if e == "\{"
+        literal += "\{"
+    else if e == "\}"
+        literal += "\}"
+    else
+        literal += e
+    end
+else if c == "\{"
+    if lx_peek(lx, 0) == "\{"
+        lx_advance(lx)
+        literal += "\{"
+    else
+        if len(literal) > 0
+        parts.add({type: "Literal", value: literal})
+        literal = ""
+    end
+    exprLine = lx.line
+    exprCol = lx.col
+    fragment = lx_read_interpolation(lx, line, col, exprLine, exprCol)
+    if lx.err != null
+        return null
+    end
+    if len(fragment) == 0 or fragment[0].type == "Eof"
+        lx_fail(lx, exprLine, exprCol, "Empty interpolation")
+        return null
+    end
+    parts.add({type: "Expr", value: fragment})
+end
+else if c == "\}"
+if lx_peek(lx, 0) == "\}"
+    lx_advance(lx)
+end
+literal += "\}"
+else
+    literal += c
+end
+end
+if len(parts) == 0
+    return lx_token(lx, "String", literal, line, col)
+end
+if len(literal) > 0
+    parts.add({type: "Literal", value: literal})
+end
+return lx_token(lx, "Interpolated", parts, line, col)
+end
+function lx_compound(lx, op, line, col)
+    t = lx_token(lx, "CompoundAssign", op, line, col)
+    t.op = op
+    return t
+end
+function lx_read_symbol(lx, line, col)
+    c = lx_advance(lx)
+    next = lx_peek(lx, 0)
+    after = lx_peek(lx, 1)
+    if c == "+"
+        if next == "+"
+            lx_advance(lx)
+            return lx_token(lx, "PlusPlus", null, line, col)
+        end
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "+", line, col)
+        end
+        return lx_token(lx, "Plus", null, line, col)
+    end
+    if c == "-"
+        if next == "-"
+            lx_advance(lx)
+            return lx_token(lx, "MinusMinus", null, line, col)
+        end
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "-", line, col)
+        end
+        return lx_token(lx, "Minus", null, line, col)
+    end
+    if c == "*"
+        if next == "*" and after == "="
+            lx_advance(lx)
+            lx_advance(lx)
+            return lx_compound(lx, "**", line, col)
+        end
+        if next == "*"
+            lx_advance(lx)
+            return lx_token(lx, "Pow", null, line, col)
+        end
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "*", line, col)
+        end
+        return lx_token(lx, "Star", null, line, col)
+    end
+    if c == "/"
+        if next == "/" and after == "="
+            lx_advance(lx)
+            lx_advance(lx)
+            return lx_compound(lx, "//", line, col)
+        end
+        if next == "/"
+            lx_advance(lx)
+            return lx_token(lx, "FloorDiv", null, line, col)
+        end
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "/", line, col)
+        end
+        return lx_token(lx, "Slash", null, line, col)
+    end
+    if c == "%"
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "%", line, col)
+        end
+        return lx_token(lx, "Percent", null, line, col)
+    end
+    if c == "("
+        return lx_token(lx, "LParen", null, line, col)
+    end
+    if c == ")"
+        return lx_token(lx, "RParen", null, line, col)
+    end
+    if c == "["
+        return lx_token(lx, "LBracket", null, line, col)
+    end
+    if c == "]"
+        return lx_token(lx, "RBracket", null, line, col)
+    end
+    if c == "\{"
+        return lx_token(lx, "LBrace", null, line, col)
+    end
+    if c == "\}"
+        return lx_token(lx, "RBrace", null, line, col)
+    end
+    if c == "."
+        return lx_token(lx, "Dot", null, line, col)
+    end
+    if c == ","
+        return lx_token(lx, "Comma", null, line, col)
+    end
+    if c == ":"
+        return lx_token(lx, "Colon", null, line, col)
+    end
+    if c == "&"
+        if next == "&"
+            lx_advance(lx)
+            return lx_token(lx, "AndAlso", null, line, col)
+        end
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "&", line, col)
+        end
+        return lx_token(lx, "BitAnd", null, line, col)
+    end
+    if c == "|"
+        if next == "|"
+            lx_advance(lx)
+            return lx_token(lx, "OrElse", null, line, col)
+        end
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "|", line, col)
+        end
+        return lx_token(lx, "BitOr", null, line, col)
+    end
+    if c == "^"
+        if next == "="
+            lx_advance(lx)
+            return lx_compound(lx, "^", line, col)
+        end
+        return lx_token(lx, "BitXor", null, line, col)
+    end
+    if c == "~"
+        return lx_token(lx, "BitNot", null, line, col)
+    end
+    if c == "?"
+        if next == "?"
+            lx_advance(lx)
+            return lx_token(lx, "NullCoalesce", null, line, col)
+        end
+        return lx_token(lx, "Question", null, line, col)
+    end
+    if c == "="
+        if next == "="
+            lx_advance(lx)
+            return lx_token(lx, "Eq", null, line, col)
+        end
+        return lx_token(lx, "Assign", null, line, col)
+    end
+    if c == "!"
+        if next == "="
+            lx_advance(lx)
+            return lx_token(lx, "NotEq", null, line, col)
+        end
+        return lx_token(lx, "Bang", null, line, col)
+    end
+    if c == ">"
+        if next == "="
+            lx_advance(lx)
+            return lx_token(lx, "GtEq", null, line, col)
+        end
+        if next == ">" and after == "="
+            lx_advance(lx)
+            lx_advance(lx)
+            return lx_compound(lx, ">>", line, col)
+        end
+        if next == ">"
+            lx_advance(lx)
+            return lx_token(lx, "Shr", null, line, col)
+        end
+        return lx_token(lx, "Gt", null, line, col)
+    end
+    if c == "<"
+        if next == "="
+            lx_advance(lx)
+            return lx_token(lx, "LtEq", null, line, col)
+        end
+        if next == "<" and after == "="
+            lx_advance(lx)
+            lx_advance(lx)
+            return lx_compound(lx, "<<", line, col)
+        end
+        if next == "<"
+            lx_advance(lx)
+            return lx_token(lx, "Shl", null, line, col)
+        end
+        return lx_token(lx, "Lt", null, line, col)
+    end
+    lx_fail(lx, line, col, "Unexpected character '" + c + "'")
+    return null
+end
+function lx_read_identifier(lx, line, col)
+    word = ""
+    while lx_is_alpha(lx_peek(lx, 0)) or lx_is_digit(lx_peek(lx, 0))
+    word += lx_advance(lx)
+end
+type = lx_keyword_type(word)
+if type == null
+    type = "Identifier"
+end
+return lx_token(lx, type, word, line, col)
+end
+function lex(source)
+    lexFailure = null
+    lx = {chars: source.split(""), i: 0, line: 1, col: 1, tokens: [], err: null}
+    while true
+    if lx_skip_space(lx) == null
+        break
+    end
+    line = lx.line
+    col = lx.col
+    c = lx_peek(lx, 0)
+    if c == ""
+        lx_token(lx, "Eof", null, line, col)
+        break
+    end
+    if c == "\n"
+        lx_advance(lx)
+        lx_token(lx, "Newline", null, line, col)
+        continue
+    end
+    if c == "#"
+        lx_skip_to_eol(lx)
+        continue
+    end
+    if c == "/" and lx_peek(lx, 1) == "/" and lx_peek(lx, 2) != "="
+        isOperator = false
+        if len(lx.tokens) > 0
+            previous = lx.tokens[len(lx.tokens) - 1]
+            if lx_ends_expression(previous.type) and previous.line == lx.line
+                isOperator = true
+            end
+        end
+        if not isOperator
+            lx_skip_to_eol(lx)
+            continue
+        end
+    end
+    if lx_is_digit(c)
+        lx_read_number(lx, line, col)
+        if lx.err != null
+            break
+        end
+        continue
+    end
+    if c == "\""
+        lx_read_string(lx, line, col)
+        if lx.err != null
+            break
+        end
+        continue
+    end
+    if lx_is_alpha(c)
+        lx_read_identifier(lx, line, col)
+        continue
+    end
+    lx_read_symbol(lx, line, col)
+    if lx.err != null
+        break
+    end
+end
+if lx.err != null
+    lexFailure = lx.err
+    return null
+end
+return lx.tokens
+end
+$- ---------- Parser state and token helpers ---------- -$
+function p_span(tok)
+    return {line: tok.line, col: tok.col}
+end
+function p_fail(message, tok)
+    parseState.err = {error: message, line: tok.line, col: tok.col}
+    return null
+end
+function p_fail_span(message, span)
+    parseState.err = {error: message, line: span.line, col: span.col}
+    return null
+end
+function p_peek()
+    return parseState.tokens[parseState.pos]
+end
+function p_type()
+    return p_peek().type
+end
+function p_at_end()
+    return p_type() == "Eof"
+end
+function p_advance()
+    tok = p_peek()
+    if tok.type != "Eof"
+        parseState.pos += 1
+    end
+    return tok
+end
+function p_check(type)
+    return p_type() == type
+end
+function p_matches(type)
+    if p_check(type)
+        p_advance()
+        return true
+    end
+    return false
+end
+function p_skip_newlines()
+    while p_check("Newline")
+    p_advance()
+end
+end
+function p_describe(tok)
+    if tok.type == "Number"
+        return "number '" + toString(tok.value) + "'"
+    end
+    if tok.type == "String"
+        return "string \"" + tok.value + "\""
+    end
+    if tok.type == "Identifier"
+        return "identifier '" + tok.value + "'"
+    end
+    if tok.type == "Eof"
+        return "end of file"
+    end
+    if tok.type == "Newline"
+        return "newline"
+    end
+    return "'" + tok.type + "'"
+end
+function p_expect(type, context)
+    if p_check(type)
+        return p_advance()
+    end
+    tok = p_peek()
+    return p_fail("Expected " + type + " " + context + ", found " + p_describe(tok), tok)
+end
+function p_end_of_statement()
+    tok = p_peek()
+    if tok.type == "Newline" or tok.type == "Eof"
+        p_skip_newlines()
+        return true
+    end
+    p_fail("Expected end of line, found " + p_describe(tok), tok)
+    return null
+end
+function p_expect_identifier(context)
+    tok = p_peek()
+    if tok.type == "Identifier"
+        p_advance()
+        return tok.value
+    end
+    p_fail("Expected identifier " + context + ", found " + p_describe(tok), tok)
+    return null
+end
+function p_keyword_name(tok)
+    if tok.type == "True"
+        return "true"
+    end
+    if tok.type == "False"
+        return "false"
+    end
+    if tok.type == "Null"
+        return "null"
+    end
+    if tok.type == "If"
+        return "if"
+    end
+    if tok.type == "Else"
+        return "else"
+    end
+    if tok.type == "End"
+        return "end"
+    end
+    if tok.type == "Function"
+        return "function"
+    end
+    if tok.type == "Return"
+        return "return"
+    end
+    if tok.type == "Repeat"
+        return "repeat"
+    end
+    if tok.type == "While"
+        return "while"
+    end
+    if tok.type == "For"
+        return "for"
+    end
+    if tok.type == "In"
+        return "in"
+    end
+    if tok.type == "Import"
+        return "import"
+    end
+    if tok.type == "And"
+        return "and"
+    end
+    if tok.type == "Or"
+        return "or"
+    end
+    if tok.type == "Not"
+        return "not"
+    end
+    if tok.type == "Break"
+        return "break"
+    end
+    if tok.type == "Continue"
+        return "continue"
+    end
+    if tok.type == "Div"
+        return "div"
+    end
+    return null
+end
+function p_expect_member_name(context)
+    tok = p_peek()
+    name = null
+    if tok.type == "Identifier"
+        name = tok.value
+    else
+        name = p_keyword_name(tok)
+    end
+    if name == null
+        p_fail("Expected member name " + context + ", found " + p_describe(tok), tok)
+        return null
+    end
+    p_advance()
+    return name
+end
+function p_to_assignable(expr, span)
+    if expr.kind == "Variable"
+        return {kind: "Variable", name: expr.name}
+    end
+    if expr.kind == "PropertyAccess"
+        return {kind: "Property", base: expr.base, name: expr.name}
+    end
+    if expr.kind == "Index"
+        return {kind: "Index", base: expr.base, index: expr.index}
+    end
+    p_fail_span("Invalid assignment target", span)
+    return null
+end
+$- ---------- Statements ---------- -$
+function p_parse_program()
+    statements = []
+    p_skip_newlines()
+    while not p_at_end()
+    stmt = p_statement()
+    if parseState.err != null
+        return null
+    end
+    statements.add(stmt)
+    p_skip_newlines()
+end
+return statements
+end
+function p_parse_block_until(terminators)
+    statements = []
+    p_skip_newlines()
+    while not terminators.contains(p_type()) and not p_at_end()
+    stmt = p_statement()
+    if parseState.err != null
+        return null
+    end
+    statements.add(stmt)
+    p_skip_newlines()
+end
+return statements
+end
+function p_repeat_is_call()
+    if not p_check("Repeat")
+        return false
+    end
+    if parseState.pos + 1 >= len(parseState.tokens)
+        return false
+    end
+    if parseState.tokens[parseState.pos + 1].type != "LParen"
+        return false
+    end
+    depth = 0
+    i = parseState.pos + 1
+    while i < len(parseState.tokens)
+    t = parseState.tokens[i].type
+    if t == "LParen"
+        depth += 1
+    else if t == "RParen"
+        depth -= 1
+        if depth == 0
+            return false
+        end
+    else if t == "Comma" and depth == 1
+        return true
+    end
+    i += 1
+end
+return false
+end
+function p_statement()
+    tok = p_peek()
+    span = p_span(tok)
+    t = tok.type
+    if t == "If"
+        return p_parse_if()
+    end
+    if t == "Function"
+        return p_parse_function()
+    end
+    if t == "Return"
+        p_advance()
+        if p_check("Newline") or p_at_end()
+            if p_end_of_statement() == null
+                return null
+            end
+            return {kind: "Return", span: span, value: null}
+        end
+        value = p_expression()
+        if parseState.err != null
+            return null
+        end
+        if p_end_of_statement() == null
+            return null
+        end
+        return {kind: "Return", span: span, value: value}
+    end
+    if t == "Repeat"
+        if p_repeat_is_call()
+            return p_assign_or_expr()
+        end
+        return p_parse_repeat()
+    end
+    if t == "While"
+        return p_parse_while()
+    end
+    if t == "For"
+        return p_parse_for()
+    end
+    if t == "Break"
+        p_advance()
+        if parseState.loopDepth == 0
+            return p_fail("'break' can only be used inside a loop", tok)
+        end
+        if p_end_of_statement() == null
+            return null
+        end
+        return {kind: "Break", span: span}
+    end
+    if t == "Continue"
+        p_advance()
+        if parseState.loopDepth == 0
+            return p_fail("'continue' can only be used inside a loop", tok)
+        end
+        if p_end_of_statement() == null
+            return null
+        end
+        return {kind: "Continue", span: span}
+    end
+    if t == "Import"
+        p_advance()
+        name = p_expect_identifier("after 'import'")
+        if parseState.err != null
+            return null
+        end
+        if p_end_of_statement() == null
+            return null
+        end
+        return {kind: "Import", span: span, name: name}
+    end
+    return p_assign_or_expr()
+end
+function p_parse_if()
+    tok = p_peek()
+    span = p_span(tok)
+    p_advance()
+    branches = []
+    condition = p_expression()
+    if parseState.err != null
+        return null
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    body = p_parse_block_until(["Else", "End"])
+    if parseState.err != null
+        return null
+    end
+    branches.add({condition: condition, body: body})
+    elseBody = null
+    while p_check("Else")
+    p_advance()
+    if p_check("If")
+        p_advance()
+        nextCondition = p_expression()
+        if parseState.err != null
+            return null
+        end
+        if p_end_of_statement() == null
+            return null
+        end
+        nextBody = p_parse_block_until(["Else", "End"])
+        if parseState.err != null
+            return null
+        end
+        branches.add({condition: nextCondition, body: nextBody})
+    else
+        if p_end_of_statement() == null
+        return null
+    end
+    elseBody = p_parse_block_until(["End"])
+    if parseState.err != null
+        return null
+    end
+    break
+end
+end
+if p_expect("End", "to close 'if'") == null
+    return null
+end
+if p_end_of_statement() == null
+    return null
+end
+return {kind: "If", span: span, branches: branches, else: elseBody}
+end
+function p_parse_function()
+    tok = p_peek()
+    span = p_span(tok)
+    p_advance()
+    name = p_expect_identifier("for function name")
+    if parseState.err != null
+        return null
+    end
+    if p_expect("LParen", "after function name") == null
+        return null
+    end
+    params = []
+    if not p_check("RParen")
+        while true
+        param = p_expect_identifier("in parameter list")
+        if parseState.err != null
+            return null
+        end
+        params.add(param)
+        if not p_matches("Comma")
+            break
+        end
+    end
+end
+if p_expect("RParen", "to close parameter list") == null
+    return null
+end
+if p_end_of_statement() == null
+    return null
+end
+outerDepth = parseState.loopDepth
+parseState.loopDepth = 0
+body = p_parse_block_until(["End"])
+parseState.loopDepth = outerDepth
+if parseState.err != null
+    return null
+end
+if p_expect("End", "to close function") == null
+    return null
+end
+if p_end_of_statement() == null
+    return null
+end
+return {kind: "FunctionDef", span: span, name: name, params: params, body: body}
+end
+function p_parse_repeat()
+    tok = p_peek()
+    span = p_span(tok)
+    p_advance()
+    count = p_expression()
+    if parseState.err != null
+        return null
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    parseState.loopDepth += 1
+    body = p_parse_block_until(["End"])
+    parseState.loopDepth -= 1
+    if parseState.err != null
+        return null
+    end
+    if p_expect("End", "to close 'repeat'") == null
+        return null
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    return {kind: "Repeat", span: span, count: count, body: body}
+end
+function p_parse_while()
+    tok = p_peek()
+    span = p_span(tok)
+    p_advance()
+    condition = p_expression()
+    if parseState.err != null
+        return null
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    parseState.loopDepth += 1
+    body = p_parse_block_until(["End"])
+    parseState.loopDepth -= 1
+    if parseState.err != null
+        return null
+    end
+    if p_expect("End", "to close 'while'") == null
+        return null
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    return {kind: "While", span: span, condition: condition, body: body}
+end
+function p_parse_for()
+    tok = p_peek()
+    span = p_span(tok)
+    p_advance()
+    name = p_expect_identifier("after 'for'")
+    if parseState.err != null
+        return null
+    end
+    if p_expect("In", "after loop variable") == null
+        return null
+    end
+    iterable = p_expression()
+    if parseState.err != null
+        return null
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    parseState.loopDepth += 1
+    body = p_parse_block_until(["End"])
+    parseState.loopDepth -= 1
+    if parseState.err != null
+        return null
+    end
+    if p_expect("End", "to close 'for'") == null
+        return null
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    return {kind: "ForIn", span: span, name: name, iterable: iterable, body: body}
+end
+function p_assign_or_expr()
+    tok = p_peek()
+    span = p_span(tok)
+    expr = p_expression()
+    if parseState.err != null
+        return null
+    end
+    if p_matches("Assign")
+        value = p_expression()
+        if parseState.err != null
+            return null
+        end
+        if p_end_of_statement() == null
+            return null
+        end
+        target = p_to_assignable(expr, span)
+        if parseState.err != null
+            return null
+        end
+        return {kind: "Assign", span: span, target: target, value: value}
+    end
+    if p_check("CompoundAssign")
+        opTok = p_peek()
+        opSpan = p_span(opTok)
+        p_advance()
+        value = p_expression()
+        if parseState.err != null
+            return null
+        end
+        if p_end_of_statement() == null
+            return null
+        end
+        target = p_to_assignable(expr, opSpan)
+        if parseState.err != null
+            return null
+        end
+        return {kind: "CompoundAssign", span: opSpan, target: target, op: opTok.op, value: value}
+    end
+    if p_end_of_statement() == null
+        return null
+    end
+    return {kind: "ExprStmt", span: span, expr: expr}
+end
+$- ---------- Expressions (precedence climbing) ---------- -$
+function p_binary(op, left, right, tok)
+    return {kind: "Binary", op: op, left: left, right: right, span: p_span(tok)}
+end
+function p_unary_node(op, operand, tok)
+    return {kind: "Unary", op: op, operand: operand, span: p_span(tok)}
+end
+function p_expression()
+    condition = p_coalesce()
+    if parseState.err != null
+        return null
+    end
+    if p_check("Question")
+        tok = p_peek()
+        p_advance()
+        whenTrue = p_expression()
+        if parseState.err != null
+            return null
+        end
+        if p_expect("Colon", "after the true branch of '?'") == null
+            return null
+        end
+        whenFalse = p_expression()
+        if parseState.err != null
+            return null
+        end
+        return {kind: "Ternary", condition: condition, whenTrue: whenTrue, whenFalse: whenFalse, span: p_span(tok)}
+    end
+    return condition
+end
+function p_coalesce()
+    left = p_or()
+    if parseState.err != null
+        return null
+    end
+    if p_check("NullCoalesce")
+        tok = p_peek()
+        p_advance()
+        right = p_coalesce()
+        if parseState.err != null
+            return null
+        end
+        return p_binary("??", left, right, tok)
+    end
+    return left
+end
+function p_or()
+    left = p_bit_or()
+    if parseState.err != null
+        return null
+    end
+    while p_check("Or") or p_check("OrElse")
+    tok = p_peek()
+    p_advance()
+    right = p_bit_or()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary("or", left, right, tok)
+end
+return left
+end
+function p_bit_or()
+    left = p_bit_xor()
+    if parseState.err != null
+        return null
+    end
+    while p_check("BitOr")
+    tok = p_peek()
+    p_advance()
+    right = p_bit_xor()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary("|", left, right, tok)
+end
+return left
+end
+function p_bit_xor()
+    left = p_bit_and()
+    if parseState.err != null
+        return null
+    end
+    while p_check("BitXor")
+    tok = p_peek()
+    p_advance()
+    right = p_bit_and()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary("^", left, right, tok)
+end
+return left
+end
+function p_bit_and()
+    left = p_shift()
+    if parseState.err != null
+        return null
+    end
+    while p_check("BitAnd")
+    tok = p_peek()
+    p_advance()
+    right = p_shift()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary("&", left, right, tok)
+end
+return left
+end
+function p_shift()
+    left = p_and()
+    if parseState.err != null
+        return null
+    end
+    while p_check("Shl") or p_check("Shr")
+    tok = p_peek()
+    op = "<<"
+    if tok.type == "Shr"
+        op = ">>"
+    end
+    p_advance()
+    right = p_and()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary(op, left, right, tok)
+end
+return left
+end
+function p_and()
+    left = p_not()
+    if parseState.err != null
+        return null
+    end
+    while p_check("And") or p_check("AndAlso")
+    tok = p_peek()
+    p_advance()
+    right = p_not()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary("and", left, right, tok)
+end
+return left
+end
+function p_not()
+    if p_check("Not") or p_check("Bang")
+        tok = p_peek()
+        p_advance()
+        operand = p_not()
+        if parseState.err != null
+            return null
+        end
+        return p_unary_node("not", operand, tok)
+    end
+    return p_comparison()
+end
+function p_comparison()
+    left = p_additive()
+    if parseState.err != null
+        return null
+    end
+    while true
+    tok = p_peek()
+    op = ""
+    if tok.type == "Eq"
+        op = "=="
+    end
+    if tok.type == "NotEq"
+        op = "!="
+    end
+    if tok.type == "Gt"
+        op = ">"
+    end
+    if tok.type == "Lt"
+        op = "<"
+    end
+    if tok.type == "GtEq"
+        op = ">="
+    end
+    if tok.type == "LtEq"
+        op = "<="
+    end
+    if op == ""
+        break
+    end
+    p_advance()
+    right = p_additive()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary(op, left, right, tok)
+end
+return left
+end
+function p_additive()
+    left = p_multiplicative()
+    if parseState.err != null
+        return null
+    end
+    while p_check("Plus") or p_check("Minus")
+    tok = p_peek()
+    op = "+"
+    if tok.type == "Minus"
+        op = "-"
+    end
+    p_advance()
+    right = p_multiplicative()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary(op, left, right, tok)
+end
+return left
+end
+function p_multiplicative()
+    left = p_unary()
+    if parseState.err != null
+        return null
+    end
+    while true
+    tok = p_peek()
+    op = ""
+    if tok.type == "Star"
+        op = "*"
+    end
+    if tok.type == "Slash"
+        op = "/"
+    end
+    if tok.type == "Percent"
+        op = "%"
+    end
+    if tok.type == "FloorDiv" or tok.type == "Div"
+        op = "//"
+    end
+    if op == ""
+        break
+    end
+    p_advance()
+    right = p_unary()
+    if parseState.err != null
+        return null
+    end
+    left = p_binary(op, left, right, tok)
+end
+return left
+end
+function p_unary()
+    if p_check("Minus") or p_check("Not") or p_check("Bang") or p_check("BitNot")
+        tok = p_peek()
+        op = "not"
+        if tok.type == "Minus"
+            op = "-"
+        end
+        if tok.type == "BitNot"
+            op = "~"
+        end
+        p_advance()
+        operand = p_unary()
+        if parseState.err != null
+            return null
+        end
+        return p_unary_node(op, operand, tok)
+    end
+    return p_power()
+end
+function p_power()
+    left = p_postfix()
+    if parseState.err != null
+        return null
+    end
+    if p_check("Pow")
+        tok = p_peek()
+        p_advance()
+        right = p_unary()
+        if parseState.err != null
+            return null
+        end
+        return p_binary("**", left, right, tok)
+    end
+    return left
+end
+function p_call_args()
+    if p_expect("LParen", "to start argument list") == null
+        return null
+    end
+    callArgs = []
+    if not p_check("RParen")
+        while true
+        arg = p_expression()
+        if parseState.err != null
+            return null
+        end
+        callArgs.add(arg)
+        if not p_matches("Comma")
+            break
+        end
+    end
+end
+if p_expect("RParen", "to close argument list") == null
+    return null
+end
+return callArgs
+end
+function p_postfix()
+    expr = p_primary()
+    if parseState.err != null
+        return null
+    end
+    while true
+    if p_matches("Dot")
+        name = p_expect_member_name("after '.'")
+        if parseState.err != null
+            return null
+        end
+        if p_check("LParen")
+            callArgs = p_call_args()
+            if parseState.err != null
+                return null
+            end
+            expr = {kind: "MethodCall", receiver: expr, name: name, args: callArgs}
+        else
+            expr = {kind: "PropertyAccess", base: expr, name: name}
+        end
+    else if p_matches("LBracket")
+        index = p_expression()
+        if parseState.err != null
+            return null
+        end
+        if p_expect("RBracket", "to close index expression") == null
+            return null
+        end
+        expr = {kind: "Index", base: expr, index: index}
+    else if p_check("LParen")
+        callArgs = p_call_args()
+        if parseState.err != null
+            return null
+        end
+        expr = {kind: "Call", callee: expr, args: callArgs}
+    else if p_check("PlusPlus") or p_check("MinusMinus")
+        tok = p_peek()
+        op = "++"
+        if tok.type == "MinusMinus"
+            op = "--"
+        end
+        target = p_to_assignable(expr, p_span(tok))
+        if parseState.err != null
+            return null
+        end
+        p_advance()
+        expr = {kind: "Postfix", op: op, target: target, span: p_span(tok)}
+    else
+        break
+    end
+end
+return expr
+end
+function p_parse_interpolated(parts, outerSpan)
+    hasExpression = false
+    for part in parts
+        if part.type == "Expr"
+            hasExpression = true
+        end
+    end
+    acc = null
+    if hasExpression
+        acc = {kind: "String", value: ""}
+    end
+    for part in parts
+        span = outerSpan
+        expr = null
+        if part.type == "Literal"
+            expr = {kind: "String", value: part.value}
+        else
+            fragment = part.value
+            for tok in fragment
+                if tok.type != "Newline" and tok.type != "Eof"
+                    span = p_span(tok)
+                    break
+                end
+            end
+            savedTokens = parseState.tokens
+            savedPos = parseState.pos
+            savedLoopDepth = parseState.loopDepth
+            savedError = parseState.err
+            parseState.tokens = fragment
+            parseState.pos = 0
+            parseState.loopDepth = 0
+            parseState.err = null
+            p_skip_newlines()
+            expr = p_expression()
+            if parseState.err == null
+                p_skip_newlines()
+                if not p_at_end()
+                    tok = p_peek()
+                    p_fail("Unexpected token " + p_describe(tok) + " in interpolation", tok)
+                end
+            end
+            innerError = parseState.err
+            parseState.tokens = savedTokens
+            parseState.pos = savedPos
+            parseState.loopDepth = savedLoopDepth
+            parseState.err = savedError
+            if innerError != null
+                parseState.err = innerError
+                return null
+            end
+        end
+        if acc == null
+            acc = expr
+        else
+            acc = {kind: "Binary", op: "+", left: acc, right: expr, span: span}
+        end
+    end
+    if acc == null
+        acc = {kind: "String", value: ""}
+    end
+    return acc
+end
+function p_primary()
+    tok = p_peek()
+    span = p_span(tok)
+    nextIsCall = false
+    if parseState.pos + 1 < len(parseState.tokens)
+        if parseState.tokens[parseState.pos + 1].type == "LParen"
+            nextIsCall = true
+        end
+    end
+    t = tok.type
+    if t == "Number"
+        p_advance()
+        return {kind: "Number", value: tok.value}
+    end
+    if t == "String"
+        p_advance()
+        return {kind: "String", value: tok.value}
+    end
+    if t == "Interpolated"
+        p_advance()
+        return p_parse_interpolated(tok.value, span)
+    end
+    if t == "True"
+        p_advance()
+        return {kind: "Bool", value: true}
+    end
+    if t == "False"
+        p_advance()
+        return {kind: "Bool", value: false}
+    end
+    if t == "Null"
+        p_advance()
+        return {kind: "Null"}
+    end
+    if t == "Identifier"
+        p_advance()
+        return {kind: "Variable", name: tok.value}
+    end
+    if t == "LParen"
+        p_advance()
+        p_skip_newlines()
+        inner = p_expression()
+        if parseState.err != null
+            return null
+        end
+        p_skip_newlines()
+        if p_expect("RParen", "to close parenthesized expression") == null
+            return null
+        end
+        return inner
+    end
+    if t == "LBracket"
+        return p_array_literal()
+    end
+    if t == "LBrace"
+        return p_object_literal()
+    end
+    keyword = p_keyword_name(tok)
+    if nextIsCall and keyword != null
+        p_advance()
+        return {kind: "Variable", name: keyword}
+    end
+    p_fail("Unexpected token " + p_describe(tok), tok)
+    return null
+end
+function p_array_literal()
+    if p_expect("LBracket", "to start array literal") == null
+        return null
+    end
+    items = []
+    p_skip_newlines()
+    if not p_check("RBracket")
+        while true
+        p_skip_newlines()
+        item = p_expression()
+        if parseState.err != null
+            return null
+        end
+        items.add(item)
+        p_skip_newlines()
+        if not p_matches("Comma")
+            break
+        end
+    end
+end
+p_skip_newlines()
+if p_expect("RBracket", "to close array literal") == null
+    return null
+end
+return {kind: "Array", items: items}
+end
+function p_object_literal()
+    if p_expect("LBrace", "to start object literal") == null
+        return null
+    end
+    fields = []
+    p_skip_newlines()
+    if not p_check("RBrace")
+        while true
+        p_skip_newlines()
+        name = p_expect_member_name("as object key")
+        if parseState.err != null
+            return null
+        end
+        if p_expect("Colon", "after object key") == null
+            return null
+        end
+        p_skip_newlines()
+        value = p_expression()
+        if parseState.err != null
+            return null
+        end
+        fields.add({name: name, value: value})
+        p_skip_newlines()
+        if not p_matches("Comma")
+            break
+        end
+    end
+end
+p_skip_newlines()
+if p_expect("RBrace", "to close object literal") == null
+    return null
+end
+return {kind: "Object", fields: fields}
+end
+function parse(tokens)
+    parseState = {tokens: tokens, pos: 0, loopDepth: 0, err: null}
+    statements = p_parse_program()
+    if parseState.err != null
+        return parseState.err
+    end
+    return {version: 1, statements: statements}
+end
+$- ---------- CLI entry point ---------- -$
+function find_source_path()
+    if type(args) == "array"
+        argv = args
+    else
+        argv = args()
+    end
+    scriptIndex = -1
+    for i in range(len(argv))
+        if argv[i].endsWith("parser.enm")
+            scriptIndex = i
+        end
+    end
+    if scriptIndex >= 0
+        i = scriptIndex + 1
+        while i < len(argv)
+        candidate = argv[i]
+        if not candidate.startsWith("-") and candidate != "run"
+            return candidate
+        end
+        i += 1
+    end
+end
+i = len(argv) - 1
+while i >= 0
+candidate = argv[i]
+if not candidate.startsWith("-") and candidate != "run" and not candidate.endsWith("parser.enm") and not candidate.endsWith("/em") and not candidate.endsWith("em.exe")
+    return candidate
+end
+i -= 1
+end
+return null
+end
+path = find_source_path()
+if path == null
+    say(json.encode({error: "Missing source file argument", line: 1, col: 1}))
+else
+    source = fs.read(path)
+    tokens = lex(source)
+    if lexFailure != null
+        say(json.encode(lexFailure))
+    else
+        ast = parse(tokens)
+        say(json.encode(ast))
+    end
+end
