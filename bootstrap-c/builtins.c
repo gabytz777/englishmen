@@ -14,16 +14,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "builtins.h"
-
-/* bootstrap-c/vm.h pulls in emb.h, whose anonymous EmFunctionProto typedef
- * conflicts with the tagged forward declaration in the parent-owned value.h.
- * Only three VM entry points are needed here; declaring them locally keeps
- * this translation unit buildable without touching headers owned by parents.
- * These prototypes exactly match bootstrap-c/vm.h. */
-int em_vm_register_native(EmVm *vm, const char *name, EmNativeFn fn);
-EmValue *em_vm_lookup_import(EmVm *vm, const char *name);
-int em_vm_call_value(EmVm *vm, EmValue *callee, EmValue **args, size_t argc,
-                     EmValue **out, char **err);
+#include "vm.h"
 
 #include <dirent.h>
 #include <errno.h>
