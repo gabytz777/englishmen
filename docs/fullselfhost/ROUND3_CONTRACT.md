@@ -48,10 +48,12 @@ can be saved without a UTF-8 conversion.
 ### Combined driver (B2)
 
 `selfhost/full.enm` gains an optional `--write-emb <path>` flag. After
-`ieEncode(irFull)` it calls `emb.writeBytes(path, encodedFull)`. Keep the
-existing `vmRunWithRuntime(irFull)` call unchanged: the parent wires the import
-table and switches to `vmRunWithImports` after A1/A2 land, so this PR stays
-independent and testable.
+`ieEncode(irFull)` it writes the byte array with the already-available native
+`bytes.write(path, encodedFull)`. B1 adds `emb.writeBytes` as a convenience
+alias in the bytecode module; both paths must produce a loadable image. Keep
+the existing `vmRunWithRuntime(irFull)` call unchanged: the parent wires the
+import table and switches to `vmRunWithImports` after A1/A2 land, so this PR
+stays independent and testable.
 
 ### Compile-only source (C1)
 
