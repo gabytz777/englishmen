@@ -1,0 +1,17 @@
+$- From a .emc manifest to a runnable .emb image -$
+import project
+import emb
+import os
+import fs
+$- project.parse accepts .emc text directly; project.load(path) reads a file. -$
+sample = "name = \"ManifestDemo\"\nversion = \"1.0.0\"\nmain = \"main.enm\"\n"
+manifest = project.parse(sample)
+name = project.name(manifest)
+$- Keep the repository clean by default; tests supply EM_EMB_OUT. -$
+fallback = os.tempDir() + "/emb_manifest_example_" + os.pid() + ".emb"
+out = os.env("EM_EMB_OUT", fallback)
+$- The IR shape is the Englishmen view of bytecode::Chunk. -$
+ir = {version: emb.version(), constants: [{tag: "string", value: "Hello from " + name}], functions: [], code: [{op: "LoadConst", a: 0}, {op: "Say", a: 1}, {op: "ReturnNull"}]}
+assert(emb.write(out, ir), "emb.write failed")
+say(name)
+say(fs.size(out))
