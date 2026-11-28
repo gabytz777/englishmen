@@ -1,4 +1,4 @@
-use crate::ast::{Assignable, BinOp, Expr, Stmt, UnOp};
+use crate::ast::{expr_to_assignable, Assignable, BinOp, Expr, Stmt, UnOp};
 use crate::environment::Environment;
 use crate::error::{suggest_closest, EmError, Span};
 use crate::modules;
@@ -10,6 +10,15 @@ use std::rc::Rc;
 pub struct Interpreter {
     pub globals: Rc<Environment>,
     imported_modules: Vec<String>,
+}
+
+/// A target whose base/index have already been evaluated. Keeping it around
+/// lets compound assignment and `++/--` read, compute and write without
+/// evaluating a call or index expression twice.
+enum TargetLocation {
+    Variable(String),
+    Property(Value, String),
+    Index(Value, Value),
 }
 
 impl Interpreter {
@@ -45,6 +54,10 @@ impl Interpreter {
             Stmt::Assign(target, expr, span) => {
                 let value = self.eval(expr, env)?;
                 self.assign_to(target, value, env, *span)?;
+                Ok(Signal::Normal)
+            }
+            Stmt::CompoundAssign(target, op, expr, span) => {
+                self.compound_to(target, *op, expr, env, *span)?;
                 Ok(Signal::Normal)
             }
             Stmt::ExprStmt(expr, _span) => {
@@ -88,7 +101,18 @@ impl Interpreter {
                 }
                 for _ in 0..(n as i64) {
                     match self.exec_block(body, env)? {
-                        Signal::Normal => continue,
+                        Signal::Normal | Signal::Continue => continue,
+                        Signal::Break => break,
+                        signal => return Ok(signal),
+                    }
+                }
+                Ok(Signal::Normal)
+            }
+            Stmt::While(cond, body, _span) => {
+                while self.eval(cond, env)?.is_truthy() {
+                    match self.exec_block(body, env)? {
+                        Signal::Normal | Signal::Continue => continue,
+                        Signal::Break => break,
                         signal => return Ok(signal),
                     }
                 }
@@ -110,12 +134,15 @@ impl Interpreter {
                 for item in items {
                     env.define(var, item);
                     match self.exec_block(body, env)? {
-                        Signal::Normal => continue,
+                        Signal::Normal | Signal::Continue => continue,
+                        Signal::Break => break,
                         signal => return Ok(signal),
                     }
                 }
                 Ok(Signal::Normal)
             }
+            Stmt::Break(_) => Ok(Signal::Break),
+            Stmt::Continue(_) => Ok(Signal::Continue),
             Stmt::Import(name, span) => {
                 if let Some(module) = modules::load_module(name) {
                     env.define(name, module);
@@ -154,45 +181,84 @@ impl Interpreter {
             }
             Assignable::Property(base_expr, name) => {
                 let base = self.eval_or_create_object(base_expr, env, span)?;
-                match base {
-                    Value::Object(obj) => {
-                        obj.borrow_mut().insert(name.clone(), value);
-                        Ok(())
-                    }
-                    other => Err(EmError::new(format!(
-                        "Cannot set property '{name}' on a {}",
-                        other.type_name()
-                    ))
-                    .with_span(span)),
-                }
+                set_property_value(&base, name, value, span)
             }
             Assignable::Index(base_expr, index_expr) => {
                 let base = self.eval(base_expr, env)?;
                 let index = self.eval(index_expr, env)?;
-                match base {
-                    Value::Array(arr) => {
-                        let i = runtime::expect_number(&index, "as an array index")
-                            .map_err(|m| EmError::new(m).with_span(span))?;
-                        let mut arr = arr.borrow_mut();
-                        let idx = i as i64;
-                        if idx < 0 || idx as usize >= arr.len() {
-                            return Err(EmError::new(format!(
-                                "Array index {idx} is out of bounds (length {})",
-                                arr.len()
-                            ))
-                            .with_span(span));
-                        }
-                        arr[idx as usize] = value;
-                        Ok(())
-                    }
-                    other => Err(EmError::new(format!(
-                        "Cannot index into a {}",
-                        other.type_name()
-                    ))
-                    .with_span(span)),
-                }
+                set_index_value(&base, &index, value, span)
             }
         }
+    }
+
+    /// Evaluate a compound-assignment target once and remember where to store.
+    fn locate_target(
+        &mut self,
+        target: &Assignable,
+        env: &Rc<Environment>,
+        span: Span,
+    ) -> Result<TargetLocation, EmError> {
+        match target {
+            Assignable::Variable(name) => {
+                // Reading an undeclared variable is an error, unlike plain `=`.
+                variable_value(name, env)?;
+                Ok(TargetLocation::Variable(name.clone()))
+            }
+            Assignable::Property(base_expr, name) => {
+                let base = self.eval_or_create_object(base_expr, env, span)?;
+                Ok(TargetLocation::Property(base, name.clone()))
+            }
+            Assignable::Index(base_expr, index_expr) => {
+                let base = self.eval(base_expr, env)?;
+                let index = self.eval(index_expr, env)?;
+                Ok(TargetLocation::Index(base, index))
+            }
+        }
+    }
+
+    fn read_location(
+        &self,
+        location: &TargetLocation,
+        env: &Rc<Environment>,
+        span: Span,
+    ) -> Result<Value, EmError> {
+        match location {
+            TargetLocation::Variable(name) => variable_value(name, env),
+            TargetLocation::Property(base, name) => property_value(base, name),
+            TargetLocation::Index(base, index) => index_value(base, index, span),
+        }
+    }
+
+    fn write_location(
+        &self,
+        location: &TargetLocation,
+        value: Value,
+        env: &Rc<Environment>,
+        span: Span,
+    ) -> Result<(), EmError> {
+        match location {
+            TargetLocation::Variable(name) => {
+                env.assign(name, value);
+                Ok(())
+            }
+            TargetLocation::Property(base, name) => set_property_value(base, name, value, span),
+            TargetLocation::Index(base, index) => set_index_value(base, index, value, span),
+        }
+    }
+
+    fn compound_to(
+        &mut self,
+        target: &Assignable,
+        op: BinOp,
+        value_expr: &Expr,
+        env: &Rc<Environment>,
+        span: Span,
+    ) -> Result<(), EmError> {
+        let location = self.locate_target(target, env, span)?;
+        let old = self.read_location(&location, env, span)?;
+        let rhs = self.eval(value_expr, env)?;
+        let new = binary_values(op, old, rhs, span)?;
+        self.write_location(&location, new, env, span)
     }
 
     /// Evaluate a base expression for property assignment, auto-vivifying
@@ -232,74 +298,15 @@ impl Interpreter {
             Expr::String(s) => Ok(Value::String(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Null => Ok(Value::Null),
-            Expr::Variable(name) => {
-                if let Some(v) = env.get(name) {
-                    Ok(v)
-                } else {
-                    let names = env.names();
-                    let hint = suggest_closest(name, names.iter());
-                    let mut err = EmError::name(format!("Unknown variable '{name}'"));
-                    if let Some(h) = hint {
-                        err = err.with_hint(format!("Did you mean '{h}'?"));
-                    }
-                    Err(err)
-                }
-            }
+            Expr::Variable(name) => variable_value(name, env),
             Expr::PropertyAccess(base, name) => {
                 let base_val = self.eval(base, env)?;
-                match &base_val {
-                    Value::Object(obj) => {
-                        if let Some(v) = obj.borrow().get(name) {
-                            Ok(v.clone())
-                        } else {
-                            let names: Vec<String> = obj.borrow().keys().cloned().collect();
-                            let hint = suggest_closest(name, names.iter());
-                            let mut err = EmError::name(format!("Unknown property '{name}'"));
-                            if let Some(h) = hint {
-                                err = err.with_hint(format!("Did you mean '{h}'?"));
-                            }
-                            Err(err)
-                        }
-                    }
-                    other => Err(EmError::new(format!(
-                        "Cannot access property '{name}' on a {}",
-                        other.type_name()
-                    ))),
-                }
+                property_value(&base_val, name)
             }
             Expr::Index(base, index) => {
                 let base_val = self.eval(base, env)?;
                 let index_val = self.eval(index, env)?;
-                match &base_val {
-                    Value::Array(arr) => {
-                        let i = runtime::expect_number(&index_val, "as an array index")?;
-                        let arr = arr.borrow();
-                        let idx = i as i64;
-                        if idx < 0 || idx as usize >= arr.len() {
-                            return Err(EmError::new(format!(
-                                "Array index {idx} is out of bounds (length {})",
-                                arr.len()
-                            )));
-                        }
-                        Ok(arr[idx as usize].clone())
-                    }
-                    Value::String(s) => {
-                        let i = runtime::expect_number(&index_val, "as a string index")?;
-                        let chars: Vec<char> = s.chars().collect();
-                        let idx = i as i64;
-                        if idx < 0 || idx as usize >= chars.len() {
-                            return Err(EmError::new(format!(
-                                "String index {idx} is out of bounds (length {})",
-                                chars.len()
-                            )));
-                        }
-                        Ok(Value::String(chars[idx as usize].to_string()))
-                    }
-                    other => Err(EmError::new(format!(
-                        "Cannot index into a {}",
-                        other.type_name()
-                    ))),
-                }
+                index_value(&base_val, &index_val, Span::default())
             }
             Expr::Array(items) => {
                 let mut values = Vec::with_capacity(items.len());
@@ -351,6 +358,22 @@ impl Interpreter {
             }
             Expr::Binary(left, op, right, span) => self.eval_binary(left, *op, right, env, *span),
             Expr::Unary(op, operand, span) => self.eval_unary(*op, operand, env, *span),
+            Expr::Ternary(cond, when_true, when_false, _span) => {
+                if self.eval(cond, env)?.is_truthy() {
+                    self.eval(when_true, env)
+                } else {
+                    self.eval(when_false, env)
+                }
+            }
+            Expr::Postfix(target, increment, span) => {
+                let assignable = expr_to_assignable((**target).clone(), *span)?;
+                let location = self.locate_target(&assignable, env, *span)?;
+                let old = self.read_location(&location, env, *span)?;
+                let op = if *increment { BinOp::Add } else { BinOp::Sub };
+                let new = binary_values(op, old.clone(), Value::Number(1.0), *span)?;
+                self.write_location(&location, new, env, *span)?;
+                Ok(old)
+            }
         }
     }
 
@@ -441,70 +464,17 @@ impl Interpreter {
             let r = self.eval(right, env)?;
             return Ok(Value::Bool(r.is_truthy()));
         }
+        if op == BinOp::Coalesce {
+            let l = self.eval(left, env)?;
+            if !matches!(l, Value::Null) {
+                return Ok(l);
+            }
+            return self.eval(right, env);
+        }
 
         let l = self.eval(left, env)?;
         let r = self.eval(right, env)?;
-
-        match op {
-            BinOp::Eq => return Ok(Value::Bool(l.equals(&r))),
-            BinOp::NotEq => return Ok(Value::Bool(!l.equals(&r))),
-            _ => {}
-        }
-
-        match op {
-            BinOp::Add => match (&l, &r) {
-                (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
-                (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
-                (Value::String(a), b) => Ok(Value::String(format!("{a}{}", b.display()))),
-                (a, Value::String(b)) => Ok(Value::String(format!("{}{b}", a.display()))),
-                _ => Err(EmError::new(format!(
-                    "Cannot add {} and {}",
-                    l.type_name(),
-                    r.type_name()
-                ))
-                .with_span(span)),
-            },
-            BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                let a = runtime::expect_number(&l, "on the left of the operator")
-                    .map_err(|m| EmError::new(m).with_span(span))?;
-                let b = runtime::expect_number(&r, "on the right of the operator")
-                    .map_err(|m| EmError::new(m).with_span(span))?;
-                match op {
-                    BinOp::Sub => Ok(Value::Number(a - b)),
-                    BinOp::Mul => Ok(Value::Number(a * b)),
-                    BinOp::Div => {
-                        if b == 0.0 {
-                            Err(EmError::new("Division by zero").with_span(span))
-                        } else {
-                            Ok(Value::Number(a / b))
-                        }
-                    }
-                    BinOp::Mod => {
-                        if b == 0.0 {
-                            Err(EmError::new("Division by zero").with_span(span))
-                        } else {
-                            Ok(Value::Number(a % b))
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            BinOp::Gt | BinOp::Lt | BinOp::GtEq | BinOp::LtEq => {
-                let a = runtime::expect_number(&l, "on the left of the comparison")
-                    .map_err(|m| EmError::new(m).with_span(span))?;
-                let b = runtime::expect_number(&r, "on the right of the comparison")
-                    .map_err(|m| EmError::new(m).with_span(span))?;
-                let result = match op {
-                    BinOp::Gt => a > b,
-                    BinOp::Lt => a < b,
-                    BinOp::GtEq => a >= b,
-                    BinOp::LtEq => a <= b,
-                    _ => unreachable!(),
-                };
-                Ok(Value::Bool(result))
-            }
-            _ => unreachable!(),
-        }
+        binary_values(op, l, r, span)
     }
 
     fn eval_unary(
@@ -522,6 +492,11 @@ impl Interpreter {
                 Ok(Value::Number(-n))
             }
             UnOp::Not => Ok(Value::Bool(!v.is_truthy())),
+            UnOp::BitNot => {
+                let n = runtime::expect_number(&v, "for bitwise '~'")
+                    .map_err(|m| EmError::new(m).with_span(span))?;
+                Ok(Value::Number(!(n as i64) as f64))
+            }
         }
     }
 }
@@ -529,6 +504,213 @@ impl Interpreter {
 impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn variable_value(name: &str, env: &Rc<Environment>) -> Result<Value, EmError> {
+    if let Some(value) = env.get(name) {
+        return Ok(value);
+    }
+    let names = env.names();
+    let hint = suggest_closest(name, names.iter());
+    let mut err = EmError::name(format!("Unknown variable '{name}'"));
+    if let Some(h) = hint {
+        err = err.with_hint(format!("Did you mean '{h}'?"));
+    }
+    Err(err)
+}
+
+fn property_value(base: &Value, name: &str) -> Result<Value, EmError> {
+    match base {
+        Value::Object(obj) => {
+            if let Some(value) = obj.borrow().get(name) {
+                return Ok(value.clone());
+            }
+            let names: Vec<String> = obj.borrow().keys().cloned().collect();
+            let hint = suggest_closest(name, names.iter());
+            let mut err = EmError::name(format!("Unknown property '{name}'"));
+            if let Some(h) = hint {
+                err = err.with_hint(format!("Did you mean '{h}'?"));
+            }
+            Err(err)
+        }
+        other => Err(EmError::new(format!(
+            "Cannot access property '{name}' on a {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn set_property_value(
+    base: &Value,
+    name: &str,
+    value: Value,
+    span: Span,
+) -> Result<(), EmError> {
+    match base {
+        Value::Object(obj) => {
+            obj.borrow_mut().insert(name.to_string(), value);
+            Ok(())
+        }
+        other => Err(EmError::new(format!(
+            "Cannot set property '{name}' on a {}",
+            other.type_name()
+        ))
+        .with_span(span)),
+    }
+}
+
+fn index_value(base: &Value, index: &Value, span: Span) -> Result<Value, EmError> {
+    match base {
+        Value::Array(arr) => {
+            let i = runtime::expect_number(index, "as an array index")
+                .map_err(|m| EmError::new(m).with_span(span))?;
+            let arr = arr.borrow();
+            let idx = i as i64;
+            if idx < 0 || idx as usize >= arr.len() {
+                return Err(EmError::new(format!(
+                    "Array index {idx} is out of bounds (length {})",
+                    arr.len()
+                ))
+                .with_span(span));
+            }
+            Ok(arr[idx as usize].clone())
+        }
+        Value::String(s) => {
+            let i = runtime::expect_number(index, "as a string index")
+                .map_err(|m| EmError::new(m).with_span(span))?;
+            let chars: Vec<char> = s.chars().collect();
+            let idx = i as i64;
+            if idx < 0 || idx as usize >= chars.len() {
+                return Err(EmError::new(format!(
+                    "String index {idx} is out of bounds (length {})",
+                    chars.len()
+                ))
+                .with_span(span));
+            }
+            Ok(Value::String(chars[idx as usize].to_string()))
+        }
+        other => Err(EmError::new(format!("Cannot index into a {}", other.type_name()))
+            .with_span(span)),
+    }
+}
+
+fn set_index_value(
+    base: &Value,
+    index: &Value,
+    value: Value,
+    span: Span,
+) -> Result<(), EmError> {
+    match base {
+        Value::Array(arr) => {
+            let i = runtime::expect_number(index, "as an array index")
+                .map_err(|m| EmError::new(m).with_span(span))?;
+            let mut arr = arr.borrow_mut();
+            let idx = i as i64;
+            if idx < 0 || idx as usize >= arr.len() {
+                return Err(EmError::new(format!(
+                    "Array index {idx} is out of bounds (length {})",
+                    arr.len()
+                ))
+                .with_span(span));
+            }
+            arr[idx as usize] = value;
+            Ok(())
+        }
+        other => Err(EmError::new(format!("Cannot index into a {}", other.type_name()))
+            .with_span(span)),
+    }
+}
+
+/// Apply an eager binary operator to two already-evaluated values. The VM has
+/// the same implementation, keeping the two backends' results and error
+/// wording identical.
+fn binary_values(op: BinOp, left: Value, right: Value, span: Span) -> Result<Value, EmError> {
+    match op {
+        BinOp::Eq => return Ok(Value::Bool(left.equals(&right))),
+        BinOp::NotEq => return Ok(Value::Bool(!left.equals(&right))),
+        BinOp::Add => {
+            return match (&left, &right) {
+                (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
+                (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
+                (Value::String(a), b) => Ok(Value::String(format!("{a}{}", b.display()))),
+                (a, Value::String(b)) => Ok(Value::String(format!("{}{b}", a.display()))),
+                _ => Err(EmError::new(format!(
+                    "Cannot add {} and {}",
+                    left.type_name(),
+                    right.type_name()
+                ))
+                .with_span(span)),
+            }
+        }
+        BinOp::Mul => {
+            if let (Value::String(s), Value::Number(n)) | (Value::Number(n), Value::String(s)) =
+                (&left, &right)
+            {
+                return Ok(Value::String(s.repeat(repeat_count(*n))));
+            }
+        }
+        _ => {}
+    }
+
+    let context = match op {
+        BinOp::Gt | BinOp::Lt | BinOp::GtEq | BinOp::LtEq => (
+            "on the left of the comparison",
+            "on the right of the comparison",
+        ),
+        _ => ("on the left of the operator", "on the right of the operator"),
+    };
+    let a = runtime::expect_number(&left, context.0)
+        .map_err(|m| EmError::new(m).with_span(span))?;
+    let b = runtime::expect_number(&right, context.1)
+        .map_err(|m| EmError::new(m).with_span(span))?;
+
+    Ok(match op {
+        BinOp::Sub => Value::Number(a - b),
+        BinOp::Mul => Value::Number(a * b),
+        BinOp::Div => {
+            if b == 0.0 {
+                return Err(EmError::new("Division by zero").with_span(span));
+            }
+            Value::Number(a / b)
+        }
+        BinOp::Mod => {
+            if b == 0.0 {
+                return Err(EmError::new("Division by zero").with_span(span));
+            }
+            Value::Number(a % b)
+        }
+        BinOp::FloorDiv => {
+            if b == 0.0 {
+                return Err(EmError::new("Division by zero").with_span(span));
+            }
+            Value::Number((a / b).floor())
+        }
+        BinOp::Pow => Value::Number(a.powf(b)),
+        BinOp::BitAnd => Value::Number(((a as i64) & (b as i64)) as f64),
+        BinOp::BitOr => Value::Number(((a as i64) | (b as i64)) as f64),
+        BinOp::BitXor => Value::Number(((a as i64) ^ (b as i64)) as f64),
+        BinOp::Shl => Value::Number((a as i64).wrapping_shl((b as i64) as u32) as f64),
+        BinOp::Shr => Value::Number((a as i64).wrapping_shr((b as i64) as u32) as f64),
+        BinOp::Gt => Value::Bool(a > b),
+        BinOp::Lt => Value::Bool(a < b),
+        BinOp::GtEq => Value::Bool(a >= b),
+        BinOp::LtEq => Value::Bool(a <= b),
+        other => {
+            return Err(EmError::syntax(format!(
+                "Operator {other:?} cannot be used here"
+            ))
+            .with_span(span))
+        }
+    })
+}
+
+/// Match the compiler's constant-folding limit for string repetition.
+fn repeat_count(n: f64) -> usize {
+    if n.is_finite() && n > 0.0 {
+        (n as usize).min(1_000_000)
+    } else {
+        0
     }
 }
 

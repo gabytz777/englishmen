@@ -12,10 +12,13 @@ use std::rc::Rc;
 pub const EMB_MAGIC: &[u8; 4] = b"EMBC";
 /// Bytecode format version. Bumped whenever the encoding changes
 /// incompatibly; the VM refuses files it does not recognise.
-pub const EMB_VERSION: u16 = 1;
+pub const EMB_VERSION: u16 = 2;
 /// Deepest function nesting a `.emb` image may declare. Loading recurses once
 /// per level, so without a cap a small file can overflow the host stack.
 const MAX_CHUNK_DEPTH: usize = 32;
+/// Largest stack rotation (`Rotate(n)` touches `n + 1` values) accepted from a
+/// `.emb` file. Compound assignment/property updates only need `n <= 3`.
+const MAX_ROTATE: u32 = 16;
 
 /// A compile-time constant. Only scalars are constants — arrays, objects and
 /// closures are built at runtime by dedicated instructions.
@@ -81,6 +84,15 @@ pub enum Op {
     Mul,
     Div,
     Mod,
+    /// Floor division (`a // b`), rounding towards negative infinity.
+    FloorDiv,
+    /// Exponentiation (`a ** b`), right-associative in the source language.
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
     Eq,
     NotEq,
     Gt,
@@ -89,8 +101,21 @@ pub enum Op {
     LtEq,
     Neg,
     Not,
+    /// Bitwise complement (`~x`).
+    BitNot,
     /// Replace the top of the stack with its truthiness as a boolean.
     ToBool,
+    /// Duplicate the top of the stack (used by postfix `++`/`--`).
+    Dup,
+    /// Rotate the top `n + 1` stack values right by one, so the former top
+    /// ends up at the bottom of that group. Used to reorder a computed value
+    /// in front of a property/index target before storing it.
+    Rotate(u32),
+
+    /// Like `GetProp`, but keeps the base on the stack below the value.
+    GetPropKeep(u32),
+    /// Like `GetIndex`, but keeps `base` and `index` below the value.
+    GetIndexKeep,
 
     /// Unconditional jump to an absolute address.
     Jump(u32),
@@ -100,6 +125,8 @@ pub enum Op {
     JumpIfFalsePeek(u32),
     /// Jump if the top of the stack is truthy, leaving it in place.
     JumpIfTruePeek(u32),
+    /// Jump if the top of the stack is `null`, leaving it in place.
+    JumpIfNullPeek(u32),
 
     /// Pop a repeat count, validate it and push a loop counter.
     RepeatSetup,
@@ -163,6 +190,7 @@ impl Chunk {
             Op::JumpIfFalse(_) => Op::JumpIfFalse(target),
             Op::JumpIfFalsePeek(_) => Op::JumpIfFalsePeek(target),
             Op::JumpIfTruePeek(_) => Op::JumpIfTruePeek(target),
+            Op::JumpIfNullPeek(_) => Op::JumpIfNullPeek(target),
             Op::RepeatNext(_) => Op::RepeatNext(target),
             Op::IterNext(name, _) => Op::IterNext(name, target),
             other => panic!("patch_jump on non-jump instruction {other:?}"),
@@ -347,6 +375,7 @@ fn validate(chunk: &Chunk) -> Result<(), EmError> {
             | Op::SetProp(a)
             | Op::GetVarOrObject(a)
             | Op::GetPropOrObject(a)
+            | Op::GetPropKeep(a)
             | Op::Import(a)
             | Op::MethodCall(a, _)
             | Op::IterNext(a, _)
@@ -365,6 +394,7 @@ fn validate(chunk: &Chunk) -> Result<(), EmError> {
             | Op::JumpIfFalse(a)
             | Op::JumpIfFalsePeek(a)
             | Op::JumpIfTruePeek(a)
+            | Op::JumpIfNullPeek(a)
             | Op::RepeatNext(a)
             | Op::IterNext(_, a) => Some(a),
             _ => None,
@@ -378,6 +408,7 @@ fn validate(chunk: &Chunk) -> Result<(), EmError> {
         match *op {
             Op::LoadConst(a) if a >= consts => return bad("constant index out of range"),
             Op::MakeClosure(a) if a >= funcs => return bad("function index out of range"),
+            Op::Rotate(n) if n > MAX_ROTATE => return bad("rotate count out of range"),
             _ => {}
         }
     }
@@ -460,6 +491,13 @@ fn encode_op(op: Op) -> (u8, u32, u32) {
         Op::Mul => (19, 0, 0),
         Op::Div => (20, 0, 0),
         Op::Mod => (21, 0, 0),
+        Op::FloorDiv => (42, 0, 0),
+        Op::Pow => (43, 0, 0),
+        Op::BitAnd => (44, 0, 0),
+        Op::BitOr => (45, 0, 0),
+        Op::BitXor => (46, 0, 0),
+        Op::Shl => (47, 0, 0),
+        Op::Shr => (48, 0, 0),
         Op::Eq => (22, 0, 0),
         Op::NotEq => (23, 0, 0),
         Op::Gt => (24, 0, 0),
@@ -468,6 +506,7 @@ fn encode_op(op: Op) -> (u8, u32, u32) {
         Op::LtEq => (27, 0, 0),
         Op::Neg => (28, 0, 0),
         Op::Not => (29, 0, 0),
+        Op::BitNot => (49, 0, 0),
         Op::ToBool => (30, 0, 0),
         Op::Jump(a) => (31, a, 0),
         Op::JumpIfFalse(a) => (32, a, 0),
@@ -480,6 +519,11 @@ fn encode_op(op: Op) -> (u8, u32, u32) {
         Op::Return => (39, 0, 0),
         Op::ReturnNull => (40, 0, 0),
         Op::Import(a) => (41, a, 0),
+        Op::Dup => (50, 0, 0),
+        Op::Rotate(a) => (51, a, 0),
+        Op::GetPropKeep(a) => (52, a, 0),
+        Op::GetIndexKeep => (53, 0, 0),
+        Op::JumpIfNullPeek(a) => (54, a, 0),
     }
 }
 
@@ -507,6 +551,13 @@ fn decode_op(tag: u8, a: u32, b: u32) -> Result<Op, EmError> {
         19 => Op::Mul,
         20 => Op::Div,
         21 => Op::Mod,
+        42 => Op::FloorDiv,
+        43 => Op::Pow,
+        44 => Op::BitAnd,
+        45 => Op::BitOr,
+        46 => Op::BitXor,
+        47 => Op::Shl,
+        48 => Op::Shr,
         22 => Op::Eq,
         23 => Op::NotEq,
         24 => Op::Gt,
@@ -515,6 +566,7 @@ fn decode_op(tag: u8, a: u32, b: u32) -> Result<Op, EmError> {
         27 => Op::LtEq,
         28 => Op::Neg,
         29 => Op::Not,
+        49 => Op::BitNot,
         30 => Op::ToBool,
         31 => Op::Jump(a),
         32 => Op::JumpIfFalse(a),
@@ -527,6 +579,11 @@ fn decode_op(tag: u8, a: u32, b: u32) -> Result<Op, EmError> {
         39 => Op::Return,
         40 => Op::ReturnNull,
         41 => Op::Import(a),
+        50 => Op::Dup,
+        51 => Op::Rotate(a),
+        52 => Op::GetPropKeep(a),
+        53 => Op::GetIndexKeep,
+        54 => Op::JumpIfNullPeek(a),
         other => {
             return Err(EmError::new(format!(
                 "Corrupt bytecode: unknown instruction {other}"
@@ -591,6 +648,13 @@ fn format_op(chunk: &Chunk, op: Op) -> String {
         Op::Mul => "MUL".to_string(),
         Op::Div => "DIV".to_string(),
         Op::Mod => "MOD".to_string(),
+        Op::FloorDiv => "FLOOR_DIV".to_string(),
+        Op::Pow => "POW".to_string(),
+        Op::BitAnd => "BIT_AND".to_string(),
+        Op::BitOr => "BIT_OR".to_string(),
+        Op::BitXor => "BIT_XOR".to_string(),
+        Op::Shl => "SHL".to_string(),
+        Op::Shr => "SHR".to_string(),
         Op::Eq => "EQ".to_string(),
         Op::NotEq => "NOT_EQ".to_string(),
         Op::Gt => "GT".to_string(),
@@ -599,6 +663,7 @@ fn format_op(chunk: &Chunk, op: Op) -> String {
         Op::LtEq => "LT_EQ".to_string(),
         Op::Neg => "NEG".to_string(),
         Op::Not => "NOT".to_string(),
+        Op::BitNot => "BIT_NOT".to_string(),
         Op::ToBool => "TO_BOOL".to_string(),
         Op::Jump(a) => format!("JUMP           -> {a}"),
         Op::JumpIfFalse(a) => format!("JUMP_IF_FALSE  -> {a}"),
@@ -611,6 +676,11 @@ fn format_op(chunk: &Chunk, op: Op) -> String {
         Op::Return => "RETURN".to_string(),
         Op::ReturnNull => "RETURN_NULL".to_string(),
         Op::Import(a) => format!("IMPORT         {a}  '{}'", chunk.name(a)),
+        Op::Dup => "DUP".to_string(),
+        Op::Rotate(a) => format!("ROTATE         {a}"),
+        Op::GetPropKeep(a) => format!("GET_PROP_KEEP  {a}  '{}'", chunk.name(a)),
+        Op::GetIndexKeep => "GET_INDEX_KEEP".to_string(),
+        Op::JumpIfNullPeek(a) => format!("JUMP_NULL_PK   -> {a}"),
     }
 }
 

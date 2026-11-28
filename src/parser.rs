@@ -1,15 +1,22 @@
-use crate::ast::{Assignable, BinOp, Expr, Stmt, UnOp};
+use crate::ast::{expr_to_assignable, BinOp, Expr, Stmt, UnOp};
 use crate::error::{EmError, Span};
 use crate::lexer::{InterpPart, SpannedToken, Token};
 
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    /// Number of enclosing loops. A `break`/`continue` inside a function body
+    /// does not see loops in the surrounding scope.
+    loop_depth: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser {
+            tokens,
+            pos: 0,
+            loop_depth: 0,
+        }
     }
 
     pub fn parse_program(&mut self) -> Result<Vec<Stmt>, EmError> {
@@ -113,7 +120,20 @@ impl Parser {
                 }
             }
             Token::Repeat => self.parse_repeat(),
+            Token::While => self.parse_while(),
             Token::For => self.parse_for(),
+            Token::Break => {
+                self.advance();
+                self.require_in_loop("break", span)?;
+                self.end_of_statement()?;
+                Ok(Stmt::Break(span))
+            }
+            Token::Continue => {
+                self.advance();
+                self.require_in_loop("continue", span)?;
+                self.end_of_statement()?;
+                Ok(Stmt::Continue(span))
+            }
             Token::Import => {
                 self.advance();
                 let name = self.expect_identifier("after 'import'")?;
@@ -122,6 +142,17 @@ impl Parser {
             }
             _ => self.parse_assign_or_expr(),
         }
+    }
+
+    fn require_in_loop(&self, keyword: &str, span: Span) -> Result<(), EmError> {
+        if self.loop_depth == 0 {
+            return Err(EmError::syntax(format!(
+                "'{keyword}' can only be used inside a loop"
+            ))
+            .with_span(span)
+            .with_hint("Place it inside a 'while', 'repeat', or 'for ... in' loop."));
+        }
+        Ok(())
     }
 
     fn expect_identifier(&mut self, context: &str) -> Result<String, EmError> {
@@ -203,7 +234,11 @@ impl Parser {
         }
         self.expect(Token::RParen, "to close parameter list")?;
         self.end_of_statement()?;
+        // Loops in the enclosing scope do not apply inside a function.
+        let outer_depth = self.loop_depth;
+        self.loop_depth = 0;
         let body = self.parse_block_until(&[Token::End])?;
+        self.loop_depth = outer_depth;
         self.expect(Token::End, "to close function")?;
         self.end_of_statement()?;
         Ok(Stmt::FunctionDef(name, params, body, span))
@@ -214,10 +249,25 @@ impl Parser {
         self.advance(); // repeat
         let count = self.parse_expression()?;
         self.end_of_statement()?;
+        self.loop_depth += 1;
         let body = self.parse_block_until(&[Token::End])?;
+        self.loop_depth -= 1;
         self.expect(Token::End, "to close 'repeat'")?;
         self.end_of_statement()?;
         Ok(Stmt::Repeat(count, body, span))
+    }
+
+    fn parse_while(&mut self) -> Result<Stmt, EmError> {
+        let span = self.peek_span();
+        self.advance(); // while
+        let cond = self.parse_expression()?;
+        self.end_of_statement()?;
+        self.loop_depth += 1;
+        let body = self.parse_block_until(&[Token::End])?;
+        self.loop_depth -= 1;
+        self.expect(Token::End, "to close 'while'")?;
+        self.end_of_statement()?;
+        Ok(Stmt::While(cond, body, span))
     }
 
     fn parse_for(&mut self) -> Result<Stmt, EmError> {
@@ -227,7 +277,9 @@ impl Parser {
         self.expect(Token::In, "after loop variable")?;
         let iterable = self.parse_expression()?;
         self.end_of_statement()?;
+        self.loop_depth += 1;
         let body = self.parse_block_until(&[Token::End])?;
+        self.loop_depth -= 1;
         self.expect(Token::End, "to close 'for'")?;
         self.end_of_statement()?;
         Ok(Stmt::ForIn(var, iterable, body, span))
@@ -242,6 +294,14 @@ impl Parser {
             let assignable = expr_to_assignable(expr, span)?;
             return Ok(Stmt::Assign(assignable, value, span));
         }
+        if let Token::CompoundAssign(op) = self.peek().clone() {
+            let span = self.peek_span();
+            self.advance();
+            let value = self.parse_expression()?;
+            self.end_of_statement()?;
+            let assignable = expr_to_assignable(expr, span)?;
+            return Ok(Stmt::CompoundAssign(assignable, op, value, span));
+        }
         self.end_of_statement()?;
         Ok(Stmt::ExprStmt(expr, span))
     }
@@ -249,33 +309,117 @@ impl Parser {
     // ---- expressions (precedence climbing) ----
 
     fn parse_expression(&mut self) -> Result<Expr, EmError> {
-        self.parse_or()
+        // Ternary has the lowest precedence and is right-associative.
+        let cond = self.parse_coalesce()?;
+        if self.check(&Token::Question) {
+            let span = self.peek_span();
+            self.advance();
+            let when_true = self.parse_expression()?;
+            self.expect(Token::Colon, "after the true branch of '?'")?;
+            let when_false = self.parse_expression()?;
+            return Ok(Expr::Ternary(
+                Box::new(cond),
+                Box::new(when_true),
+                Box::new(when_false),
+                span,
+            ));
+        }
+        Ok(cond)
+    }
+
+    fn parse_coalesce(&mut self) -> Result<Expr, EmError> {
+        let left = self.parse_or()?;
+        if self.check(&Token::NullCoalesce) {
+            let span = self.peek_span();
+            self.advance();
+            // `??` is right-associative: `a ?? b ?? c` is `a ?? (b ?? c)`.
+            let right = self.parse_coalesce()?;
+            return Ok(Expr::Binary(Box::new(left), BinOp::Coalesce, Box::new(right), span));
+        }
+        Ok(left)
     }
 
     fn parse_or(&mut self) -> Result<Expr, EmError> {
+        let mut left = self.parse_bit_or()?;
+        loop {
+            let op = match self.peek() {
+                Token::Or | Token::OrElse => BinOp::Or,
+                _ => break,
+            };
+            let span = self.peek_span();
+            self.advance();
+            let right = self.parse_bit_or()?;
+            left = Expr::Binary(Box::new(left), op, Box::new(right), span);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_or(&mut self) -> Result<Expr, EmError> {
+        let mut left = self.parse_bit_xor()?;
+        while self.check(&Token::BitOr) {
+            let span = self.peek_span();
+            self.advance();
+            let right = self.parse_bit_xor()?;
+            left = Expr::Binary(Box::new(left), BinOp::BitOr, Box::new(right), span);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Expr, EmError> {
+        let mut left = self.parse_bit_and()?;
+        while self.check(&Token::BitXor) {
+            let span = self.peek_span();
+            self.advance();
+            let right = self.parse_bit_and()?;
+            left = Expr::Binary(Box::new(left), BinOp::BitXor, Box::new(right), span);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Expr, EmError> {
+        let mut left = self.parse_shift()?;
+        while self.check(&Token::BitAnd) {
+            let span = self.peek_span();
+            self.advance();
+            let right = self.parse_shift()?;
+            left = Expr::Binary(Box::new(left), BinOp::BitAnd, Box::new(right), span);
+        }
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, EmError> {
         let mut left = self.parse_and()?;
-        while self.check(&Token::Or) {
+        loop {
+            let op = match self.peek() {
+                Token::Shl => BinOp::Shl,
+                Token::Shr => BinOp::Shr,
+                _ => break,
+            };
             let span = self.peek_span();
             self.advance();
             let right = self.parse_and()?;
-            left = Expr::Binary(Box::new(left), BinOp::Or, Box::new(right), span);
+            left = Expr::Binary(Box::new(left), op, Box::new(right), span);
         }
         Ok(left)
     }
 
     fn parse_and(&mut self) -> Result<Expr, EmError> {
         let mut left = self.parse_not()?;
-        while self.check(&Token::And) {
+        loop {
+            let op = match self.peek() {
+                Token::And | Token::AndAlso => BinOp::And,
+                _ => break,
+            };
             let span = self.peek_span();
             self.advance();
             let right = self.parse_not()?;
-            left = Expr::Binary(Box::new(left), BinOp::And, Box::new(right), span);
+            left = Expr::Binary(Box::new(left), op, Box::new(right), span);
         }
         Ok(left)
     }
 
     fn parse_not(&mut self) -> Result<Expr, EmError> {
-        if self.check(&Token::Not) {
+        if matches!(self.peek(), Token::Not | Token::Bang) {
             let span = self.peek_span();
             self.advance();
             let operand = self.parse_not()?;
@@ -327,6 +471,7 @@ impl Parser {
                 Token::Star => BinOp::Mul,
                 Token::Slash => BinOp::Div,
                 Token::Percent => BinOp::Mod,
+                Token::FloorDiv | Token::Div => BinOp::FloorDiv,
                 _ => break,
             };
             let span = self.peek_span();
@@ -338,13 +483,36 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, EmError> {
-        if self.check(&Token::Minus) {
+        if matches!(self.peek(), Token::Minus | Token::Not | Token::Bang | Token::BitNot) {
             let span = self.peek_span();
+            let op = match self.peek() {
+                Token::Minus => UnOp::Neg,
+                Token::BitNot => UnOp::BitNot,
+                _ => UnOp::Not,
+            };
             self.advance();
             let operand = self.parse_unary()?;
-            return Ok(Expr::Unary(UnOp::Neg, Box::new(operand), span));
+            return Ok(Expr::Unary(op, Box::new(operand), span));
         }
-        self.parse_postfix()
+        self.parse_power()
+    }
+
+    /// Exponentiation binds tighter than unary minus and is right-associative:
+    /// `-2 ** 2` is `-(2 ** 2)` and `2 ** 3 ** 2` is `2 ** (3 ** 2)`.
+    fn parse_power(&mut self) -> Result<Expr, EmError> {
+        let left = self.parse_postfix()?;
+        if self.check(&Token::Pow) {
+            let span = self.peek_span();
+            self.advance();
+            let right = self.parse_unary()?;
+            return Ok(Expr::Binary(
+                Box::new(left),
+                BinOp::Pow,
+                Box::new(right),
+                span,
+            ));
+        }
+        Ok(left)
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, EmError> {
@@ -365,6 +533,14 @@ impl Parser {
             } else if self.check(&Token::LParen) {
                 let args = self.parse_call_args()?;
                 expr = Expr::Call(Box::new(expr), args);
+            } else if matches!(self.peek(), Token::PlusPlus | Token::MinusMinus) {
+                let span = self.peek_span();
+                let increment = matches!(self.peek(), Token::PlusPlus);
+                // Validate here so an invalid target fails at parse time in
+                // both backends, not only when the expression is executed.
+                expr_to_assignable(expr.clone(), span)?;
+                self.advance();
+                expr = Expr::Postfix(Box::new(expr), increment, span);
             } else {
                 break;
             }
@@ -532,17 +708,6 @@ impl Parser {
     }
 }
 
-fn expr_to_assignable(expr: Expr, span: Span) -> Result<Assignable, EmError> {
-    match expr {
-        Expr::Variable(name) => Ok(Assignable::Variable(name)),
-        Expr::PropertyAccess(base, name) => Ok(Assignable::Property(base, name)),
-        Expr::Index(base, index) => Ok(Assignable::Index(base, index)),
-        _ => Err(EmError::syntax("Invalid assignment target")
-            .with_span(span)
-            .with_hint("Only variables, properties, and array indexes can be assigned to.")),
-    }
-}
-
 pub fn parse(tokens: Vec<SpannedToken>) -> Result<Vec<Stmt>, EmError> {
     Parser::new(tokens).parse_program()
 }
@@ -550,6 +715,7 @@ pub fn parse(tokens: Vec<SpannedToken>) -> Result<Vec<Stmt>, EmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Assignable;
     use crate::lexer::tokenize;
 
     fn parse_src(src: &str) -> Vec<Stmt> {
@@ -608,7 +774,8 @@ mod tests {
     }
 
     #[test]
-    fn property_access_ast_shape() {        let stmts = parse_src("say(person.age)\n");
+    fn property_access_ast_shape() {
+        let stmts = parse_src("say(person.age)\n");
         match &stmts[0] {
             Stmt::ExprStmt(Expr::Call(_, args), _) => match &args[0] {
                 Expr::PropertyAccess(base, name) => {
@@ -682,5 +849,122 @@ mod tests {
             Stmt::Import(name, _) => assert_eq!(name, "math"),
             other => panic!("unexpected stmt: {other:?}"),
         }
+    }
+
+    #[test]
+    fn while_break_and_continue() {
+        let stmts = parse_src("while n < 10\n  if n == 3\n    continue\n  end\n  if n == 8\n    break\n  end\n  n = n + 1\nend\n");
+        let Stmt::While(_, body, _) = &stmts[0] else {
+            panic!("expected while loop");
+        };
+        assert_eq!(body.len(), 3);
+        let Stmt::If(branches, _, _) = &body[0] else { panic!("expected if") };
+        assert!(matches!(branches[0].1[0], Stmt::Continue(_)));
+        let Stmt::If(branches, _, _) = &body[1] else { panic!("expected if") };
+        assert!(matches!(branches[0].1[0], Stmt::Break(_)));
+    }
+
+    #[test]
+    fn break_and_continue_outside_loops_are_rejected() {
+        for src in ["break\n", "continue\n"] {
+            let err = parse(tokenize(src).unwrap()).unwrap_err();
+            assert!(err.message.contains("only be used inside a loop"));
+        }
+        // A function body does not inherit the loop depth of its definition.
+        let err = parse(tokenize("repeat 1\nfunction f()\n  break\nend\nend\n").unwrap()).unwrap_err();
+        assert!(err.message.contains("only be used inside a loop"));
+    }
+
+    #[test]
+    fn compound_assignments_cover_every_target() {
+        let stmts = parse_src("x += 2\no.a -= 3\na[0] *= 4\nx **= 2\nx //= 2\nx &= 1\n");
+        assert!(matches!(
+            &stmts[0],
+            Stmt::CompoundAssign(Assignable::Variable(name), BinOp::Add, Expr::Number(2.0), _)
+            if name == "x"
+        ));
+        assert!(matches!(
+            &stmts[1],
+            Stmt::CompoundAssign(Assignable::Property(..), BinOp::Sub, _, _)
+        ));
+        assert!(matches!(
+            &stmts[2],
+            Stmt::CompoundAssign(Assignable::Index(..), BinOp::Mul, _, _)
+        ));
+        assert!(matches!(&stmts[3], Stmt::CompoundAssign(_, BinOp::Pow, _, _)));
+        assert!(matches!(&stmts[4], Stmt::CompoundAssign(_, BinOp::FloorDiv, _, _)));
+        assert!(matches!(&stmts[5], Stmt::CompoundAssign(_, BinOp::BitAnd, _, _)));
+    }
+
+    #[test]
+    fn postfix_operators_are_expressions() {
+        let stmts = parse_src("x++\no.a--\na[0]++\n");
+        assert!(matches!(&stmts[0], Stmt::ExprStmt(Expr::Postfix(_, true, _), _)));
+        assert!(matches!(&stmts[1], Stmt::ExprStmt(Expr::Postfix(_, false, _), _)));
+        assert!(matches!(&stmts[2], Stmt::ExprStmt(Expr::Postfix(_, true, _), _)));
+        let err = parse(tokenize("(1 + 2)++\n").unwrap()).unwrap_err();
+        assert!(err.message.contains("Invalid assignment target"));
+    }
+
+    #[test]
+    fn exponent_is_right_associative_and_binds_tighter_than_unary_minus() {
+        let stmts = parse_src("x = 2 ** 3 ** 2\ny = -2 ** 2\n");
+        let Stmt::Assign(_, Expr::Binary(_, BinOp::Pow, right, _), _) = &stmts[0] else {
+            panic!("expected exponent");
+        };
+        assert!(matches!(**right, Expr::Binary(_, BinOp::Pow, _, _)));
+        let Stmt::Assign(_, Expr::Unary(UnOp::Neg, inner, _), _) = &stmts[1] else {
+            panic!("expected negation outside exponent");
+        };
+        assert!(matches!(**inner, Expr::Binary(_, BinOp::Pow, _, _)));
+    }
+
+    #[test]
+    fn floor_division_and_bitwise_precedence() {
+        let stmts = parse_src("x = 7 // 2 + 1\ny = 1 | 2 & 3 ^ 4\nz = ~1 << 2\n");
+        let Stmt::Assign(_, Expr::Binary(_, BinOp::Add, _, _), _) = &stmts[0] else {
+            panic!("floor division binds tighter than addition");
+        };
+        let Stmt::Assign(_, Expr::Binary(_, BinOp::BitOr, _, _), _) = &stmts[1] else {
+            panic!("bitwise or is the widest bitwise operator");
+        };
+        let Stmt::Assign(_, Expr::Binary(_, BinOp::Shl, _, _), _) = &stmts[2] else {
+            panic!("shifts bind looser than unary complement");
+        };
+    }
+
+    #[test]
+    fn ternary_and_coalesce_ast_shapes() {
+        let stmts = parse_src("x = true ? 1 : 2\ny = a ?? b ?? c\n");
+        let Stmt::Assign(_, Expr::Ternary(_, _, _, _), _) = &stmts[0] else {
+            panic!("expected ternary");
+        };
+        let Stmt::Assign(_, Expr::Binary(_, BinOp::Coalesce, right, _), _) = &stmts[1] else {
+            panic!("expected coalesce");
+        };
+        assert!(matches!(**right, Expr::Binary(_, BinOp::Coalesce, _, _)));
+    }
+
+    /// Compare ASTs without source positions: `&&` and `and` occupy a
+    /// different number of columns, but must build the same expression.
+    fn without_spans(stmts: &[Stmt]) -> String {
+        let text = format!("{stmts:?}");
+        let mut out = String::new();
+        let mut rest = text.as_str();
+        while let Some(index) = rest.find("Span {") {
+            out.push_str(&rest[..index]);
+            rest = &rest[index..];
+            let end = rest.find('}').expect("a closing brace for Span").saturating_add(1);
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn symbol_aliases_match_word_operators() {
+        let left = parse_src("x = a and b or not c\n");
+        let right = parse_src("x = a && b || !c\n");
+        assert_eq!(without_spans(&left), without_spans(&right));
     }
 }

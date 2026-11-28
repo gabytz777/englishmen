@@ -178,10 +178,25 @@ impl Vm {
                         };
                         self.stack.push(value);
                     }
+                    Op::GetPropKeep(idx) => {
+                        let base = self.peek()?.clone();
+                        let name = chunk.name(idx);
+                        let value = get_property(&base, name).map_err(|e| at(e, span))?;
+                        self.stack.push(value);
+                    }
 
                     Op::GetIndex => {
                         let index = self.pop()?;
                         let base = self.pop()?;
+                        let value = get_index(&base, &index).map_err(|e| at(e, span))?;
+                        self.stack.push(value);
+                    }
+                    Op::GetIndexKeep => {
+                        let len = self.stack.len();
+                        let base_pos = len.checked_sub(2).ok_or_else(stack_underflow)?;
+                        let index_pos = len.checked_sub(1).ok_or_else(stack_underflow)?;
+                        let base = self.stack[base_pos].clone();
+                        let index = self.stack[index_pos].clone();
                         let value = get_index(&base, &index).map_err(|e| at(e, span))?;
                         self.stack.push(value);
                     }
@@ -239,6 +254,13 @@ impl Vm {
                     | Op::Mul
                     | Op::Div
                     | Op::Mod
+                    | Op::FloorDiv
+                    | Op::Pow
+                    | Op::BitAnd
+                    | Op::BitOr
+                    | Op::BitXor
+                    | Op::Shl
+                    | Op::Shr
                     | Op::Eq
                     | Op::NotEq
                     | Op::Gt
@@ -260,9 +282,28 @@ impl Vm {
                         let value = self.pop()?;
                         self.stack.push(Value::Bool(!value.is_truthy()));
                     }
+                    Op::BitNot => {
+                        let value = self.pop()?;
+                        let n = runtime::expect_number(&value, "for bitwise '~'")
+                            .map_err(|m| at(EmError::new(m), span))?;
+                        self.stack.push(Value::Number(!(n as i64) as f64));
+                    }
                     Op::ToBool => {
                         let value = self.pop()?;
                         self.stack.push(Value::Bool(value.is_truthy()));
+                    }
+                    Op::Dup => {
+                        let top = self.peek()?.clone();
+                        self.stack.push(top);
+                    }
+                    Op::Rotate(n) => {
+                        let count = n as usize + 1;
+                        if self.stack.len() < count {
+                            return Err(stack_underflow());
+                        }
+                        let split = self.stack.len() - count;
+                        let top = self.pop()?;
+                        self.stack.insert(split, top);
                     }
 
                     Op::Jump(target) => self.jump(target),
@@ -278,6 +319,11 @@ impl Vm {
                     }
                     Op::JumpIfTruePeek(target) => {
                         if self.peek()?.is_truthy() {
+                            self.jump(target);
+                        }
+                    }
+                    Op::JumpIfNullPeek(target) => {
+                        if matches!(self.peek()?, Value::Null) {
                             self.jump(target);
                         }
                     }
@@ -681,6 +727,14 @@ fn binary(op: Op, left: &Value, right: &Value) -> Result<Value, EmError> {
                 ))),
             }
         }
+        // String repetition: `"ha" * 3` and `3 * "ha"` both yield "hahaha".
+        Op::Mul => {
+            if let (Value::String(s), Value::Number(n)) | (Value::Number(n), Value::String(s)) =
+                (left, right)
+            {
+                return Ok(Value::String(s.repeat(repeat_count(*n))));
+            }
+        }
         _ => {}
     }
 
@@ -712,6 +766,18 @@ fn binary(op: Op, left: &Value, right: &Value) -> Result<Value, EmError> {
             }
             Value::Number(a % b)
         }
+        Op::FloorDiv => {
+            if b == 0.0 {
+                return Err(EmError::new("Division by zero"));
+            }
+            Value::Number((a / b).floor())
+        }
+        Op::Pow => Value::Number(a.powf(b)),
+        Op::BitAnd => Value::Number(((a as i64) & (b as i64)) as f64),
+        Op::BitOr => Value::Number(((a as i64) | (b as i64)) as f64),
+        Op::BitXor => Value::Number(((a as i64) ^ (b as i64)) as f64),
+        Op::Shl => Value::Number((a as i64).wrapping_shl((b as i64) as u32) as f64),
+        Op::Shr => Value::Number((a as i64).wrapping_shr((b as i64) as u32) as f64),
         Op::Gt => Value::Bool(a > b),
         Op::Lt => Value::Bool(a < b),
         Op::GtEq => Value::Bool(a >= b),
@@ -720,9 +786,19 @@ fn binary(op: Op, left: &Value, right: &Value) -> Result<Value, EmError> {
     })
 }
 
+/// Match the compiler's constant-folding limit for string repetition.
+fn repeat_count(n: f64) -> usize {
+    if n.is_finite() && n > 0.0 {
+        (n as usize).min(1_000_000)
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::{deserialize, serialize};
     use crate::compiler::compile;
     use crate::interpreter::Interpreter;
     use crate::lexer::tokenize;
@@ -762,6 +838,29 @@ mod tests {
             "message differs for: {src}"
         );
         assert_eq!(compiled.hint, interpreted.hint, "hint differs for: {src}");
+    }
+
+    /// Run the same source through both backends and check every named
+    /// variable against the same expected display value.
+    fn assert_both(src: &str, expectations: &[(&str, &str)]) {
+        let program = parse(tokenize(src).unwrap()).unwrap();
+        let mut interpreted = Interpreter::new();
+        interpreted.run(&program).unwrap();
+        let compiled = run(src).unwrap();
+        for (var, expected) in expectations {
+            let from_tree = interpreted
+                .globals
+                .get(var)
+                .unwrap_or_else(|| panic!("interpreter has no '{var}'"))
+                .display();
+            let from_vm = compiled
+                .globals
+                .get(var)
+                .unwrap_or_else(|| panic!("VM has no '{var}'"))
+                .display();
+            assert_eq!(from_tree, *expected, "interpreter value of '{var}'");
+            assert_eq!(from_vm, from_tree, "VM value of '{var}'");
+        }
     }
 
     #[test]
@@ -947,5 +1046,185 @@ mod tests {
             vm.run(compile(&program).unwrap()).unwrap();
         }
         assert!(matches!(vm.globals.get("age"), Some(Value::Number(n)) if n == 19.0));
+    }
+
+    // ---- cross-backend syntax tests -------------------------------------
+
+    #[test]
+    fn while_break_and_continue_agree_across_backends() {
+        let src = r#"
+n = 0
+total = 0
+while n < 10
+  n = n + 1
+  if n == 3
+    continue
+  end
+  if n == 6
+    break
+  end
+  total = total + n
+end
+"#;
+        assert_both(src, &[("n", "6"), ("total", "12")]);
+    }
+
+    #[test]
+    fn break_and_continue_unwind_repeat_and_for_loops() {
+        let src = r#"
+i = 0
+total = 0
+repeat 5
+  i = i + 1
+  if i == 2
+    continue
+  end
+  if i == 4
+    break
+  end
+  total = total + i
+end
+for n in [1, 2, 3, 4, 5]
+  if n == 2
+    continue
+  end
+  if n == 4
+    break
+  end
+  total = total + n
+end
+"#;
+        assert_both(src, &[("i", "4"), ("total", "8")]);
+    }
+
+    #[test]
+    fn compound_assignment_agrees_for_every_target() {
+        let src = r#"
+x = 10
+x += 5
+x **= 2
+x //= 3
+x &= 7
+o = { a: 3 }
+o.a *= 4
+a = [1, 2, 3]
+a[1] -= 1
+a[2] <<= 2
+"#;
+        assert_both(
+            src,
+            &[("x", "3"), ("o", "{a: 12}"), ("a", "[1, 1, 12]")],
+        );
+    }
+
+    #[test]
+    fn postfix_operators_return_the_old_value_in_both_backends() {
+        let src = r#"
+x = 5
+y = x++
+z = x--
+o = { a: 1 }
+p = o.a++
+a = [7]
+q = a[0]--
+"#;
+        assert_both(
+            src,
+            &[
+                ("x", "5"),
+                ("y", "5"),
+                ("z", "6"),
+                ("p", "1"),
+                ("o", "{a: 2}"),
+                ("q", "7"),
+                ("a", "[6]"),
+            ],
+        );
+    }
+
+    #[test]
+    fn new_operators_literals_and_escapes_agree_across_backends() {
+        let src = r#"
+p = 2 ** 8
+f = -7 // 2
+b = 5 & 3 | 8 ^ 1
+s = 1 << 4 >> 2
+n = ~0
+t = true ? "yes" : "no"
+c = null ?? "fallback"
+r = "ab" * 3
+h = 0xFF + 0b1010 + 1e2
+e = "a\tb\u{1F600}"
+"#;
+        assert_both(
+            src,
+            &[
+                ("p", "256"),
+                ("f", "-4"),
+                ("b", "9"),
+                ("s", "4"),
+                ("n", "-1"),
+                ("t", "yes"),
+                ("c", "fallback"),
+                ("r", "ababab"),
+                ("h", "365"),
+                ("e", "a\tb\u{1F600}"),
+            ],
+        );
+    }
+
+    #[test]
+    fn lazy_operators_skip_their_unused_branch_in_both_backends() {
+        let src = r#"
+hits = 0
+function bump()
+  hits = hits + 1
+  return true
+end
+a = false && bump()
+b = true || bump()
+c = true ? 1 : bump()
+d = "value" ?? bump()
+"#;
+        assert_both(
+            src,
+            &[("hits", "0"), ("a", "false"), ("b", "true"), ("c", "1"), ("d", "value")],
+        );
+    }
+
+    #[test]
+    fn new_instructions_survive_bytecode_serialisation() {
+        let src = r#"
+x = 2 ** 8
+y = x // 3
+if y > 10
+  z = y & 7
+else
+  z = 0
+end
+t = true ? "a" : "b"
+"#;
+        let program = parse(tokenize(src).unwrap()).unwrap();
+        let bytes = serialize(&compile(&program).unwrap());
+        let restored = deserialize(&bytes).expect("new opcodes to round-trip");
+        let mut vm = Vm::new();
+        vm.run(restored).unwrap();
+        assert_eq!(vm.globals.get("x").unwrap().display(), "256");
+        assert_eq!(vm.globals.get("y").unwrap().display(), "85");
+        assert_eq!(vm.globals.get("z").unwrap().display(), "5");
+        assert_eq!(vm.globals.get("t").unwrap().display(), "a");
+    }
+
+    #[test]
+    fn new_operator_errors_match_the_interpreter() {
+        for src in [
+            "x = 7 // 0\n",
+            "x = \"a\" & 1\n",
+            "x = ~\"a\"\n",
+            "x = 5 << \"a\"\n",
+            "x = \"a\" ** 2\n",
+        ] {
+            assert_matches_interpreter(src);
+        }
     }
 }

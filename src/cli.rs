@@ -1,5 +1,5 @@
 use crate::appimage;
-use crate::ast::Stmt;
+use crate::ast::{BinOp, Stmt};
 use crate::bundle;
 use crate::bytecode::{self, Chunk};
 use crate::compiler;
@@ -1201,6 +1201,32 @@ fn render_interpolation(parts: &[InterpPart]) -> String {
     out
 }
 
+fn binop_text(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::FloorDiv => "//",
+        BinOp::Pow => "**",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+        BinOp::Eq => "==",
+        BinOp::NotEq => "!=",
+        BinOp::Gt => ">",
+        BinOp::Lt => "<",
+        BinOp::GtEq => ">=",
+        BinOp::LtEq => "<=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+        BinOp::Coalesce => "??",
+    }
+}
+
 fn token_text(token: &Token) -> String {
     match token {
         Token::Number(n) => format!("{n}"),
@@ -1216,24 +1242,44 @@ fn token_text(token: &Token) -> String {
         Token::Function => "function".to_string(),
         Token::Return => "return".to_string(),
         Token::Repeat => "repeat".to_string(),
+        Token::While => "while".to_string(),
         Token::For => "for".to_string(),
         Token::In => "in".to_string(),
         Token::Import => "import".to_string(),
         Token::And => "and".to_string(),
         Token::Or => "or".to_string(),
         Token::Not => "not".to_string(),
+        Token::Break => "break".to_string(),
+        Token::Continue => "continue".to_string(),
+        Token::Div => "div".to_string(),
         Token::Plus => "+".to_string(),
         Token::Minus => "-".to_string(),
         Token::Star => "*".to_string(),
         Token::Slash => "/".to_string(),
         Token::Percent => "%".to_string(),
         Token::Assign => "=".to_string(),
+        Token::CompoundAssign(op) => format!("{}=", binop_text(*op)),
+        Token::PlusPlus => "++".to_string(),
+        Token::MinusMinus => "--".to_string(),
         Token::Eq => "==".to_string(),
         Token::NotEq => "!=".to_string(),
         Token::Gt => ">".to_string(),
         Token::Lt => "<".to_string(),
         Token::GtEq => ">=".to_string(),
         Token::LtEq => "<=".to_string(),
+        Token::Pow => "**".to_string(),
+        Token::FloorDiv => "//".to_string(),
+        Token::BitAnd => "&".to_string(),
+        Token::BitOr => "|".to_string(),
+        Token::BitXor => "^".to_string(),
+        Token::BitNot => "~".to_string(),
+        Token::Shl => "<<".to_string(),
+        Token::Shr => ">>".to_string(),
+        Token::AndAlso => "&&".to_string(),
+        Token::OrElse => "||".to_string(),
+        Token::Bang => "!".to_string(),
+        Token::Question => "?".to_string(),
+        Token::NullCoalesce => "??".to_string(),
         Token::LParen => "(".to_string(),
         Token::RParen => ")".to_string(),
         Token::LBracket => "[".to_string(),
@@ -1259,20 +1305,38 @@ fn prefix_position(previous: Option<&Token>) -> bool {
             | Token::Slash
             | Token::Percent
             | Token::Assign
+            | Token::CompoundAssign(_)
             | Token::Eq
             | Token::NotEq
             | Token::Gt
             | Token::Lt
             | Token::GtEq
             | Token::LtEq
+            | Token::Pow
+            | Token::FloorDiv
+            | Token::BitAnd
+            | Token::BitOr
+            | Token::BitXor
+            | Token::BitNot
+            | Token::Shl
+            | Token::Shr
+            | Token::AndAlso
+            | Token::OrElse
+            | Token::Bang
+            | Token::Question
+            | Token::NullCoalesce
             | Token::And
             | Token::Or
             | Token::Not
             | Token::If
             | Token::Return
             | Token::Repeat
+            | Token::While
             | Token::For
             | Token::In
+            | Token::Break
+            | Token::Continue
+            | Token::Div
             | Token::LParen
             | Token::LBracket
             | Token::LBrace
@@ -1294,7 +1358,14 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
     // Closers and postfix punctuation hug the token before them.
     if matches!(
         token,
-        Token::Comma | Token::RParen | Token::RBracket | Token::RBrace | Token::Dot | Token::Colon
+        Token::Comma
+            | Token::RParen
+            | Token::RBracket
+            | Token::RBrace
+            | Token::Dot
+            | Token::Colon
+            | Token::PlusPlus
+            | Token::MinusMinus
     ) {
         return false;
     }
@@ -1303,7 +1374,7 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
         return false;
     }
     // A prefix minus binds to its operand: `-1`, not `- 1`.
-    if matches!(prev, Token::Minus) && prefix_position(before) {
+    if matches!(prev, Token::Minus | Token::BitNot | Token::Bang) && prefix_position(before) {
         return false;
     }
     // Calls and indexing hug the name/value they follow; `if (...)` and

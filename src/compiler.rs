@@ -6,7 +6,7 @@
 //! flow becomes jumps, literals are interned into a constant pool, and
 //! constant subexpressions are folded away at compile time.
 
-use crate::ast::{Assignable, BinOp, Expr, Stmt, UnOp};
+use crate::ast::{expr_to_assignable, Assignable, BinOp, Expr, Stmt, UnOp};
 use crate::bytecode::{Chunk, Const, FunctionProto, Op};
 use crate::error::{EmError, Span};
 use std::rc::Rc;
@@ -20,11 +20,32 @@ pub fn compile(program: &[Stmt]) -> Result<Chunk, EmError> {
     Ok(compiler.chunk)
 }
 
+/// Which loop state a `break` must unwind before leaving the body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LoopKind {
+    While,
+    /// One counter sits on the stack.
+    Repeat,
+    /// The iterator snapshot and cursor sit on the stack.
+    ForIn,
+}
+
+struct LoopCtx {
+    kind: LoopKind,
+    /// Address of the loop's condition/step instruction; `continue` jumps here.
+    head: usize,
+    /// Unpatched `break` jumps, collected until the loop's exit is known.
+    breaks: Vec<usize>,
+}
+
 struct Compiler {
     chunk: Chunk,
     /// Span of the construct currently being compiled, attached to every
     /// instruction so runtime errors can point back at the source.
     span: Span,
+    /// Enclosing loops, innermost last. Functions get a fresh compiler, so a
+    /// function body never sees the surrounding loop stack.
+    loops: Vec<LoopCtx>,
 }
 
 impl Compiler {
@@ -32,6 +53,7 @@ impl Compiler {
         Compiler {
             chunk: Chunk::new(),
             span: Span::default(),
+            loops: Vec::new(),
         }
     }
 
@@ -54,6 +76,9 @@ impl Compiler {
                 self.expr(value)?;
                 self.span = *span;
                 self.assign(target)
+            }
+            Stmt::CompoundAssign(target, op, value, span) => {
+                self.compound_assign(target, *op, value, *span)
             }
             Stmt::ExprStmt(expr, span) => {
                 self.span = *span;
@@ -93,7 +118,23 @@ impl Compiler {
                 Ok(())
             }
             Stmt::Repeat(count, body, span) => self.repeat(count, body, *span),
+            Stmt::While(cond, body, span) => self.while_loop(cond, body, *span),
             Stmt::ForIn(var, iterable, body, span) => self.for_in(var, iterable, body, *span),
+            Stmt::Break(span) => {
+                self.span = *span;
+                self.emit_break()
+            }
+            Stmt::Continue(span) => {
+                self.span = *span;
+                match self.loops.last() {
+                    Some(ctx) => {
+                        self.emit(Op::Jump(ctx.head as u32));
+                        Ok(())
+                    }
+                    None => Err(EmError::syntax("'continue' can only be used inside a loop")
+                        .with_span(*span)),
+                }
+            }
             Stmt::Import(name, span) => {
                 self.span = *span;
                 let idx = self.chunk.add_name(name);
@@ -148,6 +189,97 @@ impl Compiler {
         }
     }
 
+    /// Emit a `break`, discarding any loop state the target loop keeps on the
+    /// VM stack (one counter for `repeat`, two iterator values for `for`).
+    fn emit_break(&mut self) -> Result<(), EmError> {
+        let pops = match self.loops.last() {
+            Some(ctx) => match ctx.kind {
+                LoopKind::While => 0,
+                LoopKind::Repeat => 1,
+                LoopKind::ForIn => 2,
+            },
+            None => {
+                return Err(EmError::syntax("'break' can only be used inside a loop")
+                    .with_span(self.span))
+            }
+        };
+        for _ in 0..pops {
+            self.emit(Op::Pop);
+        }
+        let jump = self.emit(Op::Jump(0));
+        self.loops.last_mut().expect("loop checked above").breaks.push(jump);
+        Ok(())
+    }
+
+    /// Compile `target op= value`. The target (including its base and index)
+    /// is evaluated exactly once, matching the interpreter.
+    fn compound_assign(
+        &mut self,
+        target: &Assignable,
+        op: BinOp,
+        value: &Expr,
+        span: Span,
+    ) -> Result<(), EmError> {
+        self.span = span;
+        let instruction = arithmetic_op(op)?;
+        match target {
+            Assignable::Variable(name) => {
+                let idx = self.chunk.add_name(name);
+                self.emit(Op::GetVar(idx));
+                self.expr(value)?;
+                self.span = span;
+                self.emit(instruction);
+                self.emit(Op::SetVar(idx));
+            }
+            Assignable::Property(base, name) => {
+                self.object_base(base)?;
+                let idx = self.chunk.add_name(&name);
+                self.emit(Op::GetPropKeep(idx));
+                self.expr(value)?;
+                self.span = span;
+                self.emit(instruction);
+                // [base, new] -> [new, base] for SetProp.
+                self.emit(Op::Rotate(1));
+                self.emit(Op::SetProp(idx));
+            }
+            Assignable::Index(base, index) => {
+                self.expr(base)?;
+                self.expr(index)?;
+                self.emit(Op::GetIndexKeep);
+                self.expr(value)?;
+                self.span = span;
+                self.emit(instruction);
+                // [base, index, new] -> [new, base, index] for SetIndex.
+                self.emit(Op::Rotate(2));
+                self.emit(Op::SetIndex);
+            }
+        }
+        Ok(())
+    }
+
+    fn while_loop(&mut self, cond: &Expr, body: &[Stmt], span: Span) -> Result<(), EmError> {
+        self.span = span;
+        let head = self.chunk.here();
+        self.expr(cond)?;
+        self.span = span;
+        let exit = self.emit(Op::JumpIfFalse(0));
+        self.loops.push(LoopCtx {
+            kind: LoopKind::While,
+            head,
+            breaks: Vec::new(),
+        });
+        self.block(body)?;
+        let ctx = self.loops.pop().expect("the loop we just pushed");
+        self.span = span;
+        self.emit(Op::Jump(head as u32));
+        let end = self.chunk.here();
+        self.chunk.patch_jump(exit, end);
+        for jump in ctx.breaks {
+            self.chunk.patch_jump(jump, end);
+        }
+        Ok(())
+    }
+
     fn if_stmt(
         &mut self,
         branches: &[(Expr, Vec<Stmt>)],
@@ -183,11 +315,20 @@ impl Compiler {
         self.emit(Op::RepeatSetup);
         let head = self.chunk.here();
         let exit = self.emit(Op::RepeatNext(0));
+        self.loops.push(LoopCtx {
+            kind: LoopKind::Repeat,
+            head,
+            breaks: Vec::new(),
+        });
         self.block(body)?;
+        let ctx = self.loops.pop().expect("the loop we just pushed");
         self.span = span;
         self.emit(Op::Jump(head as u32));
         let end = self.chunk.here();
         self.chunk.patch_jump(exit, end);
+        for jump in ctx.breaks {
+            self.chunk.patch_jump(jump, end);
+        }
         Ok(())
     }
 
@@ -205,11 +346,20 @@ impl Compiler {
         let name_idx = self.chunk.add_name(var);
         let head = self.chunk.here();
         let exit = self.emit(Op::IterNext(name_idx, 0));
+        self.loops.push(LoopCtx {
+            kind: LoopKind::ForIn,
+            head,
+            breaks: Vec::new(),
+        });
         self.block(body)?;
+        let ctx = self.loops.pop().expect("the loop we just pushed");
         self.span = span;
         self.emit(Op::Jump(head as u32));
         let end = self.chunk.here();
         self.chunk.patch_jump(exit, end);
+        for jump in ctx.breaks {
+            self.chunk.patch_jump(jump, end);
+        }
         Ok(())
     }
 
@@ -301,6 +451,76 @@ impl Compiler {
             }
             Expr::Binary(left, op, right, span) => self.binary(left, *op, right, *span)?,
             Expr::Unary(op, operand, span) => self.unary(*op, operand, *span)?,
+            Expr::Ternary(cond, when_true, when_false, span) => {
+                self.ternary(cond, when_true, when_false, *span)?
+            }
+            Expr::Postfix(target, increment, span) => self.postfix(target, *increment, *span)?,
+        }
+        Ok(())
+    }
+
+    /// Compile `condition ? a : b`, evaluating only the selected branch.
+    fn ternary(
+        &mut self,
+        cond: &Expr,
+        when_true: &Expr,
+        when_false: &Expr,
+        span: Span,
+    ) -> Result<(), EmError> {
+        self.span = span;
+        self.expr(cond)?;
+        self.span = span;
+        let false_jump = self.emit(Op::JumpIfFalse(0));
+        self.expr(when_true)?;
+        self.span = span;
+        let end_jump = self.emit(Op::Jump(0));
+        let false_start = self.chunk.here();
+        self.chunk.patch_jump(false_jump, false_start);
+        self.expr(when_false)?;
+        let end = self.chunk.here();
+        self.chunk.patch_jump(end_jump, end);
+        Ok(())
+    }
+
+    /// Postfix `++`/`--` leaves the original value on the stack and stores
+    /// `old +/- 1` back into the target.
+    fn postfix(&mut self, target: &Expr, increment: bool, span: Span) -> Result<(), EmError> {
+        let assignable = expr_to_assignable(target.clone(), span)?;
+        self.span = span;
+        let instruction = if increment { Op::Add } else { Op::Sub };
+        match assignable {
+            Assignable::Variable(name) => {
+                let idx = self.chunk.add_name(&name);
+                self.emit(Op::GetVar(idx));
+                self.emit(Op::Dup);
+                self.constant(Const::Number(1.0));
+                self.emit(instruction);
+                self.emit(Op::SetVar(idx));
+            }
+            Assignable::Property(base, name) => {
+                self.object_base(&base)?;
+                let idx = self.chunk.add_name(&name);
+                self.emit(Op::GetPropKeep(idx));
+                self.emit(Op::Dup);
+                self.constant(Const::Number(1.0));
+                self.emit(instruction);
+                // [base, old, new] -> [old, new, base], leaving the old value.
+                self.emit(Op::Rotate(2));
+                self.emit(Op::Rotate(2));
+                self.emit(Op::SetProp(idx));
+            }
+            Assignable::Index(base, index) => {
+                self.expr(&base)?;
+                self.expr(&index)?;
+                self.emit(Op::GetIndexKeep);
+                self.emit(Op::Dup);
+                self.constant(Const::Number(1.0));
+                self.emit(instruction);
+                // [base, index, old, new] -> [old, new, base, index].
+                self.emit(Op::Rotate(3));
+                self.emit(Op::Rotate(3));
+                self.emit(Op::SetIndex);
+            }
         }
         Ok(())
     }
@@ -331,6 +551,21 @@ impl Compiler {
             return Ok(());
         }
 
+        // `??` is lazy: keep the left value unless it is exactly null.
+        if op == BinOp::Coalesce {
+            self.expr(left)?;
+            self.span = span;
+            let null_jump = self.emit(Op::JumpIfNullPeek(0));
+            let end_jump = self.emit(Op::Jump(0));
+            let right_start = self.chunk.here();
+            self.chunk.patch_jump(null_jump, right_start);
+            self.emit(Op::Pop);
+            self.expr(right)?;
+            let end = self.chunk.here();
+            self.chunk.patch_jump(end_jump, end);
+            return Ok(());
+        }
+
         if let (Some(l), Some(r)) = (fold(left), fold(right)) {
             if let Some(folded) = fold_binary(op, &l, &r) {
                 self.span = span;
@@ -342,20 +577,7 @@ impl Compiler {
         self.expr(left)?;
         self.expr(right)?;
         self.span = span;
-        self.emit(match op {
-            BinOp::Add => Op::Add,
-            BinOp::Sub => Op::Sub,
-            BinOp::Mul => Op::Mul,
-            BinOp::Div => Op::Div,
-            BinOp::Mod => Op::Mod,
-            BinOp::Eq => Op::Eq,
-            BinOp::NotEq => Op::NotEq,
-            BinOp::Gt => Op::Gt,
-            BinOp::Lt => Op::Lt,
-            BinOp::GtEq => Op::GtEq,
-            BinOp::LtEq => Op::LtEq,
-            BinOp::And | BinOp::Or => unreachable!("handled above"),
-        });
+        self.emit(arithmetic_op(op)?);
         Ok(())
     }
 
@@ -370,9 +592,38 @@ impl Compiler {
         self.emit(match op {
             UnOp::Neg => Op::Neg,
             UnOp::Not => Op::Not,
+            UnOp::BitNot => Op::BitNot,
         });
         Ok(())
     }
+}
+
+/// The instruction for an eager binary operator. Logical operators are
+/// compiled as jumps and never reach this function.
+fn arithmetic_op(op: BinOp) -> Result<Op, EmError> {
+    Ok(match op {
+        BinOp::Add => Op::Add,
+        BinOp::Sub => Op::Sub,
+        BinOp::Mul => Op::Mul,
+        BinOp::Div => Op::Div,
+        BinOp::Mod => Op::Mod,
+        BinOp::FloorDiv => Op::FloorDiv,
+        BinOp::Pow => Op::Pow,
+        BinOp::BitAnd => Op::BitAnd,
+        BinOp::BitOr => Op::BitOr,
+        BinOp::BitXor => Op::BitXor,
+        BinOp::Shl => Op::Shl,
+        BinOp::Shr => Op::Shr,
+        BinOp::Eq => Op::Eq,
+        BinOp::NotEq => Op::NotEq,
+        BinOp::Gt => Op::Gt,
+        BinOp::Lt => Op::Lt,
+        BinOp::GtEq => Op::GtEq,
+        BinOp::LtEq => Op::LtEq,
+        BinOp::And | BinOp::Or | BinOp::Coalesce => {
+            return Err(EmError::syntax("Logical operators cannot be compiled here"))
+        }
+    })
 }
 
 /// Reduce an expression to a constant when it is made only of literals, so
@@ -403,6 +654,13 @@ fn fold_binary(op: BinOp, left: &Const, right: &Const) -> Option<Const> {
             BinOp::Mul => Const::Number(a * b),
             BinOp::Div if b != 0.0 => Const::Number(a / b),
             BinOp::Mod if b != 0.0 => Const::Number(a % b),
+            BinOp::FloorDiv if b != 0.0 => Const::Number((a / b).floor()),
+            BinOp::Pow => Const::Number(a.powf(b)),
+            BinOp::BitAnd => Const::Number(((a as i64) & (b as i64)) as f64),
+            BinOp::BitOr => Const::Number(((a as i64) | (b as i64)) as f64),
+            BinOp::BitXor => Const::Number(((a as i64) ^ (b as i64)) as f64),
+            BinOp::Shl => Const::Number((a as i64).wrapping_shl((b as i64) as u32) as f64),
+            BinOp::Shr => Const::Number((a as i64).wrapping_shr((b as i64) as u32) as f64),
             BinOp::Eq => Const::Bool(a == b),
             BinOp::NotEq => Const::Bool(a != b),
             BinOp::Gt => Const::Bool(a > b),
@@ -420,6 +678,12 @@ fn fold_binary(op: BinOp, left: &Const, right: &Const) -> Option<Const> {
             (a, Const::String(b)) => Some(Const::String(format!("{}{b}", const_display(a)))),
             _ => None,
         },
+        BinOp::Mul => match (left, right) {
+            (Const::String(s), Const::Number(n)) | (Const::Number(n), Const::String(s)) => {
+                Some(Const::String(s.repeat(repeat_count(*n))))
+            }
+            _ => None,
+        },
         BinOp::Eq => Some(Const::Bool(const_equals(left, right))),
         BinOp::NotEq => Some(Const::Bool(!const_equals(left, right))),
         _ => None,
@@ -430,7 +694,18 @@ fn fold_unary(op: UnOp, value: &Const) -> Option<Const> {
     match (op, value) {
         (UnOp::Neg, Const::Number(n)) => Some(Const::Number(-n)),
         (UnOp::Not, value) => Some(Const::Bool(!const_truthy(value))),
+        (UnOp::BitNot, Const::Number(n)) => Some(Const::Number(!(*n as i64) as f64)),
         _ => None,
+    }
+}
+
+/// Cap string repetition at compile time and at runtime so a literal such as
+/// `"x" * 1e18` cannot exhaust memory. Both backends use the same limit.
+fn repeat_count(n: f64) -> usize {
+    if n.is_finite() && n > 0.0 {
+        (n as usize).min(1_000_000)
+    } else {
+        0
     }
 }
 
