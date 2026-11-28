@@ -42,7 +42,7 @@ Run `em` with no installed file to open the REPL. Multi-line blocks (`if`, `repe
 > :time age * 2
 ```
 
-Meta commands: `:help`, `:vars`, `:clear`, `:history`, `:quit`/`:exit`, `:load <file>`, `:save <file>`, `:time <expr>`, and `:about`.
+Meta commands: `:help`, `:vars`, `:clear`, `:history`, `:quit`/`:exit`, `:load <file>`, `:save <file>`, `:time <expr>`, `:about`, `:echo <text>`, `:source`, `:again`, `:eval <expr>`, `:type <expr>`, `:repeat <n> <src>`, and `:reset`. `:reset` also works while a multi-line block is open; `:type` evaluates in an isolated snapshot so it cannot mutate session globals.
 
 ## Comments
 

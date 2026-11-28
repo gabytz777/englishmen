@@ -29,6 +29,9 @@ say(string.upper("hello"))
 | `random` | `float`, `int`, `choice`, `sample`, `shuffle`, `seed`, `uuid` |
 | `collections` | Sorting, ranges, sums, zip/enumerate/chunk, object helpers |
 | `gfx` | `canvas(w, h)` with `set`, `get`, `clear`, `text`, `save` |
+| `text` | `words`, `title`, case conversion, `slug`, whitespace cleanup, `indent`/`dedent`, `isPalindrome`, `levenshtein` |
+
+`text` complements `string` with whole-text helpers: `text.snake("HTTP Server")` is `http_server`, `text.wrap("a b c", 2)` splits into lines, and `text.levenshtein("kitten", "sitting")` is `3`. Case conversion and palindrome checks handle Unicode (including full case folding for `ß`).
 
 ## Example: files and JSON
 

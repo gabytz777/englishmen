@@ -31,9 +31,12 @@ pub fn run() -> ExitCode {
     // The automatic update check belongs to everyday use (REPL, running and
     // building programs). Update-related commands check by themselves, and
     // help output stays clean.
-    let auto_check_due = !args
-        .first()
-        .is_some_and(|arg| matches!(arg.as_str(), "update" | "install" | "uninstall" | "repair" | "--help" | "-h" | "--version" | "-v"));
+    let auto_check_due = !args.first().is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "update" | "install" | "uninstall" | "repair" | "--help" | "-h" | "--version" | "-v"
+        )
+    });
     if auto_check_due {
         updater::auto_check();
     }
@@ -870,14 +873,14 @@ Builtins
     array.add(value)         Append an item
     array.remove(value)      Remove the first matching item
     "a{n}b"                  String interpolation
-    69 global builtins       Conversions, collections, strings, math, files, JSON
+    83 global builtins       Conversions, collections, strings, math, files, JSON
 
 Methods
-    array (26)               add, push, removeAt, pop, sort, slice, flatten, ...
-    object (10)              keys, values, get, set, delete, merge, copy, ...
-    string (26)              upper, lower, trim, split, replace, padLeft, ...
-    number (14)              isEven, toFixed, clamp, toHex, round, sqrt, ...
-    boolean (5)              toggle, toString, and, or, xor
+    array (29)               add, push, rotate, indexesOf, interleave, ...
+    object (13)              keys, values, pick, omit, entries, ...
+    string (29)              upper, lower, swapCase, isBlank, truncate, ...
+    number (17)              isEven, toFixed, toOctal, toDegrees, ...
+    boolean (7)              toggle, toString, and, or, xor, implies, nand
 
 Standard modules (import <name> first)
     math    sqrt, pow, sin/cos/tan, round, gcd, isPrime, pi, e
@@ -893,6 +896,8 @@ Standard modules (import <name> first)
     collections
             sorted, range, sum, zip, chunk, get, set
     gfx     canvas(w, h) with set/get/clear/text/save
+    text    words, title, snake, kebab, camel, pascal, slug, indent, dedent,
+            isPalindrome, levenshtein
 
 Comments
     $- single-line comment -$
@@ -1435,7 +1440,10 @@ fn needs_space(tokens: &[Token], i: usize) -> bool {
         return false;
     }
     // An opening delimiter never has a space after it.
-    if matches!(prev, Token::LParen | Token::LBracket | Token::LBrace | Token::Dot) {
+    if matches!(
+        prev,
+        Token::LParen | Token::LBracket | Token::LBrace | Token::Dot
+    ) {
         return false;
     }
     // A prefix minus binds to its operand: `-1`, not `- 1`.
@@ -1603,8 +1611,7 @@ fn string_literal_end(chars: &[char], start: Span) -> (usize, usize) {
 }
 
 fn comment_in_span(comment: &FormatComment, start: Span, end: (usize, usize)) -> bool {
-    (comment.line, comment.col) >= (start.line, start.col)
-        && (comment.line, comment.col) < end
+    (comment.line, comment.col) >= (start.line, start.col) && (comment.line, comment.col) < end
 }
 
 /// Render one logical line, placing comments from intermediate physical lines
@@ -1634,9 +1641,7 @@ fn render_line_tokens(
             let interpolation_comments: Vec<usize> = comments
                 .iter()
                 .enumerate()
-                .filter(|(j, c)| {
-                    !consumed[*j] && c.inside_interp && comment_in_span(c, span, end)
-                })
+                .filter(|(j, c)| !consumed[*j] && c.inside_interp && comment_in_span(c, span, end))
                 .map(|(j, _)| j)
                 .collect();
             if !interpolation_comments.is_empty() {
@@ -1654,10 +1659,7 @@ fn render_line_tokens(
         out.push_str(&token_text(token));
 
         let token_pos = (line.tokens[i].span.line, line.tokens[i].span.col);
-        let next_pos = line
-            .tokens
-            .get(i + 1)
-            .map(|t| (t.span.line, t.span.col));
+        let next_pos = line.tokens.get(i + 1).map(|t| (t.span.line, t.span.col));
         for (j, comment) in comments.iter().enumerate() {
             if consumed[j] || comment.inside_interp || comment_trailing(comment, line) {
                 continue;
@@ -1881,24 +1883,26 @@ fn cmd_update(args: &[String]) -> ExitCode {
                 check_only = true;
                 i += 1;
             }
-            "--notifications" => match args.get(i + 1).map(|s| s.as_str()) {
-                Some("on") => {
-                    notifications = Some(true);
-                    i += 2;
+            "--notifications" => {
+                match args.get(i + 1).map(|s| s.as_str()) {
+                    Some("on") => {
+                        notifications = Some(true);
+                        i += 2;
+                    }
+                    Some("off") => {
+                        notifications = Some(false);
+                        i += 2;
+                    }
+                    Some(other) => {
+                        eprintln!("Error: Unknown notifications setting '{other}' (expected 'on' or 'off')");
+                        return ExitCode::FAILURE;
+                    }
+                    None => {
+                        eprintln!("Error: '--notifications' needs a value ('on' or 'off')");
+                        return ExitCode::FAILURE;
+                    }
                 }
-                Some("off") => {
-                    notifications = Some(false);
-                    i += 2;
-                }
-                Some(other) => {
-                    eprintln!("Error: Unknown notifications setting '{other}' (expected 'on' or 'off')");
-                    return ExitCode::FAILURE;
-                }
-                None => {
-                    eprintln!("Error: '--notifications' needs a value ('on' or 'off')");
-                    return ExitCode::FAILURE;
-                }
-            },
+            }
             "--help" | "-h" => {
                 print_update_help();
                 return ExitCode::SUCCESS;
@@ -2085,10 +2089,7 @@ mod tests {
     fn formatter_preserves_string_and_interpolation_text() {
         let source = "say(  \"a{b}c\"  )\nsay(\"$- literal -$\")\n";
         let formatted = format_source(source).unwrap();
-        assert_eq!(
-            formatted,
-            "say(\"a{b}c\")\nsay(\"$- literal -$\")\n"
-        );
+        assert_eq!(formatted, "say(\"a{b}c\")\nsay(\"$- literal -$\")\n");
         assert_eq!(format_source(&formatted).unwrap(), formatted);
     }
 

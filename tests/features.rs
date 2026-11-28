@@ -29,10 +29,7 @@ fn isolated_env() -> [(&'static str, String); 3] {
 
 fn run(args: &[&str], cwd: Option<&Path>) -> std::process::Output {
     let mut command = Command::new(em());
-    command
-        .args(args)
-        .envs(isolated_env())
-        .stdin(Stdio::null());
+    command.args(args).envs(isolated_env()).stdin(Stdio::null());
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
@@ -41,10 +38,7 @@ fn run(args: &[&str], cwd: Option<&Path>) -> std::process::Output {
 
 fn scratch(name: &str) -> PathBuf {
     let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "em_features_{name}_{}_{id}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("em_features_{name}_{}_{id}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -442,9 +436,10 @@ obj.set("end", 7)
 say(obj.end)
 "#,
     );
-    assert_eq!(out.lines().collect::<Vec<_>>(), vec![
-        "abab", "hahaha", "false", "true", "true", "7"
-    ]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec!["abab", "hahaha", "false", "true", "true", "7"]
+    );
 }
 
 #[test]
@@ -516,7 +511,10 @@ fn bundled_feature_examples_agree_across_backends() {
             "interpreter failed for {name}: {}",
             status_text(&interpreted)
         );
-        assert_eq!(vm.stdout, interpreted.stdout, "examples disagree for {name}");
+        assert_eq!(
+            vm.stdout, interpreted.stdout,
+            "examples disagree for {name}"
+        );
         assert_eq!(
             output_text(&vm),
             expected_output,
@@ -561,8 +559,18 @@ fn doc_reference_lists_the_current_catalogue() {
     assert!(output.status.success(), "{}", status_text(&output));
     let stdout = output_text(&output);
     for name in [
-        "math", "time", "qrc", "cowsay", "string", "json", "fs", "os", "random",
-        "collections", "gfx",
+        "math",
+        "time",
+        "qrc",
+        "cowsay",
+        "string",
+        "json",
+        "fs",
+        "os",
+        "random",
+        "collections",
+        "gfx",
+        "text",
     ] {
         assert!(stdout.contains(name), "em doc is missing module '{name}'");
     }
@@ -584,4 +592,21 @@ fn doc_reference_lists_the_current_catalogue() {
         guide.contains(&format!("all {count} registered functions")),
         "builtins guide has a stale catalogue count"
     );
+
+    let readme =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    for text in [
+        "**224 named language features**",
+        &format!("| Global builtins | {count} |"),
+        "| Runtime methods | 95 |",
+        "| Standard modules | 12 |",
+        "| REPL meta-commands | 16 |",
+        "| `:repeat <n> <src>` |",
+        "| `:reset` |",
+    ] {
+        assert!(
+            readme.contains(text),
+            "README has a stale catalogue: {text}"
+        );
+    }
 }

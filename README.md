@@ -429,6 +429,13 @@ REPL meta commands:
 | `:save <file>` | Write entered session source to a `.enm` file |
 | `:time <expr>` | Run and time a single expression |
 | `:about` | Show version and language information |
+| `:echo <text>` | Print a line of text |
+| `:source` | Show numbered source entered in this session |
+| `:again` | Re-run the most recent source snippet |
+| `:eval <expr>` | Evaluate an expression and show its value |
+| `:type <expr>` | Show an expression's value and type |
+| `:repeat <n> <src>` | Run one source statement `n` times |
+| `:reset` | Clear globals, history, source and prompt state |
 | `:quit`, `:exit` | Leave the REPL (`quit` also works) |
 
 ## Editing in VS Code
@@ -609,16 +616,16 @@ binary — no Python, Node, or other external runtimes required. See
 
 ## Feature catalogue and guides
 
-The current language surface has **188 named language features** across five
+The current language surface has **224 named language features** across five
 groups, before counting developer tooling:
 
 | Group | Count | What it covers |
 | --- | --- | --- |
-| Global builtins | 69 | Conversions, collections, strings, math, files, JSON, assertions |
-| Runtime methods | 81 | Array (26), object (10), string (26), number (14), boolean (5) |
+| Global builtins | 83 | Conversions, collections, strings, math, files, JSON, assertions |
+| Runtime methods | 95 | Array (29), object (13), string (29), number (17), boolean (7) |
 | Syntax and operator features | 18 | Loops, loop control, compound assignment, bitwise/ternary/coalescing operators, literals, interpolation |
-| Standard modules | 11 | `math` through `gfx`, all bundled into `em` |
-| REPL meta-commands | 9 | Help, variables, history, loading/saving, timing, exit |
+| Standard modules | 12 | `math` through `gfx`, plus `text`, all bundled into `em` |
+| REPL meta-commands | 16 | Help, variables, history, loading/saving, timing, inspection, repetition, exit |
 
 On top of that are developer commands (`check`, `fmt`, `eval`, `doc`,
 `--emit`, `--stats`, `--run`), structured diagnostics with source spans and
