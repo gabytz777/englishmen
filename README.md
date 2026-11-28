@@ -51,7 +51,7 @@ there.
 ### Requirements
 
 Running `em` needs nothing beyond the binary itself: the standard library and
-all five modules ship inside it. Building from source instead — either
+all six modules ship inside it. Building from source instead — either
 `install.sh --from-source` or a local `cargo build --release` — needs a Rust
 toolchain from https://rustup.rs.
 
@@ -522,6 +522,7 @@ import math
 import time
 import qrc
 import cowsay
+import gfx
 
 say(math.sqrt(25))
 say(math.pow(2, 8))
@@ -529,12 +530,17 @@ say(math.pow(2, 8))
 cowsay.say("Moo from Englishmen!")
 
 qrc.make("https://example.com", "code.png")
+
+canvas = gfx.canvas(64, 64)
+canvas.set(10, 10, 255, 0, 0)
+canvas.save("red-dot.png")
 ```
 
-- **math** — `sqrt`, `abs`, `floor`, `ceil`, `round`, `pow`, `min`, `max`, `pi`, `e`
+- **math** — `sqrt`, `abs`, `floor`, `ceil`, `round`, `pow`, `min`, `max`, `sin`, `cos`, `tan`, `pi`, `e`
 - **time** — `now`, `sleep`, `year`, `month`, `day`, `hour`, `minute`, `second`
 - **qrc** — `make(text, path)` generates a QR code PNG (no external binaries)
 - **cowsay** — `say(message)` prints ASCII-art cow speech (implemented natively, no `cowsay` executable required)
+- **gfx** — `canvas(width, height)` creates an RGB framebuffer with `set`, `get`, `clear`, `text` and `save(path)` methods, for drawing images from Englishmen code
 
 All standard libraries are implemented in Rust and ship inside the `em`
 binary — no Python, Node, or other external runtimes required.

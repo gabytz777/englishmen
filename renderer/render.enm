@@ -1,0 +1,231 @@
+$-
+    A software 3D renderer written entirely in Englishmen.
+
+    It builds a torus mesh procedurally, rotates and perspective-projects its
+    triangles, shades them with a directional light, and rasterises them into
+    a depth-buffered framebuffer. The `gfx` module only stores pixels and
+    writes PNG files - every bit of 3D maths happens here in .enm code.
+
+    Run from this directory with:
+        ../target/debug/em render.enm
+-$
+
+import math
+import gfx
+
+$- Screen and camera settings -$
+W = 240
+H = 180
+FOCAL = 210
+CAM_Z = 4.2
+
+$- Torus settings -$
+MAJOR = 20
+MINOR = 12
+BIG_R = 1.15
+SMALL_R = 0.48
+
+$- Light direction (normalised) -$
+LIGHT_X = -0.45
+LIGHT_Y = 0.72
+LIGHT_Z = 0.53
+
+SHADES = " .:-=+*#%@"
+
+canvas = gfx.canvas(W, H)
+zbuf = []
+repeat W * H
+    zbuf.add(1000000000)
+end
+
+$- Rotate a point around X, then Y. -$
+function rotate_point(x, y, z, ax, ay)
+    cx = math.cos(ax)
+    sx = math.sin(ax)
+    cy = math.cos(ay)
+    sy = math.sin(ay)
+
+    y1 = y * cx - z * sx
+    z1 = y * sx + z * cx
+    x2 = x * cy + z1 * sy
+    z2 = -x * sy + z1 * cy
+    return [x2, y1, z2]
+end
+
+$- A point on the surface of the torus. -$
+function torus_point(u, v)
+    ring = BIG_R + SMALL_R * math.cos(v)
+    return [ring * math.cos(u), ring * math.sin(u), SMALL_R * math.sin(v)]
+end
+
+$- Outward surface normal at (u, v), rotated with the mesh. -$
+function torus_normal(u, v, ax, ay)
+    n = [math.cos(v) * math.cos(u), math.cos(v) * math.sin(u), math.sin(v)]
+    return rotate_point(n[0], n[1], n[2], ax, ay)
+end
+
+$- Camera transform plus perspective projection. -$
+function project(p, ax, ay)
+    q = rotate_point(p[0], p[1], p[2], ax, ay)
+    $- The camera sits on +Z looking towards the origin: larger z is nearer,
+       so distance from the camera is CAM_Z - z and smaller depth wins.
+       Name it `dist` to avoid shadowing anything in the rasteriser. -$
+    dist = CAM_Z - q[2]
+    sx = W / 2 + q[0] * FOCAL / dist
+    sy = H / 2 - q[1] * FOCAL / dist
+    return [sx, sy, dist]
+end
+
+$- Rasterise one triangle with barycentric weights and a z-buffer. -$
+function raster(x0, y0, z0, x1, y1, z1, x2, y2, z2, cr, cg, cb)
+    minx = math.floor(math.min(x0, math.min(x1, x2)))
+    maxx = math.ceil(math.max(x0, math.max(x1, x2)))
+    miny = math.floor(math.min(y0, math.min(y1, y2)))
+    maxy = math.ceil(math.max(y0, math.max(y1, y2)))
+
+    if minx < 0
+        minx = 0
+    end
+    if miny < 0
+        miny = 0
+    end
+    if maxx > W - 1
+        maxx = W - 1
+    end
+    if maxy > H - 1
+        maxy = H - 1
+    end
+
+    area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)
+    if area == 0
+        return
+    end
+
+    y = miny
+    repeat maxy - miny + 1
+        x = minx
+        repeat maxx - minx + 1
+            w0 = ((x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)) / area
+            w1 = ((x0 - x2) * (y - y2) - (y0 - y2) * (x - x2)) / area
+            w2 = 1 - w0 - w1
+
+            if (w0 >= -0.0001 and w1 >= -0.0001 and w2 >= -0.0001) or (w0 <= 0.0001 and w1 <= 0.0001 and w2 <= 0.0001)
+                z = w0 * z0 + w1 * z1 + w2 * z2
+                index = y * W + x
+                if z < zbuf[index]
+                    zbuf[index] = z
+                    canvas.set(x, y, cr, cg, cb)
+                end
+            end
+            x = x + 1
+        end
+        y = y + 1
+    end
+end
+
+$- Draw one quad as two triangles, with flat shading. -$
+function draw_quad(u0, v0, u1, v1, ax, ay, br, bg, bb)
+    a = torus_point(u0, v0)
+    b = torus_point(u1, v0)
+    c = torus_point(u1, v1)
+    d = torus_point(u0, v1)
+
+    sa = project(a, ax, ay)
+    sb = project(b, ax, ay)
+    sc = project(c, ax, ay)
+    sd = project(d, ax, ay)
+
+    n = torus_normal(u0 + (u1 - u0) / 2, v0 + (v1 - v0) / 2, ax, ay)
+
+    $- The camera sits on +Z looking towards the origin. -$
+    if n[2] <= 0
+        return
+    end
+
+    light = n[0] * LIGHT_X + n[1] * LIGHT_Y + n[2] * LIGHT_Z
+    if light < 0
+        light = 0
+    end
+    shade = 0.18 + 0.82 * light
+    cr = br * shade
+    cg = bg * shade
+    cb = bb * shade
+
+    raster(sa[0], sa[1], sa[2], sb[0], sb[1], sb[2], sc[0], sc[1], sc[2], cr, cg, cb)
+    raster(sa[0], sa[1], sa[2], sc[0], sc[1], sc[2], sd[0], sd[1], sd[2], cr, cg, cb)
+end
+
+$- Render one complete frame to a PNG file. -$
+function render_frame(frame, ax, ay)
+    canvas.clear(8, 10, 20)
+
+    $- A fresh depth buffer for every frame: smaller depth is closer. -$
+    k = 0
+    repeat W * H
+        zbuf[k] = 1000000000
+        k = k + 1
+    end
+
+    i = 0
+    repeat MAJOR
+        u0 = i * 2 * math.pi / MAJOR
+        u1 = (i + 1) * 2 * math.pi / MAJOR
+        j = 0
+        repeat MINOR
+            v0 = j * 2 * math.pi / MINOR
+            v1 = (j + 1) * 2 * math.pi / MINOR
+
+            if (i + j) % 2 == 0
+                base = [90, 200, 230]
+            else
+                base = [235, 125, 70]
+            end
+
+            draw_quad(u0, v0, u1, v1, ax, ay, base[0], base[1], base[2])
+            j = j + 1
+        end
+        i = i + 1
+    end
+
+    $- Show the raw render in the terminal before the labels go on top. -$
+    if frame == 8
+        preview()
+    end
+
+    canvas.text(6, 6, "ENGLISHMEN 3D", 240, 245, 255, 2)
+    canvas.text(6, 22, "Z-BUFFERED TORUS", 140, 190, 230, 1)
+    canvas.text(6, H - 12, "FRAME {frame}", 190, 210, 230, 1)
+    canvas.save("frame_{frame}.png")
+end
+
+$- Print a small ASCII preview of the framebuffer to the terminal. -$
+function preview()
+    y = 2
+    repeat H / 4
+        row = ""
+        x = 2
+        repeat W / 4
+            pixel = canvas.get(x, y)
+            brightness = (pixel[0] + pixel[1] + pixel[2]) / 3
+            level = math.floor(brightness / 256 * 10)
+            if level > 9
+                level = 9
+            end
+            row = row + SHADES[level]
+            x = x + 4
+        end
+        say(row)
+        y = y + 4
+    end
+end
+
+say("Rendering 8 frames of a shaded, depth-buffered torus...")
+frame = 1
+repeat 8
+    ax = 0.35 + frame * 0.28
+    ay = frame * 0.42
+    render_frame(frame, ax, ay)
+    say("Wrote frame_{frame}.png")
+    frame = frame + 1
+end
+say("Done.")
