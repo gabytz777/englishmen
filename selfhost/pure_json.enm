@@ -1,0 +1,777 @@
+$- Self-contained pure-Englishmen JSON module builder for the round-4 C bootstrap.
+
+   No local .enm imports exist: every global name in this file is prefixed
+   `pjs`. `pjsJsonModule()` returns an ordinary object with the native module
+   keys `encode`, `decode`, `pretty`, `isValid`, `get` and `set`; the functions
+   reproduce src/modules/json.rs exactly, including sorted object keys, Rust
+   number formatting (via toString), escaping, surrogate decoding, and dotted
+   path / null semantics.
+
+   The native `json` module is imported only inside the EM_SELFTEST guard at
+   the bottom, where it acts as a reference oracle.
+-$
+import os
+$- ---------------------------------------------------------------------------
+   Shared helpers
+   --------------------------------------------------------------------------- -$
+function pjsKeys(pjsKeys_value)
+    return sorted(keys(pjsKeys_value))
+end
+function pjsText(pjsText_value)
+    assert(type(pjsText_value) == "string", "Expected a string")
+    return pjsText_value
+end
+function pjsFinite(pjsFinite_value)
+    if type(pjsFinite_value) != "number"
+        return false
+    end
+    if isNaN(pjsFinite_value)
+        return false
+    end
+    return pjsFinite_value <= 100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 and pjsFinite_value >= -100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+end
+function pjsWhole(pjsWhole_value)
+    if not pjsFinite(pjsWhole_value)
+        return false
+    end
+    return floor(pjsWhole_value) == pjsWhole_value
+end
+function pjsIndex(pjsIndex_value)
+    if not pjsWhole(pjsIndex_value) or pjsIndex_value < 0
+        return false
+    end
+    return true
+end
+function pjsChars(pjsChars_source)
+    return split(pjsChars_source, "")
+end
+function pjsAsciiDigit(pjsAsciiDigit_char)
+    pjsAsciiDigit_code = charCode(pjsAsciiDigit_char)
+    return pjsAsciiDigit_code >= 48 and pjsAsciiDigit_code <= 57
+end
+function pjsNumericText(pjsNumericText_source)
+    pjsNumericText_chars = pjsChars(pjsNumericText_source)
+    pjsNumericText_size = len(pjsNumericText_chars)
+    pjsNumericText_pos = 0
+    if pjsNumericText_size == 0
+        return false
+    end
+    if pjsNumericText_chars[0] == "+" or pjsNumericText_chars[0] == "-"
+        pjsNumericText_pos = 1
+    end
+    pjsNumericText_before = 0
+    pjsNumericText_after = 0
+    pjsNumericText_dot = false
+    while pjsNumericText_pos < pjsNumericText_size
+    pjsNumericText_char = pjsNumericText_chars[pjsNumericText_pos]
+    if pjsAsciiDigit(pjsNumericText_char)
+        if pjsNumericText_dot
+            pjsNumericText_after += 1
+        else
+            pjsNumericText_before += 1
+        end
+        pjsNumericText_pos += 1
+        continue
+    end
+    if pjsNumericText_char == "." and not pjsNumericText_dot
+        pjsNumericText_dot = true
+        pjsNumericText_pos += 1
+        continue
+    end
+    if pjsNumericText_char == "e" or pjsNumericText_char == "E"
+        pjsNumericText_pos += 1
+        if pjsNumericText_pos < pjsNumericText_size
+            if pjsNumericText_chars[pjsNumericText_pos] == "+" or pjsNumericText_chars[pjsNumericText_pos] == "-"
+                pjsNumericText_pos += 1
+            end
+        end
+        pjsNumericText_exp = 0
+        while pjsNumericText_pos < pjsNumericText_size
+        if not pjsAsciiDigit(pjsNumericText_chars[pjsNumericText_pos])
+            return false
+        end
+        pjsNumericText_exp += 1
+        pjsNumericText_pos += 1
+    end
+    if pjsNumericText_exp == 0
+        return false
+    end
+    break
+end
+return false
+end
+if pjsNumericText_before + pjsNumericText_after == 0
+    return false
+end
+return pjsNumericText_pos == pjsNumericText_size
+end
+function pjsRepeatText(pjsRepeatText_source, pjsRepeatText_count)
+    pjsRepeatText_out = ""
+    pjsRepeatText_i = 0
+    while pjsRepeatText_i < pjsRepeatText_count
+    pjsRepeatText_out += pjsRepeatText_source
+    pjsRepeatText_i += 1
+end
+return pjsRepeatText_out
+end
+$- ---------------------------------------------------------------------------
+   JSON encoding
+   --------------------------------------------------------------------------- -$
+function pjsJsonHexDigit(pjsJsonHexDigit_n)
+    pjsJsonHexDigit_digits = "0123456789abcdef"
+    if pjsJsonHexDigit_n < 0 or pjsJsonHexDigit_n > 15
+        return -1
+    end
+    return pjsJsonHexDigit_digits[pjsJsonHexDigit_n]
+end
+function pjsJsonHex4(pjsJsonHex4_n)
+    pjsJsonHex4_out = ""
+    pjsJsonHex4_i = 3
+    while pjsJsonHex4_i >= 0
+    pjsJsonHex4_out += pjsJsonHexDigit(floor(pjsJsonHex4_n / pow(16, pjsJsonHex4_i)) % 16)
+    pjsJsonHex4_i -= 1
+end
+return pjsJsonHex4_out
+end
+function pjsJsonQuote(pjsJsonQuote_source)
+    pjsJsonQuote_chars = pjsChars(pjsText(pjsJsonQuote_source))
+    pjsJsonQuote_out = "\""
+    pjsJsonQuote_i = 0
+    while pjsJsonQuote_i < len(pjsJsonQuote_chars)
+    pjsJsonQuote_char = pjsJsonQuote_chars[pjsJsonQuote_i]
+    if pjsJsonQuote_char == "\""
+        pjsJsonQuote_out += "\\\""
+    else if pjsJsonQuote_char == "\\"
+        pjsJsonQuote_out += "\\\\"
+    else if pjsJsonQuote_char == "\n"
+        pjsJsonQuote_out += "\\n"
+    else if pjsJsonQuote_char == ""
+        pjsJsonQuote_out += "\\r"
+    else if pjsJsonQuote_char == "\t"
+        pjsJsonQuote_out += "\\t"
+    else if pjsJsonQuote_char == ""
+        pjsJsonQuote_out += "\\b"
+    else if pjsJsonQuote_char == ""
+        pjsJsonQuote_out += "\\f"
+    else if charCode(pjsJsonQuote_char) < 32
+        pjsJsonQuote_out += "\\u" + pjsJsonHex4(charCode(pjsJsonQuote_char))
+    else
+        pjsJsonQuote_out += pjsJsonQuote_char
+    end
+    pjsJsonQuote_i += 1
+end
+return pjsJsonQuote_out + "\""
+end
+function pjsJsonEncodeInner(pjsJsonEncodeInner_value, pjsJsonEncodeInner_depth)
+    if pjsJsonEncodeInner_depth > 100
+        assert(false, "JSON value is nested too deeply")
+    end
+    pjsJsonEncodeInner_type = type(pjsJsonEncodeInner_value)
+    if pjsJsonEncodeInner_type == "null"
+        return "null"
+    end
+    if pjsJsonEncodeInner_type == "boolean"
+        if pjsJsonEncodeInner_value
+            return "true"
+        end
+        return "false"
+    end
+    if pjsJsonEncodeInner_type == "number"
+        assert(pjsFinite(pjsJsonEncodeInner_value), "Cannot encode a non-finite number as JSON")
+        return toString(pjsJsonEncodeInner_value)
+    end
+    if pjsJsonEncodeInner_type == "string"
+        return pjsJsonQuote(pjsJsonEncodeInner_value)
+    end
+    if pjsJsonEncodeInner_type == "array"
+        pjsJsonEncodeInner_out = "["
+        pjsJsonEncodeInner_i = 0
+        while pjsJsonEncodeInner_i < len(pjsJsonEncodeInner_value)
+        if pjsJsonEncodeInner_i > 0
+            pjsJsonEncodeInner_out += ","
+        end
+        pjsJsonEncodeInner_out += pjsJsonEncodeInner(pjsJsonEncodeInner_value[pjsJsonEncodeInner_i], pjsJsonEncodeInner_depth + 1)
+        pjsJsonEncodeInner_i += 1
+    end
+    return pjsJsonEncodeInner_out + "]"
+end
+if pjsJsonEncodeInner_type == "object"
+    pjsJsonEncodeInner_out = "\{"
+    pjsJsonEncodeInner_keys = pjsKeys(pjsJsonEncodeInner_value)
+    pjsJsonEncodeInner_i = 0
+    while pjsJsonEncodeInner_i < len(pjsJsonEncodeInner_keys)
+    if pjsJsonEncodeInner_i > 0
+        pjsJsonEncodeInner_out += ","
+    end
+    pjsJsonEncodeInner_key = pjsJsonEncodeInner_keys[pjsJsonEncodeInner_i]
+    pjsJsonEncodeInner_out += pjsJsonQuote(pjsJsonEncodeInner_key) + ":"
+    pjsJsonEncodeInner_out += pjsJsonEncodeInner(pjsJsonEncodeInner_value.get(pjsJsonEncodeInner_key), pjsJsonEncodeInner_depth + 1)
+    pjsJsonEncodeInner_i += 1
+end
+return pjsJsonEncodeInner_out + "\}"
+end
+assert(false, "Cannot encode a " + pjsJsonEncodeInner_type + " as JSON")
+end
+function pjsJsonEncode(pjsJsonEncode_value)
+    return pjsJsonEncodeInner(pjsJsonEncode_value, 0)
+end
+$- ---------------------------------------------------------------------------
+   JSON decoding
+   --------------------------------------------------------------------------- -$
+function pjsJsonState(pjsJsonState_text, pjsJsonState_strict)
+    return {chars: split(pjsJsonState_text, ""), pos: 0, strict: pjsJsonState_strict, error: ""}
+end
+function pjsJsonFail(pjsJsonFail_state, pjsJsonFail_message)
+    pjsJsonFail_state.error = pjsJsonFail_message
+    if pjsJsonFail_state.strict
+        assert(false, pjsJsonFail_message)
+    end
+    return null
+end
+function pjsJsonSkipWs(pjsJsonSkipWs_state)
+    while pjsJsonSkipWs_state.pos < len(pjsJsonSkipWs_state.chars)
+    pjsJsonSkipWs_char = pjsJsonSkipWs_state.chars[pjsJsonSkipWs_state.pos]
+    if pjsJsonSkipWs_char != " " and pjsJsonSkipWs_char != "\t" and pjsJsonSkipWs_char != "\n" and pjsJsonSkipWs_char != ""
+        break
+    end
+    pjsJsonSkipWs_state.pos += 1
+end
+end
+function pjsJsonTail(pjsJsonTail_state)
+    pjsJsonTail_out = ""
+    pjsJsonTail_i = pjsJsonTail_state.pos
+    while pjsJsonTail_i < len(pjsJsonTail_state.chars)
+    pjsJsonTail_out += pjsJsonTail_state.chars[pjsJsonTail_i]
+    pjsJsonTail_i += 1
+end
+return pjsJsonTail_out
+end
+function pjsJsonConsumeLiteral(pjsJsonConsumeLiteral_state, pjsJsonConsumeLiteral_literal)
+    if startsWith(pjsJsonTail(pjsJsonConsumeLiteral_state), pjsJsonConsumeLiteral_literal)
+        pjsJsonConsumeLiteral_state.pos += len(pjsJsonConsumeLiteral_literal)
+        return true
+    end
+    return false
+end
+function pjsJsonHexValue(pjsJsonHexValue_char)
+    pjsJsonHexValue_digits = "0123456789abcdefABCDEF"
+    pjsJsonHexValue_i = 0
+    while pjsJsonHexValue_i < len(pjsJsonHexValue_digits)
+    if pjsJsonHexValue_digits[pjsJsonHexValue_i] == pjsJsonHexValue_char
+        if pjsJsonHexValue_i < 16
+            return pjsJsonHexValue_i
+        end
+        return pjsJsonHexValue_i - 6
+    end
+    pjsJsonHexValue_i += 1
+end
+return -1
+end
+function pjsJsonParseHex4(pjsJsonParseHex4_state)
+    if pjsJsonParseHex4_state.pos + 4 > len(pjsJsonParseHex4_state.chars)
+        return pjsJsonFail(pjsJsonParseHex4_state, "Incomplete Unicode escape in JSON string")
+    end
+    pjsJsonParseHex4_value = 0
+    pjsJsonParseHex4_i = 0
+    while pjsJsonParseHex4_i < 4
+    pjsJsonParseHex4_digit = pjsJsonHexValue(pjsJsonParseHex4_state.chars[pjsJsonParseHex4_state.pos])
+    if pjsJsonParseHex4_digit < 0
+        return pjsJsonFail(pjsJsonParseHex4_state, "Invalid Unicode escape in JSON string")
+    end
+    pjsJsonParseHex4_value = pjsJsonParseHex4_value * 16 + pjsJsonParseHex4_digit
+    pjsJsonParseHex4_state.pos += 1
+    pjsJsonParseHex4_i += 1
+end
+return pjsJsonParseHex4_value
+end
+function pjsJsonParseString(pjsJsonParseString_state)
+    pjsJsonParseString_state.pos += 1
+    pjsJsonParseString_out = ""
+    while true
+    if pjsJsonParseString_state.pos >= len(pjsJsonParseString_state.chars)
+        return pjsJsonFail(pjsJsonParseString_state, "Unterminated JSON string")
+    end
+    pjsJsonParseString_char = pjsJsonParseString_state.chars[pjsJsonParseString_state.pos]
+    pjsJsonParseString_state.pos += 1
+    if pjsJsonParseString_char == "\""
+        return pjsJsonParseString_out
+    end
+    if pjsJsonParseString_char == "\\"
+        if pjsJsonParseString_state.pos >= len(pjsJsonParseString_state.chars)
+            return pjsJsonFail(pjsJsonParseString_state, "Unterminated JSON escape sequence")
+        end
+        pjsJsonParseString_escape = pjsJsonParseString_state.chars[pjsJsonParseString_state.pos]
+        pjsJsonParseString_state.pos += 1
+        if pjsJsonParseString_escape == "\""
+            pjsJsonParseString_out += "\""
+        else if pjsJsonParseString_escape == "\\"
+            pjsJsonParseString_out += "\\"
+        else if pjsJsonParseString_escape == "/"
+            pjsJsonParseString_out += "/"
+        else if pjsJsonParseString_escape == "b"
+            pjsJsonParseString_out += ""
+        else if pjsJsonParseString_escape == "f"
+            pjsJsonParseString_out += ""
+        else if pjsJsonParseString_escape == "n"
+            pjsJsonParseString_out += "\n"
+        else if pjsJsonParseString_escape == "r"
+            pjsJsonParseString_out += ""
+        else if pjsJsonParseString_escape == "t"
+            pjsJsonParseString_out += "\t"
+        else if pjsJsonParseString_escape == "u"
+            pjsJsonParseString_code = pjsJsonParseHex4(pjsJsonParseString_state)
+            if pjsJsonParseString_state.error != ""
+                return null
+            end
+            if pjsJsonParseString_code >= 55296 and pjsJsonParseString_code <= 57343
+                if pjsJsonParseString_code > 56319
+                    return pjsJsonFail(pjsJsonParseString_state, "Expected a high surrogate in JSON string")
+                end
+                if pjsJsonParseString_state.pos + 1 >= len(pjsJsonParseString_state.chars) or pjsJsonParseString_state.chars[pjsJsonParseString_state.pos] != "\\" or pjsJsonParseString_state.chars[pjsJsonParseString_state.pos + 1] != "u"
+                    return pjsJsonFail(pjsJsonParseString_state, "Expected a low surrogate in JSON string")
+                end
+                pjsJsonParseString_state.pos += 2
+                pjsJsonParseString_low = pjsJsonParseHex4(pjsJsonParseString_state)
+                if pjsJsonParseString_state.error != ""
+                    return null
+                end
+                if pjsJsonParseString_low < 56320 or pjsJsonParseString_low > 57343
+                    return pjsJsonFail(pjsJsonParseString_state, "Invalid low surrogate in JSON string")
+                end
+                pjsJsonParseString_code = 65536 + (pjsJsonParseString_code - 55296) * 1024 + (pjsJsonParseString_low - 56320)
+            end
+            if pjsJsonParseString_code >= 55296 and pjsJsonParseString_code <= 57343
+                return pjsJsonFail(pjsJsonParseString_state, "Invalid Unicode escape in JSON string")
+            end
+            pjsJsonParseString_out += fromCharCode(pjsJsonParseString_code)
+        else
+            return pjsJsonFail(pjsJsonParseString_state, "Invalid JSON escape sequence")
+        end
+    else if charCode(pjsJsonParseString_char) < 32
+        return pjsJsonFail(pjsJsonParseString_state, "Control character in JSON string")
+    else
+        pjsJsonParseString_out += pjsJsonParseString_char
+    end
+end
+end
+function pjsJsonValidNumber(pjsJsonValidNumber_text)
+    pjsJsonValidNumber_chars = pjsChars(pjsJsonValidNumber_text)
+    pjsJsonValidNumber_size = len(pjsJsonValidNumber_chars)
+    pjsJsonValidNumber_pos = 0
+    if pjsJsonValidNumber_size == 0
+        return false
+    end
+    if pjsJsonValidNumber_chars[0] == "-"
+        pjsJsonValidNumber_pos = 1
+    end
+    if pjsJsonValidNumber_pos >= pjsJsonValidNumber_size
+        return false
+    end
+    if pjsJsonValidNumber_chars[pjsJsonValidNumber_pos] == "0"
+        pjsJsonValidNumber_pos += 1
+        if pjsJsonValidNumber_pos < pjsJsonValidNumber_size and pjsAsciiDigit(pjsJsonValidNumber_chars[pjsJsonValidNumber_pos])
+            return false
+        end
+    else if pjsAsciiDigit(pjsJsonValidNumber_chars[pjsJsonValidNumber_pos])
+        while pjsJsonValidNumber_pos < pjsJsonValidNumber_size and pjsAsciiDigit(pjsJsonValidNumber_chars[pjsJsonValidNumber_pos])
+        pjsJsonValidNumber_pos += 1
+    end
+else
+    return false
+end
+if pjsJsonValidNumber_pos < pjsJsonValidNumber_size and pjsJsonValidNumber_chars[pjsJsonValidNumber_pos] == "."
+    pjsJsonValidNumber_pos += 1
+    if pjsJsonValidNumber_pos >= pjsJsonValidNumber_size or not pjsAsciiDigit(pjsJsonValidNumber_chars[pjsJsonValidNumber_pos])
+        return false
+    end
+    while pjsJsonValidNumber_pos < pjsJsonValidNumber_size and pjsAsciiDigit(pjsJsonValidNumber_chars[pjsJsonValidNumber_pos])
+    pjsJsonValidNumber_pos += 1
+end
+end
+if pjsJsonValidNumber_pos < pjsJsonValidNumber_size
+    pjsJsonValidNumber_exp = pjsJsonValidNumber_chars[pjsJsonValidNumber_pos]
+    if pjsJsonValidNumber_exp == "e" or pjsJsonValidNumber_exp == "E"
+        pjsJsonValidNumber_pos += 1
+        if pjsJsonValidNumber_pos < pjsJsonValidNumber_size
+            pjsJsonValidNumber_sign = pjsJsonValidNumber_chars[pjsJsonValidNumber_pos]
+            if pjsJsonValidNumber_sign == "+" or pjsJsonValidNumber_sign == "-"
+                pjsJsonValidNumber_pos += 1
+            end
+        end
+        if pjsJsonValidNumber_pos >= pjsJsonValidNumber_size or not pjsAsciiDigit(pjsJsonValidNumber_chars[pjsJsonValidNumber_pos])
+            return false
+        end
+        while pjsJsonValidNumber_pos < pjsJsonValidNumber_size and pjsAsciiDigit(pjsJsonValidNumber_chars[pjsJsonValidNumber_pos])
+        pjsJsonValidNumber_pos += 1
+    end
+end
+end
+return pjsJsonValidNumber_pos == pjsJsonValidNumber_size
+end
+function pjsJsonParseNumber(pjsJsonParseNumber_state)
+    pjsJsonParseNumber_start = pjsJsonParseNumber_state.pos
+    while pjsJsonParseNumber_state.pos < len(pjsJsonParseNumber_state.chars)
+    pjsJsonParseNumber_char = pjsJsonParseNumber_state.chars[pjsJsonParseNumber_state.pos]
+    if pjsAsciiDigit(pjsJsonParseNumber_char) or pjsJsonParseNumber_char == "-" or pjsJsonParseNumber_char == "+" or pjsJsonParseNumber_char == "." or pjsJsonParseNumber_char == "e" or pjsJsonParseNumber_char == "E"
+        pjsJsonParseNumber_state.pos += 1
+        continue
+    end
+    break
+end
+pjsJsonParseNumber_text = pjsJsonTailSlice(pjsJsonParseNumber_state, pjsJsonParseNumber_start, pjsJsonParseNumber_state.pos)
+if not pjsJsonValidNumber(pjsJsonParseNumber_text)
+    return pjsJsonFail(pjsJsonParseNumber_state, "Invalid JSON number '" + pjsJsonParseNumber_text + "'")
+end
+return parseFloat(pjsJsonParseNumber_text)
+end
+function pjsJsonTailSlice(pjsJsonTailSlice_state, pjsJsonTailSlice_from, pjsJsonTailSlice_to)
+    return join(slice(pjsJsonTailSlice_state.chars, pjsJsonTailSlice_from, pjsJsonTailSlice_to), "")
+end
+function pjsJsonParseArray(pjsJsonParseArray_state)
+    pjsJsonParseArray_state.pos += 1
+    pjsJsonParseArray_items = []
+    pjsJsonSkipWs(pjsJsonParseArray_state)
+    if pjsJsonParseArray_state.pos < len(pjsJsonParseArray_state.chars) and pjsJsonParseArray_state.chars[pjsJsonParseArray_state.pos] == "]"
+        pjsJsonParseArray_state.pos += 1
+        return pjsJsonParseArray_items
+    end
+    while true
+    pjsJsonSkipWs(pjsJsonParseArray_state)
+    pjsJsonParseArray_value = pjsJsonParseValue(pjsJsonParseArray_state)
+    if pjsJsonParseArray_state.error != ""
+        return null
+    end
+    pjsJsonParseArray_items.add(pjsJsonParseArray_value)
+    pjsJsonSkipWs(pjsJsonParseArray_state)
+    if pjsJsonParseArray_state.pos >= len(pjsJsonParseArray_state.chars)
+        return pjsJsonFail(pjsJsonParseArray_state, "Expected ',' or ']' at position " + toString(pjsJsonParseArray_state.pos))
+    end
+    pjsJsonParseArray_char = pjsJsonParseArray_state.chars[pjsJsonParseArray_state.pos]
+    pjsJsonParseArray_state.pos += 1
+    if pjsJsonParseArray_char == "]"
+        return pjsJsonParseArray_items
+    end
+    if pjsJsonParseArray_char != ","
+        return pjsJsonFail(pjsJsonParseArray_state, "Expected ',' or ']' at position " + toString(pjsJsonParseArray_state.pos - 1))
+    end
+end
+end
+function pjsJsonParseObject(pjsJsonParseObject_state)
+    pjsJsonParseObject_state.pos += 1
+    pjsJsonParseObject_fields = {}
+    pjsJsonSkipWs(pjsJsonParseObject_state)
+    if pjsJsonParseObject_state.pos < len(pjsJsonParseObject_state.chars) and pjsJsonParseObject_state.chars[pjsJsonParseObject_state.pos] == "\}"
+        pjsJsonParseObject_state.pos += 1
+        return pjsJsonParseObject_fields
+    end
+    while true
+    pjsJsonSkipWs(pjsJsonParseObject_state)
+    if pjsJsonParseObject_state.pos >= len(pjsJsonParseObject_state.chars) or pjsJsonParseObject_state.chars[pjsJsonParseObject_state.pos] != "\""
+        return pjsJsonFail(pjsJsonParseObject_state, "Expected a string key at position " + toString(pjsJsonParseObject_state.pos))
+    end
+    pjsJsonParseObject_key = pjsJsonParseString(pjsJsonParseObject_state)
+    if pjsJsonParseObject_state.error != ""
+        return null
+    end
+    pjsJsonSkipWs(pjsJsonParseObject_state)
+    if pjsJsonParseObject_state.pos >= len(pjsJsonParseObject_state.chars) or pjsJsonParseObject_state.chars[pjsJsonParseObject_state.pos] != ":"
+        return pjsJsonFail(pjsJsonParseObject_state, "Expected ':' at position " + toString(pjsJsonParseObject_state.pos))
+    end
+    pjsJsonParseObject_state.pos += 1
+    pjsJsonSkipWs(pjsJsonParseObject_state)
+    pjsJsonParseObject_value = pjsJsonParseValue(pjsJsonParseObject_state)
+    if pjsJsonParseObject_state.error != ""
+        return null
+    end
+    pjsJsonParseObject_fields.set(pjsJsonParseObject_key, pjsJsonParseObject_value)
+    pjsJsonSkipWs(pjsJsonParseObject_state)
+    if pjsJsonParseObject_state.pos >= len(pjsJsonParseObject_state.chars)
+        return pjsJsonFail(pjsJsonParseObject_state, "Expected ',' or '\}' at position " + toString(pjsJsonParseObject_state.pos))
+    end
+    pjsJsonParseObject_char = pjsJsonParseObject_state.chars[pjsJsonParseObject_state.pos]
+    pjsJsonParseObject_state.pos += 1
+    if pjsJsonParseObject_char == "\}"
+        return pjsJsonParseObject_fields
+    end
+    if pjsJsonParseObject_char != ","
+        return pjsJsonFail(pjsJsonParseObject_state, "Expected ',' or '\}' at position " + toString(pjsJsonParseObject_state.pos - 1))
+    end
+end
+end
+function pjsJsonParseValue(pjsJsonParseValue_state)
+    if pjsJsonParseValue_state.error != ""
+        return null
+    end
+    pjsJsonSkipWs(pjsJsonParseValue_state)
+    if pjsJsonParseValue_state.pos >= len(pjsJsonParseValue_state.chars)
+        return pjsJsonFail(pjsJsonParseValue_state, "Unexpected JSON character at position " + toString(pjsJsonParseValue_state.pos))
+    end
+    pjsJsonParseValue_char = pjsJsonParseValue_state.chars[pjsJsonParseValue_state.pos]
+    if pjsJsonParseValue_char == "\""
+        return pjsJsonParseString(pjsJsonParseValue_state)
+    end
+    if pjsJsonParseValue_char == "\{"
+        return pjsJsonParseObject(pjsJsonParseValue_state)
+    end
+    if pjsJsonParseValue_char == "["
+        return pjsJsonParseArray(pjsJsonParseValue_state)
+    end
+    if pjsJsonParseValue_char == "t"
+        if pjsJsonConsumeLiteral(pjsJsonParseValue_state, "true")
+            return true
+        end
+        return pjsJsonFail(pjsJsonParseValue_state, "Unexpected JSON character at position " + toString(pjsJsonParseValue_state.pos))
+    end
+    if pjsJsonParseValue_char == "f"
+        if pjsJsonConsumeLiteral(pjsJsonParseValue_state, "false")
+            return false
+        end
+        return pjsJsonFail(pjsJsonParseValue_state, "Unexpected JSON character at position " + toString(pjsJsonParseValue_state.pos))
+    end
+    if pjsJsonParseValue_char == "n"
+        if pjsJsonConsumeLiteral(pjsJsonParseValue_state, "null")
+            return null
+        end
+        return pjsJsonFail(pjsJsonParseValue_state, "Unexpected JSON character at position " + toString(pjsJsonParseValue_state.pos))
+    end
+    if pjsJsonParseValue_char == "-" or pjsAsciiDigit(pjsJsonParseValue_char)
+        return pjsJsonParseNumber(pjsJsonParseValue_state)
+    end
+    return pjsJsonFail(pjsJsonParseValue_state, "Unexpected JSON character at position " + toString(pjsJsonParseValue_state.pos))
+end
+function pjsJsonDecode(pjsJsonDecode_text)
+    assert(type(pjsJsonDecode_text) == "string", "json.decode expects a string")
+    pjsJsonDecode_state = pjsJsonState(pjsJsonDecode_text, true)
+    pjsJsonDecode_value = pjsJsonParseValue(pjsJsonDecode_state)
+    pjsJsonSkipWs(pjsJsonDecode_state)
+    assert(pjsJsonDecode_state.pos == len(pjsJsonDecode_state.chars), "Unexpected trailing JSON characters at position " + toString(pjsJsonDecode_state.pos))
+    return pjsJsonDecode_value
+end
+function pjsJsonIsValid(pjsJsonIsValid_text)
+    if type(pjsJsonIsValid_text) != "string"
+        return false
+    end
+    pjsJsonIsValid_state = pjsJsonState(pjsJsonIsValid_text, false)
+    pjsJsonParseValue(pjsJsonIsValid_state)
+    if pjsJsonIsValid_state.error != ""
+        return false
+    end
+    pjsJsonSkipWs(pjsJsonIsValid_state)
+    return pjsJsonIsValid_state.pos == len(pjsJsonIsValid_state.chars)
+end
+$- ---------------------------------------------------------------------------
+   JSON paths and pretty printing
+   --------------------------------------------------------------------------- -$
+function pjsJsonIndent(pjsJsonIndent_level)
+    return pjsRepeatText("  ", pjsJsonIndent_level)
+end
+function pjsJsonPrettyInner(pjsJsonPrettyInner_value, pjsJsonPrettyInner_level)
+    if pjsJsonPrettyInner_level > 100
+        assert(false, "JSON value is nested too deeply")
+    end
+    pjsJsonPrettyInner_type = type(pjsJsonPrettyInner_value)
+    if pjsJsonPrettyInner_type == "array"
+        if len(pjsJsonPrettyInner_value) == 0
+            return "[]"
+        end
+        pjsJsonPrettyInner_out = "[\n"
+        pjsJsonPrettyInner_i = 0
+        while pjsJsonPrettyInner_i < len(pjsJsonPrettyInner_value)
+        pjsJsonPrettyInner_out += pjsJsonIndent(pjsJsonPrettyInner_level + 1)
+        pjsJsonPrettyInner_out += pjsJsonPrettyInner(pjsJsonPrettyInner_value[pjsJsonPrettyInner_i], pjsJsonPrettyInner_level + 1)
+        if pjsJsonPrettyInner_i + 1 < len(pjsJsonPrettyInner_value)
+            pjsJsonPrettyInner_out += ","
+        end
+        pjsJsonPrettyInner_out += "\n"
+        pjsJsonPrettyInner_i += 1
+    end
+    return pjsJsonPrettyInner_out + pjsJsonIndent(pjsJsonPrettyInner_level) + "]"
+end
+if pjsJsonPrettyInner_type == "object"
+    pjsJsonPrettyInner_keys = pjsKeys(pjsJsonPrettyInner_value)
+    if len(pjsJsonPrettyInner_keys) == 0
+        return "\{\}"
+    end
+    pjsJsonPrettyInner_out = "\{\n"
+    pjsJsonPrettyInner_i = 0
+    while pjsJsonPrettyInner_i < len(pjsJsonPrettyInner_keys)
+    pjsJsonPrettyInner_out += pjsJsonIndent(pjsJsonPrettyInner_level + 1)
+    pjsJsonPrettyInner_key = pjsJsonPrettyInner_keys[pjsJsonPrettyInner_i]
+    pjsJsonPrettyInner_out += pjsJsonQuote(pjsJsonPrettyInner_key) + ": "
+    pjsJsonPrettyInner_out += pjsJsonPrettyInner(pjsJsonPrettyInner_value.get(pjsJsonPrettyInner_key), pjsJsonPrettyInner_level + 1)
+    if pjsJsonPrettyInner_i + 1 < len(pjsJsonPrettyInner_keys)
+        pjsJsonPrettyInner_out += ","
+    end
+    pjsJsonPrettyInner_out += "\n"
+    pjsJsonPrettyInner_i += 1
+end
+return pjsJsonPrettyInner_out + pjsJsonIndent(pjsJsonPrettyInner_level) + "\}"
+end
+return pjsJsonEncodeInner(pjsJsonPrettyInner_value, pjsJsonPrettyInner_level)
+end
+function pjsJsonPretty(pjsJsonPretty_value)
+    return pjsJsonPrettyInner(pjsJsonPretty_value, 0)
+end
+function pjsJsonArrayIndex(pjsJsonArrayIndex_segment)
+$- Rust uses `segment.parse::<usize>()`: an optional leading '+', then
+       ASCII digits only, with overflow rejected. Decimals and exponents are
+       not array indexes even though they are valid JSON numbers. -$
+    pjsJsonArrayIndex_chars = pjsChars(pjsJsonArrayIndex_segment)
+    pjsJsonArrayIndex_size = len(pjsJsonArrayIndex_chars)
+    pjsJsonArrayIndex_pos = 0
+    if pjsJsonArrayIndex_size > 0 and pjsJsonArrayIndex_chars[0] == "+"
+        pjsJsonArrayIndex_pos = 1
+    end
+    if pjsJsonArrayIndex_pos >= pjsJsonArrayIndex_size
+        return -1
+    end
+    while pjsJsonArrayIndex_pos < pjsJsonArrayIndex_size
+    if not pjsAsciiDigit(pjsJsonArrayIndex_chars[pjsJsonArrayIndex_pos])
+        return -1
+    end
+    pjsJsonArrayIndex_pos += 1
+end
+pjsJsonArrayIndex_number = parseFloat(pjsJsonArrayIndex_segment)
+if not pjsIndex(pjsJsonArrayIndex_number) or pjsJsonArrayIndex_number >= pow(2, 64)
+    return -1
+end
+return pjsJsonArrayIndex_number
+end
+function pjsJsonGet(pjsJsonGet_root, pjsJsonGet_path)
+    assert(type(pjsJsonGet_path) == "string", "json.get expects a path string")
+    if pjsJsonGet_path == ""
+        return pjsJsonGet_root
+    end
+    pjsJsonGet_segments = split(pjsJsonGet_path, ".")
+    pjsJsonGet_current = pjsJsonGet_root
+    pjsJsonGet_i = 0
+    while pjsJsonGet_i < len(pjsJsonGet_segments)
+    pjsJsonGet_segment = pjsJsonGet_segments[pjsJsonGet_i]
+    if type(pjsJsonGet_current) == "object"
+        pjsJsonGet_current = pjsJsonGet_current.get(pjsJsonGet_segment, null)
+    else if type(pjsJsonGet_current) == "array"
+        pjsJsonGet_index = pjsJsonArrayIndex(pjsJsonGet_segment)
+        if pjsJsonGet_index < 0 or pjsJsonGet_index >= len(pjsJsonGet_current)
+            pjsJsonGet_current = null
+        else
+            pjsJsonGet_current = pjsJsonGet_current[pjsJsonGet_index]
+        end
+    else
+        pjsJsonGet_current = null
+    end
+    pjsJsonGet_i += 1
+end
+return pjsJsonGet_current
+end
+function pjsJsonSetAt(pjsJsonSetAt_container, pjsJsonSetAt_segments, pjsJsonSetAt_pos, pjsJsonSetAt_value)
+    pjsJsonSetAt_segment = pjsJsonSetAt_segments[pjsJsonSetAt_pos]
+    pjsJsonSetAt_last = pjsJsonSetAt_pos == len(pjsJsonSetAt_segments) - 1
+    if type(pjsJsonSetAt_container) == "object"
+        if pjsJsonSetAt_last
+            pjsJsonSetAt_container.set(pjsJsonSetAt_segment, pjsJsonSetAt_value)
+            return
+        end
+        pjsJsonSetAt_child = pjsJsonSetAt_container.get(pjsJsonSetAt_segment, null)
+        if type(pjsJsonSetAt_child) == "object" or type(pjsJsonSetAt_child) == "array"
+            pjsJsonSetAt(pjsJsonSetAt_child, pjsJsonSetAt_segments, pjsJsonSetAt_pos + 1, pjsJsonSetAt_value)
+            return
+        end
+        if type(pjsJsonSetAt_child) != "null"
+            assert(false, "Cannot descend into a " + type(pjsJsonSetAt_child) + " at '" + pjsJsonSetAt_segment + "' for json.set")
+        end
+        pjsJsonSetAt_child = {}
+        pjsJsonSetAt_container.set(pjsJsonSetAt_segment, pjsJsonSetAt_child)
+        pjsJsonSetAt(pjsJsonSetAt_child, pjsJsonSetAt_segments, pjsJsonSetAt_pos + 1, pjsJsonSetAt_value)
+        return
+    end
+    if type(pjsJsonSetAt_container) == "array"
+        pjsJsonSetAt_index = pjsJsonArrayIndex(pjsJsonSetAt_segment)
+        assert(pjsJsonSetAt_index >= 0, "Expected an array index in path, found '" + pjsJsonSetAt_segment + "'")
+        if pjsJsonSetAt_last
+            if pjsJsonSetAt_index < len(pjsJsonSetAt_container)
+                pjsJsonSetAt_container[pjsJsonSetAt_index] = pjsJsonSetAt_value
+            else if pjsJsonSetAt_index == len(pjsJsonSetAt_container)
+                pjsJsonSetAt_container.add(pjsJsonSetAt_value)
+            else
+                assert(false, "json.set array index is past the end of the array")
+            end
+            return
+        end
+        assert(pjsJsonSetAt_index < len(pjsJsonSetAt_container), "json.set array index is past the end of the array")
+        pjsJsonSetAt_child = pjsJsonSetAt_container[pjsJsonSetAt_index]
+        if type(pjsJsonSetAt_child) != "object" and type(pjsJsonSetAt_child) != "array"
+            assert(false, "Cannot descend into a non-container for json.set")
+        end
+        pjsJsonSetAt(pjsJsonSetAt_child, pjsJsonSetAt_segments, pjsJsonSetAt_pos + 1, pjsJsonSetAt_value)
+        return
+    end
+    assert(false, "json.set cannot descend into a " + type(pjsJsonSetAt_container) + " at '" + pjsJsonSetAt_segment + "'")
+end
+function pjsJsonSet(pjsJsonSet_root, pjsJsonSet_path, pjsJsonSet_value)
+    assert(type(pjsJsonSet_path) == "string", "json.set expects a path string")
+    if pjsJsonSet_path == ""
+        return pjsJsonSet_value
+    end
+    pjsJsonSet_result = pjsJsonSet_root
+    if pjsJsonSet_result == null
+        pjsJsonSet_result = {}
+    end
+    assert(type(pjsJsonSet_result) == "object" or type(pjsJsonSet_result) == "array", "json.set expects an object, array or null root")
+    pjsJsonSet_segments = split(pjsJsonSet_path, ".")
+    pjsJsonSetAt(pjsJsonSet_result, pjsJsonSet_segments, 0, pjsJsonSet_value)
+    return pjsJsonSet_result
+end
+function pjsJsonModule()
+    return {encode: pjsJsonEncode, decode: pjsJsonDecode, pretty: pjsJsonPretty, isValid: pjsJsonIsValid, get: pjsJsonGet, set: pjsJsonSet}
+end
+$- ---------------------------------------------------------------------------
+   Self-tests: native json is an oracle only below this point.
+   --------------------------------------------------------------------------- -$
+if os.env("EM_SELFTEST", "") == "1"
+    import json
+    function pjsSelfEqual(pjsSelfEqual_left, pjsSelfEqual_right, pjsSelfEqual_label)
+        assert(pjsSelfEqual_left == pjsSelfEqual_right, "self-test failed: " + pjsSelfEqual_label)
+    end
+    function pjsSelfSameArray(pjsSelfSameArray_left, pjsSelfSameArray_right, pjsSelfSameArray_label)
+        assert(type(pjsSelfSameArray_left) == "array" and type(pjsSelfSameArray_right) == "array", "self-test failed: " + pjsSelfSameArray_label + " is not an array")
+        assert(len(pjsSelfSameArray_left) == len(pjsSelfSameArray_right), "self-test failed: " + pjsSelfSameArray_label + " length")
+        pjsSelfSameArray_i = 0
+        while pjsSelfSameArray_i < len(pjsSelfSameArray_left)
+        pjsSelfEqual(pjsSelfSameArray_left[pjsSelfSameArray_i], pjsSelfSameArray_right[pjsSelfSameArray_i], pjsSelfSameArray_label + "[" + toString(pjsSelfSameArray_i) + "]")
+        pjsSelfSameArray_i += 1
+    end
+end
+pjsSelfJson = pjsJsonModule()
+pjsSelfSameArray(sorted(keys(pjsSelfJson)), ["decode", "encode", "get", "isValid", "pretty", "set"], "pjsJsonModule keys")
+pjsSelfValues = [null, true, false, 0, -1, 2.5, 0.0000001, 12345678901234, 1000000000000000, "", "plain", "quote \" slash \\ newline \n tab \t back  form  snowman ☃ emoji 🙂", [], [1, "two", false, null], [[1, 2], {b: 2, a: [true, null]}], {z: 1, a: {y: "yes", x: [3, 4]}, m: null}]
+for pjsSelfValue in pjsSelfValues
+    pjsSelfEqual(pjsSelfJson.encode(pjsSelfValue), json.encode(pjsSelfValue), "encode " + toString(pjsSelfValue))
+    pjsSelfEqual(pjsSelfJson.pretty(pjsSelfValue), json.pretty(pjsSelfValue), "pretty " + toString(pjsSelfValue))
+    pjsSelfEqual(pjsSelfJson.encode(pjsSelfJson.decode(json.encode(pjsSelfValue))), json.encode(pjsSelfValue), "round trip " + toString(pjsSelfValue))
+end
+pjsSelfTexts = ["null", "true", "false", "0", "-12.5e2", "\"\"", "\"a\\\"b\\\\c\\n\\r\\t\\b\\f\\/d\"", "\"\\u2603 \\uD83D\\uDE00\"", "[]", "\{\}", "[1, 2, \{\"a\": [3, null]\}]", " \{ \"a\" : 1 , \"b\" : [true, false] \} ", "\{\"a\":1,\"a\":2\}", "\"\\u0000\\u001f\\u001b\""]
+for pjsSelfText in pjsSelfTexts
+    pjsSelfEqual(pjsSelfJson.encode(pjsSelfJson.decode(pjsSelfText)), json.encode(json.decode(pjsSelfText)), "decode " + pjsSelfText)
+    pjsSelfEqual(pjsSelfJson.isValid(pjsSelfText), json.isValid(pjsSelfText), "isValid " + pjsSelfText)
+end
+pjsSelfEqual(pjsSelfJson.decode("1e400"), json.decode("1e400"), "decode 1e400")
+pjsSelfEqual(pjsSelfJson.isValid("1e400"), json.isValid("1e400"), "isValid 1e400")
+pjsSelfBadTexts = ["", "\{", "[1,]", "\{\"a\" 1\}", "01", "tru", "[1] extra", "'x'", "+1", "1.", "[1 2]", "\"\\uD800\"", "\"\\u00ZZ\""]
+for pjsSelfBadText in pjsSelfBadTexts
+    pjsSelfEqual(pjsSelfJson.isValid(pjsSelfBadText), json.isValid(pjsSelfBadText), "isValid bad " + pjsSelfBadText)
+end
+pjsSelfNativePath = json.decode("\{\"user\":\{\"name\":\"Ada\",\"age\":36\},\"items\":[10,20],\"flag\":true,\"nil\":null\}")
+pjsSelfPurePath = pjsSelfJson.decode("\{\"user\":\{\"name\":\"Ada\",\"age\":36\},\"items\":[10,20],\"flag\":true,\"nil\":null\}")
+for pjsSelfPath in ["", "user", "user.name", "user.age", "items.0", "items.1", "items.01", "items.+1", "items.1.0", "items.1e0", "items.-1", "flag", "nil", "missing.path", "items.9", "name.first"]
+    pjsSelfEqual(pjsSelfJson.encode(pjsSelfJson.get(pjsSelfPurePath, pjsSelfPath)), json.encode(json.get(pjsSelfNativePath, pjsSelfPath)), "get " + pjsSelfPath)
+end
+pjsSelfSetCases = [[{user: {name: "Ada"}}, "user.age", 36], [null, "a.b", true], [[1, 2], "1", 9], [[1, 2], "2", 3], [{}, "a.0.b", "deep"], [{items: [{name: "old"}]}, "items.0.name", "new"]]
+for pjsSelfCase in pjsSelfSetCases
+    pjsSelfPureRoot = pjsSelfCase[0]
+    pjsSelfNativeRoot = json.decode(json.encode(pjsSelfCase[0]))
+    pjsSelfPureSet = pjsSelfJson.set(pjsSelfPureRoot, pjsSelfCase[1], pjsSelfCase[2])
+    pjsSelfNativeSet = json.set(pjsSelfNativeRoot, pjsSelfCase[1], pjsSelfCase[2])
+    pjsSelfEqual(pjsSelfJson.encode(pjsSelfPureSet), json.encode(pjsSelfNativeSet), "set " + pjsSelfCase[1])
+end
+say("ok")
+end
