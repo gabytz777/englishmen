@@ -1,0 +1,671 @@
+$- Pure Englishmen implementation of the native `string` module and the string
+   methods used by the self-hosted compiler.
+
+   This file is self-contained: it imports only `os` for the self-test guard
+   and imports the native `string` oracle inside that guard at the bottom.
+   Every globally visible helper is prefixed with `pst`. `pstStringModule()`
+   returns an ordinary object whose keys are the native `string` member names
+   used by `selfhost/*.enm`.
+
+   Optional native arguments are passed as `null` because Englishmen functions
+   have fixed arity. For example `pst.slice(text, 1, null)` means the same thing
+   as native `text.slice(1)`, and `pst.pad(text, 5, null, null)` uses the default
+   fill and alignment.
+-$
+import os
+$- ---------------------------------------------------------------------------
+   Shared argument and indexing helpers
+   --------------------------------------------------------------------------- -$
+function pstExpectString(pstExpectString_value, pstExpectString_context)
+    if type(pstExpectString_value) != "string"
+        assert(false, "Type mismatch: expected a string " + pstExpectString_context + ", found " + type(pstExpectString_value))
+    end
+    return pstExpectString_value
+end
+function pstFinite(pstFinite_value)
+    if type(pstFinite_value) != "number"
+        return false
+    end
+    if isNaN(pstFinite_value)
+        return false
+    end
+    return pstFinite_value <= 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 and pstFinite_value >= -179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+end
+function pstWhole(pstWhole_value)
+    if not pstFinite(pstWhole_value)
+        return false
+    end
+    return floor(pstWhole_value) == pstWhole_value
+end
+function pstIndex(pstIndex_value)
+    if not pstWhole(pstIndex_value) or pstIndex_value < 0
+        return false
+    end
+    return true
+end
+function pstExpectIndex(pstExpectIndex_value, pstExpectIndex_context)
+    if type(pstExpectIndex_value) != "number"
+        assert(false, "Type mismatch: expected a number " + pstExpectIndex_context + ", found " + type(pstExpectIndex_value))
+    end
+    if not pstWhole(pstExpectIndex_value) or pstExpectIndex_value < 0 or pstExpectIndex_value > 9007199254740992
+        assert(false, "Expected a non-negative whole number " + pstExpectIndex_context + ", found " + toString(pstExpectIndex_value))
+    end
+    return pstExpectIndex_value
+end
+function pstChars(pstChars_source)
+    return split(pstChars_source, "")
+end
+function pstByteLength(pstByteLength_source)
+    pstByteLength_chars = pstChars(pstByteLength_source)
+    pstByteLength_total = 0
+    pstByteLength_i = 0
+    while pstByteLength_i < len(pstByteLength_chars)
+    pstByteLength_code = charCode(pstByteLength_chars[pstByteLength_i])
+    if pstByteLength_code <= 127
+        pstByteLength_total += 1
+    else if pstByteLength_code <= 2047
+        pstByteLength_total += 2
+    else if pstByteLength_code <= 65535
+        pstByteLength_total += 3
+    else
+        pstByteLength_total += 4
+    end
+    pstByteLength_i += 1
+end
+return pstByteLength_total
+end
+function pstClampIndex(pstClampIndex_length, pstClampIndex_value)
+    if not pstFinite(pstClampIndex_value)
+        if pstClampIndex_value < 0
+            return 0
+        end
+        return pstClampIndex_length
+    end
+    if pstClampIndex_value < 0
+        pstClampIndex_resolved = pstClampIndex_length - floor(-pstClampIndex_value)
+        if pstClampIndex_resolved < 0
+            return 0
+        end
+        return pstClampIndex_resolved
+    end
+    pstClampIndex_resolved = floor(pstClampIndex_value)
+    if pstClampIndex_resolved > pstClampIndex_length
+        return pstClampIndex_length
+    end
+    return pstClampIndex_resolved
+end
+function pstJoinSlice(pstJoinSlice_chars, pstJoinSlice_from, pstJoinSlice_to)
+    return join(slice(pstJoinSlice_chars, pstJoinSlice_from, pstJoinSlice_to), "")
+end
+function pstSliceChars(pstSliceChars_source, pstSliceChars_from, pstSliceChars_to)
+    if pstSliceChars_to < pstSliceChars_from
+        pstSliceChars_to = pstSliceChars_from
+    end
+    return pstJoinSlice(pstChars(pstSliceChars_source), pstSliceChars_from, pstSliceChars_to)
+end
+function pstFind(pstFind_text, pstFind_needle, pstFind_backwards)
+    pstFind_chars = pstChars(pstFind_text)
+    pstFind_needleChars = pstChars(pstFind_needle)
+    pstFind_needleLen = len(pstFind_needleChars)
+    if pstFind_needleLen == 0
+        if pstFind_backwards
+            return len(pstFind_chars)
+        end
+        return 0
+    end
+    pstFind_last = len(pstFind_chars) - pstFind_needleLen
+    pstFind_found = -1
+    pstFind_i = 0
+    while pstFind_i <= pstFind_last
+    if pstJoinSlice(pstFind_chars, pstFind_i, pstFind_i + pstFind_needleLen) == pstFind_needle
+        if not pstFind_backwards
+            return pstFind_i
+        end
+        pstFind_found = pstFind_i
+    end
+    pstFind_i += 1
+end
+return pstFind_found
+end
+function pstAsciiDigit(pstAsciiDigit_char)
+    pstAsciiDigit_code = charCode(pstAsciiDigit_char)
+    return pstAsciiDigit_code >= 48 and pstAsciiDigit_code <= 57
+end
+function pstNumericText(pstNumericText_source)
+    pstNumericText_chars = pstChars(pstNumericText_source)
+    pstNumericText_size = len(pstNumericText_chars)
+    pstNumericText_pos = 0
+    if pstNumericText_size == 0
+        return false
+    end
+    if pstNumericText_chars[0] == "+" or pstNumericText_chars[0] == "-"
+        pstNumericText_pos = 1
+    end
+    pstNumericText_before = 0
+    pstNumericText_after = 0
+    pstNumericText_dot = false
+    while pstNumericText_pos < pstNumericText_size
+    pstNumericText_char = pstNumericText_chars[pstNumericText_pos]
+    if pstAsciiDigit(pstNumericText_char)
+        if pstNumericText_dot
+            pstNumericText_after += 1
+        else
+            pstNumericText_before += 1
+        end
+        pstNumericText_pos += 1
+        continue
+    end
+    if pstNumericText_char == "." and not pstNumericText_dot
+        pstNumericText_dot = true
+        pstNumericText_pos += 1
+        continue
+    end
+    if pstNumericText_char == "e" or pstNumericText_char == "E"
+        pstNumericText_pos += 1
+        if pstNumericText_pos < pstNumericText_size
+            if pstNumericText_chars[pstNumericText_pos] == "+" or pstNumericText_chars[pstNumericText_pos] == "-"
+                pstNumericText_pos += 1
+            end
+        end
+        pstNumericText_exp = 0
+        while pstNumericText_pos < pstNumericText_size
+        if not pstAsciiDigit(pstNumericText_chars[pstNumericText_pos])
+            return false
+        end
+        pstNumericText_exp += 1
+        pstNumericText_pos += 1
+    end
+    if pstNumericText_exp == 0
+        return false
+    end
+    break
+end
+return false
+end
+if pstNumericText_before + pstNumericText_after == 0
+    return false
+end
+return pstNumericText_pos == pstNumericText_size
+end
+function pstRepeatText(pstRepeatText_source, pstRepeatText_count)
+    pstRepeatText_out = ""
+    pstRepeatText_i = 0
+    while pstRepeatText_i < pstRepeatText_count
+    pstRepeatText_out += pstRepeatText_source
+    pstRepeatText_i += 1
+end
+return pstRepeatText_out
+end
+function pstRepeatChar(pstRepeatChar_char, pstRepeatChar_count)
+    return pstRepeatText(pstRepeatChar_char, pstRepeatChar_count)
+end
+function pstIsUpperChar(pstIsUpperChar_char)
+    return pstIsUpperChar_char == upper(pstIsUpperChar_char) and lower(pstIsUpperChar_char) != pstIsUpperChar_char
+end
+function pstIsLowerChar(pstIsLowerChar_char)
+    return pstIsLowerChar_char == lower(pstIsLowerChar_char) and upper(pstIsLowerChar_char) != pstIsLowerChar_char
+end
+$- ---------------------------------------------------------------------------
+   String module functions
+   --------------------------------------------------------------------------- -$
+function pstStringLength(pstStringLength_source)
+    return len(pstExpectString(pstStringLength_source, "for string.length"))
+end
+function pstStringUpper(pstStringUpper_source)
+    return upper(pstExpectString(pstStringUpper_source, "for string.upper"))
+end
+function pstStringLower(pstStringLower_source)
+    return lower(pstExpectString(pstStringLower_source, "for string.lower"))
+end
+function pstStringTrim(pstStringTrim_source)
+    return trim(pstExpectString(pstStringTrim_source, "for string.trim"))
+end
+function pstStringSplit(pstStringSplit_source, pstStringSplit_separator)
+    pstStringSplit_text = pstExpectString(pstStringSplit_source, "for string.split")
+    if pstStringSplit_separator == null
+        return pstChars(pstStringSplit_text)
+    end
+    pstStringSplit_sep = pstExpectString(pstStringSplit_separator, "as the separator for string.split")
+    if pstStringSplit_sep == ""
+        return pstChars(pstStringSplit_text)
+    end
+    return split(pstStringSplit_text, pstStringSplit_sep)
+end
+function pstStringJoin(pstStringJoin_items, pstStringJoin_separator)
+    if type(pstStringJoin_items) != "array"
+        assert(false, "Type mismatch: expected an array as the array for string.join, found " + type(pstStringJoin_items))
+    end
+    if pstStringJoin_separator == null
+        return join(pstStringJoin_items, "")
+    end
+    return join(pstStringJoin_items, pstExpectString(pstStringJoin_separator, "as the separator for string.join"))
+end
+function pstStringContains(pstStringContains_source, pstStringContains_needle)
+    pstStringContains_text = pstExpectString(pstStringContains_source, "for string.contains")
+    return contains(pstStringContains_text, pstExpectString(pstStringContains_needle, "to search for with string.contains"))
+end
+function pstStringStartsWith(pstStringStartsWith_source, pstStringStartsWith_prefix)
+    pstStringStartsWith_text = pstExpectString(pstStringStartsWith_source, "for string.startsWith")
+    return startsWith(pstStringStartsWith_text, pstExpectString(pstStringStartsWith_prefix, "as the prefix for string.startsWith"))
+end
+function pstStringEndsWith(pstStringEndsWith_source, pstStringEndsWith_suffix)
+    pstStringEndsWith_text = pstExpectString(pstStringEndsWith_source, "for string.endsWith")
+    return endsWith(pstStringEndsWith_text, pstExpectString(pstStringEndsWith_suffix, "as the suffix for string.endsWith"))
+end
+function pstStringReplace(pstStringReplace_source, pstStringReplace_old, pstStringReplace_new)
+    pstStringReplace_text = pstExpectString(pstStringReplace_source, "for string.replace")
+    pstStringReplace_from = pstExpectString(pstStringReplace_old, "as the text to replace for string.replace")
+    pstStringReplace_to = pstExpectString(pstStringReplace_new, "as the replacement for string.replace")
+    return replace(pstStringReplace_text, pstStringReplace_from, pstStringReplace_to)
+end
+function pstStringReplaceAll(pstStringReplaceAll_source, pstStringReplaceAll_old, pstStringReplaceAll_new)
+    return pstStringReplace(pstStringReplaceAll_source, pstStringReplaceAll_old, pstStringReplaceAll_new)
+end
+function pstStringSlice(pstStringSlice_source, pstStringSlice_start, pstStringSlice_end)
+    pstStringSlice_text = pstExpectString(pstStringSlice_source, "for string.slice")
+    pstStringSlice_len = len(pstStringSlice_text)
+    if pstStringSlice_start == null
+        pstStringSlice_start = 0
+    end
+    if pstStringSlice_end == null
+        pstStringSlice_end = pstStringSlice_len
+    end
+    assert(type(pstStringSlice_start) == "number" and type(pstStringSlice_end) == "number", "string.slice expects numeric bounds")
+    pstStringSlice_from = pstClampIndex(pstStringSlice_len, pstStringSlice_start)
+    pstStringSlice_to = pstClampIndex(pstStringSlice_len, pstStringSlice_end)
+    return pstSliceChars(pstStringSlice_text, pstStringSlice_from, pstStringSlice_to)
+end
+function pstStringSubstring(pstStringSubstring_source, pstStringSubstring_start, pstStringSubstring_end)
+    pstStringSubstring_text = pstExpectString(pstStringSubstring_source, "for string.substring")
+    pstStringSubstring_len = len(pstStringSubstring_text)
+    pstExpectIndex(pstStringSubstring_start, "as the start for string.substring")
+    if pstStringSubstring_end == null
+        pstStringSubstring_end = pstStringSubstring_len
+    end
+    pstExpectIndex(pstStringSubstring_end, "as the end for string.substring")
+    assert(pstStringSubstring_start <= pstStringSubstring_end and pstStringSubstring_end <= pstStringSubstring_len, "string.substring expects 0 <= start <= end <= length")
+    return pstSliceChars(pstStringSubstring_text, pstStringSubstring_start, pstStringSubstring_end)
+end
+function pstStringIndexOf(pstStringIndexOf_source, pstStringIndexOf_needle)
+    pstStringIndexOf_text = pstExpectString(pstStringIndexOf_source, "for string.indexOf")
+    pstStringIndexOf_find = pstExpectString(pstStringIndexOf_needle, "as the text to find for string.indexOf")
+    return pstFind(pstStringIndexOf_text, pstStringIndexOf_find, false)
+end
+function pstStringLastIndexOf(pstStringLastIndexOf_source, pstStringLastIndexOf_needle)
+    pstStringLastIndexOf_text = pstExpectString(pstStringLastIndexOf_source, "for string.lastIndexOf")
+    pstStringLastIndexOf_find = pstExpectString(pstStringLastIndexOf_needle, "as the text to find for string.lastIndexOf")
+    return pstFind(pstStringLastIndexOf_text, pstStringLastIndexOf_find, true)
+end
+function pstStringCharAt(pstStringCharAt_source, pstStringCharAt_index)
+    pstStringCharAt_text = pstExpectString(pstStringCharAt_source, "for string.charAt")
+    pstExpectIndex(pstStringCharAt_index, "as the index for string.charAt")
+    pstStringCharAt_chars = pstChars(pstStringCharAt_text)
+    assert(pstStringCharAt_index < len(pstStringCharAt_chars), "string.charAt index " + toString(pstStringCharAt_index) + " is out of range for a " + toString(len(pstStringCharAt_chars)) + "-character string")
+    return pstStringCharAt_chars[pstStringCharAt_index]
+end
+function pstStringToNumber(pstStringToNumber_source)
+    pstStringToNumber_text = trim(pstExpectString(pstStringToNumber_source, "for string.toNumber"))
+    if not pstNumericText(pstStringToNumber_text)
+        return null
+    end
+    pstStringToNumber_value = parseFloat(pstStringToNumber_text)
+    if not pstFinite(pstStringToNumber_value)
+        return null
+    end
+    return pstStringToNumber_value
+end
+function pstStringCapitalize(pstStringCapitalize_source)
+    pstStringCapitalize_text = pstExpectString(pstStringCapitalize_source, "for string.capitalize")
+    if pstStringCapitalize_text == ""
+        return ""
+    end
+    pstStringCapitalize_chars = pstChars(pstStringCapitalize_text)
+    return upper(pstStringCapitalize_chars[0]) + pstSliceChars(pstStringCapitalize_text, 1, len(pstStringCapitalize_chars))
+end
+function pstStringTitleCase(pstStringTitleCase_source)
+    pstStringTitleCase_text = pstExpectString(pstStringTitleCase_source, "for string.titleCase")
+    pstStringTitleCase_chars = pstChars(pstStringTitleCase_text)
+    pstStringTitleCase_out = ""
+    pstStringTitleCase_start = true
+    pstStringTitleCase_i = 0
+    while pstStringTitleCase_i < len(pstStringTitleCase_chars)
+    pstStringTitleCase_char = pstStringTitleCase_chars[pstStringTitleCase_i]
+    if pstStringTitleCase_char.isBlank()
+        pstStringTitleCase_out += pstStringTitleCase_char
+        pstStringTitleCase_start = true
+    else if pstStringTitleCase_start
+        pstStringTitleCase_out += upper(pstStringTitleCase_char)
+        pstStringTitleCase_start = false
+    else
+        pstStringTitleCase_out += lower(pstStringTitleCase_char)
+    end
+    pstStringTitleCase_i += 1
+end
+return pstStringTitleCase_out
+end
+function pstStringReverse(pstStringReverse_source)
+    pstStringReverse_text = pstExpectString(pstStringReverse_source, "for string.reverse")
+    pstStringReverse_chars = pstChars(pstStringReverse_text)
+    pstStringReverse_out = ""
+    pstStringReverse_i = len(pstStringReverse_chars) - 1
+    while pstStringReverse_i >= 0
+    pstStringReverse_out += pstStringReverse_chars[pstStringReverse_i]
+    pstStringReverse_i -= 1
+end
+return pstStringReverse_out
+end
+function pstStringRepeat(pstStringRepeat_source, pstStringRepeat_count)
+    pstStringRepeat_text = pstExpectString(pstStringRepeat_source, "for string.repeat")
+    pstExpectIndex(pstStringRepeat_count, "as the repeat count for string.repeat")
+    assert(pstByteLength(pstStringRepeat_text) * pstStringRepeat_count <= 10000000, "string.repeat would produce a string that is too long")
+    return pstRepeatText(pstStringRepeat_text, pstStringRepeat_count)
+end
+function pstStringPad(pstStringPad_source, pstStringPad_width, pstStringPad_fill, pstStringPad_align)
+    pstStringPad_text = pstExpectString(pstStringPad_source, "for string.pad")
+    pstExpectIndex(pstStringPad_width, "as the width for string.pad")
+    pstStringPad_fillText = " "
+    if pstStringPad_fill != null
+        pstStringPad_fillText = pstExpectString(pstStringPad_fill, "as the fill text for string.pad")
+    end
+    pstStringPad_unit = " "
+    if pstStringPad_fillText != ""
+        pstStringPad_unit = pstChars(pstStringPad_fillText)[0]
+    end
+    pstStringPad_alignment = "left"
+    if pstStringPad_align != null
+        pstStringPad_alignment = pstExpectString(pstStringPad_align, "as the alignment for string.pad")
+    end
+    pstStringPad_current = len(pstStringPad_text)
+    if pstStringPad_current >= pstStringPad_width
+        return pstStringPad_text
+    end
+    pstStringPad_missing = pstStringPad_width - pstStringPad_current
+    if pstStringPad_alignment == "left"
+        return pstStringPad_text + pstRepeatChar(pstStringPad_unit, pstStringPad_missing)
+    end
+    if pstStringPad_alignment == "right"
+        return pstRepeatChar(pstStringPad_unit, pstStringPad_missing) + pstStringPad_text
+    end
+    if pstStringPad_alignment != "both" and pstStringPad_alignment != "center"
+        assert(false, "string.pad alignment must be 'left', 'right' or 'center'")
+    end
+    pstStringPad_left = floor(pstStringPad_missing / 2)
+    if pstStringPad_missing % 2 == 1
+        pstStringPad_left += 1
+    end
+    pstStringPad_right = pstStringPad_missing - pstStringPad_left
+    return pstRepeatChar(pstStringPad_unit, pstStringPad_left) + pstStringPad_text + pstRepeatChar(pstStringPad_unit, pstStringPad_right)
+end
+function pstStringPadLeft(pstStringPadLeft_source, pstStringPadLeft_width, pstStringPadLeft_fill)
+    pstStringPadLeft_text = pstExpectString(pstStringPadLeft_source, "for string.padLeft")
+    pstExpectIndex(pstStringPadLeft_width, "as the width for string.padLeft")
+    pstStringPadLeft_target = pstStringPadLeft_width
+    if pstStringPadLeft_target > 100000
+        pstStringPadLeft_target = 100000
+    end
+    pstStringPadLeft_missing = pstStringPadLeft_target - len(pstStringPadLeft_text)
+    if pstStringPadLeft_missing <= 0
+        return pstStringPadLeft_text
+    end
+    pstStringPadLeft_unit = " "
+    if pstStringPadLeft_fill != null
+        pstStringPadLeft_unit = pstExpectString(pstStringPadLeft_fill, "as the fill for string.padLeft")
+    end
+    if pstStringPadLeft_unit == ""
+        pstStringPadLeft_unit = " "
+    end
+    pstStringPadLeft_padding = ""
+    while len(pstStringPadLeft_padding) < pstStringPadLeft_missing
+    pstStringPadLeft_padding += pstStringPadLeft_unit
+end
+return pstSliceChars(pstStringPadLeft_padding, 0, pstStringPadLeft_missing) + pstStringPadLeft_text
+end
+function pstStringPadRight(pstStringPadRight_source, pstStringPadRight_width, pstStringPadRight_fill)
+    pstStringPadRight_text = pstExpectString(pstStringPadRight_source, "for string.padRight")
+    pstExpectIndex(pstStringPadRight_width, "as the width for string.padRight")
+    pstStringPadRight_target = pstStringPadRight_width
+    if pstStringPadRight_target > 100000
+        pstStringPadRight_target = 100000
+    end
+    pstStringPadRight_missing = pstStringPadRight_target - len(pstStringPadRight_text)
+    if pstStringPadRight_missing <= 0
+        return pstStringPadRight_text
+    end
+    pstStringPadRight_unit = " "
+    if pstStringPadRight_fill != null
+        pstStringPadRight_unit = pstExpectString(pstStringPadRight_fill, "as the fill for string.padRight")
+    end
+    if pstStringPadRight_unit == ""
+        pstStringPadRight_unit = " "
+    end
+    pstStringPadRight_padding = ""
+    while len(pstStringPadRight_padding) < pstStringPadRight_missing
+    pstStringPadRight_padding += pstStringPadRight_unit
+end
+return pstStringPadRight_text + pstSliceChars(pstStringPadRight_padding, 0, pstStringPadRight_missing)
+end
+function pstStringIsDigit(pstStringIsDigit_source)
+    pstStringIsDigit_chars = pstChars(pstExpectString(pstStringIsDigit_source, "for string.isDigit"))
+    if len(pstStringIsDigit_chars) == 0
+        return false
+    end
+    pstStringIsDigit_i = 0
+    while pstStringIsDigit_i < len(pstStringIsDigit_chars)
+    if not pstAsciiDigit(pstStringIsDigit_chars[pstStringIsDigit_i])
+        return false
+    end
+    pstStringIsDigit_i += 1
+end
+return true
+end
+function pstStringIsAlpha(pstStringIsAlpha_source)
+    pstStringIsAlpha_chars = pstChars(pstExpectString(pstStringIsAlpha_source, "for string.isAlpha"))
+    if len(pstStringIsAlpha_chars) == 0
+        return false
+    end
+    pstStringIsAlpha_i = 0
+    while pstStringIsAlpha_i < len(pstStringIsAlpha_chars)
+    if not pstStringIsAlpha_chars[pstStringIsAlpha_i].isAlpha()
+        return false
+    end
+    pstStringIsAlpha_i += 1
+end
+return true
+end
+function pstStringIsAlphanumeric(pstStringIsAlphanumeric_source)
+    pstStringIsAlphanumeric_chars = pstChars(pstExpectString(pstStringIsAlphanumeric_source, "for string.isAlphanumeric"))
+    if len(pstStringIsAlphanumeric_chars) == 0
+        return false
+    end
+    pstStringIsAlphanumeric_i = 0
+    while pstStringIsAlphanumeric_i < len(pstStringIsAlphanumeric_chars)
+    pstStringIsAlphanumeric_char = pstStringIsAlphanumeric_chars[pstStringIsAlphanumeric_i]
+    if not pstStringIsAlphanumeric_char.isAlpha() and not pstAsciiDigit(pstStringIsAlphanumeric_char)
+        return false
+    end
+    pstStringIsAlphanumeric_i += 1
+end
+return true
+end
+function pstStringIsWhitespace(pstStringIsWhitespace_source)
+    pstStringIsWhitespace_chars = pstChars(pstExpectString(pstStringIsWhitespace_source, "for string.isWhitespace"))
+    if len(pstStringIsWhitespace_chars) == 0
+        return false
+    end
+    pstStringIsWhitespace_i = 0
+    while pstStringIsWhitespace_i < len(pstStringIsWhitespace_chars)
+    if not pstStringIsWhitespace_chars[pstStringIsWhitespace_i].isBlank()
+        return false
+    end
+    pstStringIsWhitespace_i += 1
+end
+return true
+end
+function pstStringIsEmpty(pstStringIsEmpty_source)
+    return len(pstExpectString(pstStringIsEmpty_source, "for string.isEmpty")) == 0
+end
+function pstStringIsBlank(pstStringIsBlank_source)
+    pstStringIsBlank_chars = pstChars(pstExpectString(pstStringIsBlank_source, "for string.isBlank"))
+    pstStringIsBlank_i = 0
+    while pstStringIsBlank_i < len(pstStringIsBlank_chars)
+    if not pstStringIsBlank_chars[pstStringIsBlank_i].isBlank()
+        return false
+    end
+    pstStringIsBlank_i += 1
+end
+return true
+end
+function pstStringLines(pstStringLines_source)
+    pstStringLines_text = pstExpectString(pstStringLines_source, "for string.lines")
+    if pstStringLines_text == ""
+        return []
+    end
+    pstStringLines_raw = split(pstStringLines_text, "\n")
+    pstStringLines_count = len(pstStringLines_raw)
+    pstStringLines_dropLast = pstStringLines_count > 0 and pstStringLines_raw[pstStringLines_count - 1] == "" and endsWith(pstStringLines_text, "\n")
+    pstStringLines_out = []
+    pstStringLines_i = 0
+    while pstStringLines_i < pstStringLines_count
+    pstStringLines_part = pstStringLines_raw[pstStringLines_i]
+    if pstStringLines_i < pstStringLines_count - 1 and endsWith(pstStringLines_part, "")
+        pstStringLines_part = pstSliceChars(pstStringLines_part, 0, len(pstStringLines_part) - 1)
+    end
+    if not (pstStringLines_dropLast and pstStringLines_i == pstStringLines_count - 1)
+        pstStringLines_out.add(pstStringLines_part)
+    end
+    pstStringLines_i += 1
+end
+return pstStringLines_out
+end
+function pstStringChars(pstStringChars_source)
+    return pstChars(pstExpectString(pstStringChars_source, "for string.chars"))
+end
+function pstStringSwapCase(pstStringSwapCase_source)
+    pstStringSwapCase_chars = pstChars(pstExpectString(pstStringSwapCase_source, "for string.swapCase"))
+    pstStringSwapCase_out = ""
+    pstStringSwapCase_i = 0
+    while pstStringSwapCase_i < len(pstStringSwapCase_chars)
+    pstStringSwapCase_char = pstStringSwapCase_chars[pstStringSwapCase_i]
+    if pstIsUpperChar(pstStringSwapCase_char)
+        pstStringSwapCase_out += lower(pstStringSwapCase_char)
+    else if pstIsLowerChar(pstStringSwapCase_char)
+        pstStringSwapCase_out += upper(pstStringSwapCase_char)
+    else
+        pstStringSwapCase_out += pstStringSwapCase_char
+    end
+    pstStringSwapCase_i += 1
+end
+return pstStringSwapCase_out
+end
+function pstStringTruncate(pstStringTruncate_source, pstStringTruncate_width, pstStringTruncate_suffix)
+    pstStringTruncate_text = pstExpectString(pstStringTruncate_source, "for string.truncate")
+    pstExpectIndex(pstStringTruncate_width, "as the width for string.truncate")
+    pstStringTruncate_target = pstStringTruncate_width
+    if pstStringTruncate_target > 100000
+        pstStringTruncate_target = 100000
+    end
+    if len(pstStringTruncate_text) <= pstStringTruncate_target
+        return pstStringTruncate_text
+    end
+    pstStringTruncate_tail = "..."
+    if pstStringTruncate_suffix != null
+        pstStringTruncate_tail = pstExpectString(pstStringTruncate_suffix, "as the suffix for string.truncate")
+    end
+    pstStringTruncate_tailChars = pstChars(pstStringTruncate_tail)
+    pstStringTruncate_kept = pstStringTruncate_target - len(pstStringTruncate_tailChars)
+    if pstStringTruncate_kept < 0
+        pstStringTruncate_kept = 0
+    end
+    pstStringTruncate_out = pstSliceChars(pstStringTruncate_text, 0, pstStringTruncate_kept)
+    pstStringTruncate_left = pstStringTruncate_target - pstStringTruncate_kept
+    pstStringTruncate_tailI = 0
+    while pstStringTruncate_tailI < pstStringTruncate_left and pstStringTruncate_tailI < len(pstStringTruncate_tailChars)
+    pstStringTruncate_out += pstStringTruncate_tailChars[pstStringTruncate_tailI]
+    pstStringTruncate_tailI += 1
+end
+return pstStringTruncate_out
+end
+function pstStringModule()
+    return {length: pstStringLength, upper: pstStringUpper, lower: pstStringLower, trim: pstStringTrim, split: pstStringSplit, join: pstStringJoin, contains: pstStringContains, startsWith: pstStringStartsWith, endsWith: pstStringEndsWith, replace: pstStringReplace, replaceAll: pstStringReplaceAll, slice: pstStringSlice, substring: pstStringSubstring, indexOf: pstStringIndexOf, lastIndexOf: pstStringLastIndexOf, charAt: pstStringCharAt, toNumber: pstStringToNumber, capitalize: pstStringCapitalize, titleCase: pstStringTitleCase, reverse: pstStringReverse, repeat: pstStringRepeat, pad: pstStringPad, padLeft: pstStringPadLeft, padRight: pstStringPadRight, isDigit: pstStringIsDigit, isAlpha: pstStringIsAlpha, isAlphanumeric: pstStringIsAlphanumeric, isWhitespace: pstStringIsWhitespace, isEmpty: pstStringIsEmpty, isBlank: pstStringIsBlank, lines: pstStringLines, chars: pstStringChars, swapCase: pstStringSwapCase, truncate: pstStringTruncate}
+end
+$- ---------------------------------------------------------------------------
+   Self-tests: the native string module and methods are oracles only below
+   this point.
+   --------------------------------------------------------------------------- -$
+if os.env("EM_SELFTEST", "") == "1"
+    import string
+    function pstSelfEqual(pstSelfEqual_left, pstSelfEqual_right, pstSelfEqual_label)
+        assert(pstSelfEqual_left == pstSelfEqual_right, "pure string self-test failed: " + pstSelfEqual_label)
+    end
+    function pstSelfSameArray(pstSelfSameArray_left, pstSelfSameArray_right, pstSelfSameArray_label)
+        if type(pstSelfSameArray_left) != "array" or type(pstSelfSameArray_right) != "array"
+            assert(false, "pure string self-test failed: " + pstSelfSameArray_label + " is not an array")
+        end
+        assert(len(pstSelfSameArray_left) == len(pstSelfSameArray_right), "pure string self-test failed: " + pstSelfSameArray_label + " length")
+        pstSelfSameArray_i = 0
+        while pstSelfSameArray_i < len(pstSelfSameArray_left)
+        pstSelfEqual(pstSelfSameArray_left[pstSelfSameArray_i], pstSelfSameArray_right[pstSelfSameArray_i], pstSelfSameArray_label + "[" + toString(pstSelfSameArray_i) + "]")
+        pstSelfSameArray_i += 1
+    end
+end
+pstSelfModule = pstStringModule()
+pstSelfExpectedKeys = ["capitalize", "charAt", "chars", "contains", "endsWith", "indexOf", "isAlpha", "isAlphanumeric", "isBlank", "isDigit", "isEmpty", "isWhitespace", "join", "lastIndexOf", "length", "lines", "lower", "pad", "padLeft", "padRight", "repeat", "replace", "replaceAll", "reverse", "slice", "split", "startsWith", "substring", "swapCase", "titleCase", "toNumber", "trim", "truncate", "upper"]
+pstSelfSameArray(keys(pstSelfModule), pstSelfExpectedKeys, "pstStringModule keys")
+pstSelfTexts = ["", "hello", "  padded  ", "a-b-a", "héllo ☃", "日本語", "🙂🙃", "a\nb\tc", "a\nb\nc", "quote \" and \\ slash", "abababa", "ßİıǅ", "0123456789", "abcXYZ"]
+pstSelfUnary = ["length", "upper", "lower", "trim", "reverse", "isDigit", "isAlpha", "isAlphanumeric", "isWhitespace", "isEmpty", "lines"]
+for pstSelfText in pstSelfTexts
+    for pstSelfName in pstSelfUnary
+        pstSelfExpected = string.get(pstSelfName)(pstSelfText)
+        pstSelfActual = pstSelfModule.get(pstSelfName)(pstSelfText)
+        if type(pstSelfExpected) == "array"
+            pstSelfSameArray(pstSelfActual, pstSelfExpected, pstSelfName + " " + pstSelfText)
+        else
+            pstSelfEqual(pstSelfActual, pstSelfExpected, pstSelfName + " " + pstSelfText)
+        end
+    end
+    pstSelfEqual(pstSelfModule.replace(pstSelfText, "a", "Z"), string.replace(pstSelfText, "a", "Z"), "replace " + pstSelfText)
+    pstSelfEqual(pstSelfModule.replaceAll(pstSelfText, "a", "Z"), pstSelfText.replaceAll("a", "Z"), "replaceAll " + pstSelfText)
+    pstSelfEqual(pstSelfModule.capitalize(pstSelfText), pstSelfText.capitalize(), "capitalize " + pstSelfText)
+    pstSelfEqual(pstSelfModule.titleCase(pstSelfText), pstSelfText.titleCase(), "titleCase " + pstSelfText)
+    pstSelfEqual(pstSelfModule.swapCase(pstSelfText), pstSelfText.swapCase(), "swapCase " + pstSelfText)
+    pstSelfEqual(pstSelfModule.isBlank(pstSelfText), pstSelfText.isBlank(), "isBlank " + pstSelfText)
+    pstSelfEqual(pstSelfModule.toNumber(pstSelfText), pstSelfText.toNumber(), "toNumber " + pstSelfText)
+    pstSelfSameArray(pstSelfModule.chars(pstSelfText), pstSelfText.chars(), "chars " + pstSelfText)
+    for pstSelfNeedle in ["", "a", "é", "☃", "🙂", "aba", "zzz", pstSelfText]
+        pstSelfEqual(pstSelfModule.contains(pstSelfText, pstSelfNeedle), string.contains(pstSelfText, pstSelfNeedle), "contains " + pstSelfText)
+        pstSelfEqual(pstSelfModule.startsWith(pstSelfText, pstSelfNeedle), string.startsWith(pstSelfText, pstSelfNeedle), "startsWith " + pstSelfText)
+        pstSelfEqual(pstSelfModule.endsWith(pstSelfText, pstSelfNeedle), string.endsWith(pstSelfText, pstSelfNeedle), "endsWith " + pstSelfText)
+        pstSelfEqual(pstSelfModule.indexOf(pstSelfText, pstSelfNeedle), string.indexOf(pstSelfText, pstSelfNeedle), "indexOf " + pstSelfText)
+        pstSelfEqual(pstSelfModule.lastIndexOf(pstSelfText, pstSelfNeedle), string.lastIndexOf(pstSelfText, pstSelfNeedle), "lastIndexOf " + pstSelfText)
+        pstSelfEqual(pstSelfModule.slice(pstSelfText, 1, null), pstSelfText.slice(1), "slice open " + pstSelfText)
+        pstSelfEqual(pstSelfModule.slice(pstSelfText, -2, 3), pstSelfText.slice(-2, 3), "slice negative " + pstSelfText)
+        pstSelfEqual(pstSelfModule.slice(pstSelfText, 99, -99), pstSelfText.slice(99, -99), "slice clamped " + pstSelfText)
+    end
+    pstSelfEqual(pstSelfModule.truncate(pstSelfText, 4, ".."), pstSelfText.truncate(4, ".."), "truncate " + pstSelfText)
+    pstSelfEqual(pstSelfModule.truncate(pstSelfText, 6, null), pstSelfText.truncate(6), "truncate default " + pstSelfText)
+    pstSelfEqual(pstSelfModule.padLeft(pstSelfText, 12, "ab"), pstSelfText.padLeft(12, "ab"), "padLeft " + pstSelfText)
+    pstSelfEqual(pstSelfModule.padRight(pstSelfText, 12, "ab"), pstSelfText.padRight(12, "ab"), "padRight " + pstSelfText)
+    pstSelfEqual(pstSelfModule.pad(pstSelfText, 10, "*x", "left"), string.pad(pstSelfText, 10, "*x", "left"), "pad left " + pstSelfText)
+    pstSelfEqual(pstSelfModule.pad(pstSelfText, 10, "*x", "right"), string.pad(pstSelfText, 10, "*x", "right"), "pad right " + pstSelfText)
+    pstSelfEqual(pstSelfModule.pad(pstSelfText, 11, "*x", "center"), string.pad(pstSelfText, 11, "*x", "center"), "pad center " + pstSelfText)
+    pstSelfEqual(pstSelfModule.pad(pstSelfText, 11, "*x", "both"), string.pad(pstSelfText, 11, "*x", "both"), "pad both " + pstSelfText)
+    pstSelfEqual(pstSelfModule.repeat(pstSelfText, 3), string.repeat(pstSelfText, 3), "repeat " + pstSelfText)
+    pstSelfSameArray(pstSelfModule.split(pstSelfText, "a"), string.split(pstSelfText, "a"), "split " + pstSelfText)
+    pstSelfSameArray(pstSelfModule.split(pstSelfText, null), string.split(pstSelfText), "split default " + pstSelfText)
+    pstSelfEqual(pstSelfModule.substring(pstSelfText, 0, len(pstSelfText)), string.substring(pstSelfText, 0), "substring full " + pstSelfText)
+    if len(pstSelfText) > 1
+        pstSelfEqual(pstSelfModule.substring(pstSelfText, 0, 1), string.substring(pstSelfText, 0, 1), "substring short " + pstSelfText)
+    end
+    if len(pstSelfText) > 0
+        pstSelfEqual(pstSelfModule.charAt(pstSelfText, 0), string.charAt(pstSelfText, 0), "charAt " + pstSelfText)
+    end
+end
+pstSelfJoined = ["a", "b", 3, true, null]
+pstSelfEqual(pstSelfModule.join(pstSelfJoined, "-"), string.join(pstSelfJoined, "-"), "join")
+pstSelfEqual(pstSelfModule.join(pstSelfJoined, null), string.join(pstSelfJoined), "join default")
+pstSelfNumbers = ["", " 42 ", "-3.5", "+7", ".5", "1.", "1e3", "2.5E-2", "NaN", "inf", "abc", "\t12\n", "1e400", "0x10"]
+for pstSelfNumberText in pstSelfNumbers
+    pstSelfEqual(pstSelfModule.toNumber(pstSelfNumberText), pstSelfNumberText.toNumber(), "toNumber " + pstSelfNumberText)
+end
+say("pure string ok")
+end
