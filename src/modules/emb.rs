@@ -4,7 +4,8 @@
 //! `version`, a constant pool, nested functions and instructions. This module
 //! only translates that description into a `Chunk` and hands it to
 //! `bytecode::serialize`, so the emitted bytes are byte-for-byte identical to
-//! images produced by the Rust compiler.
+//! images produced by the Rust compiler. `writeBytes` writes an already-encoded
+//! byte array unchanged, which is how a pure encoder saves a loadable image.
 
 use crate::bytecode::{self, Chunk, Const, FunctionProto, Op};
 use crate::error::Span;
@@ -118,6 +119,23 @@ pub fn module() -> Value {
     );
 
     fields.insert(
+        "writeBytes".to_string(),
+        native("emb.writeBytes", |args| {
+            let path = expect_path(
+                arg(args, 0, "emb.writeBytes", "path")?,
+                "as the path for emb.writeBytes",
+            )?;
+            let raw = buffer_bytes(
+                arg(args, 1, "emb.writeBytes", "buffer")?,
+                "for emb.writeBytes",
+            )?;
+            std::fs::write(&path, &raw)
+                .map_err(|e| format!("Could not write '{}': {e}", path.display()))?;
+            Ok(Value::Bool(true))
+        }),
+    );
+
+    fields.insert(
         "encodeOp".to_string(),
         native("emb.encodeOp", |args| {
             let name = expect_string(
@@ -139,6 +157,38 @@ pub fn module() -> Value {
     );
 
     Value::new_object(fields)
+}
+
+/// Fetch a required argument, matching the diagnostic style of `bytes.write`.
+fn arg<'a>(
+    args: &'a [Value],
+    index: usize,
+    function: &str,
+    description: &str,
+) -> Result<&'a Value, String> {
+    args.get(index)
+        .ok_or_else(|| format!("{function} expects argument {} ({description})", index + 1))
+}
+
+/// Validate one byte, using the same range and wording as `bytes.write`.
+fn byte_value(value: &Value, context: &str) -> Result<u8, String> {
+    let n = expect_number(value, context)?;
+    if !n.is_finite() || n.fract() != 0.0 || !(0.0..=255.0).contains(&n) {
+        return Err(format!(
+            "Expected a whole number from 0 to 255 {context}, found {n}"
+        ));
+    }
+    Ok(n as u8)
+}
+
+/// Copy and validate a whole array before touching the file system.
+fn buffer_bytes(value: &Value, context: &str) -> Result<Vec<u8>, String> {
+    let items = array_items(value, context)?;
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| byte_value(item, &format!("at index {index} {context}")))
+        .collect()
 }
 
 /// Magic bytes written at the start of every image (`"EMBC"`).
